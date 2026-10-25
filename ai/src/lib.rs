@@ -375,6 +375,36 @@ impl Default for Config {
     }
 }
 
+
+/// Warns about the QoL mod setup that hf_ai relies on: logdot's `highfleet-qol` carries the 1.163 flare crash fix (a
+/// proximity-fused missile meeting a flare whose link is gone), and hf_ai drops far more flares than the stock game.
+/// Checked from the files (mod load order is alphabetical, so the QoL DLL may not be loaded yet when hf_ai starts).
+fn check_qol(config: &Config) {
+    let has_dll = std::fs::read_dir("Modloader/mods")
+        .map(|dir| {
+            dir.flatten().any(|entry| {
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                name.contains("qol") && name.ends_with(".dll")
+            })
+        })
+        .unwrap_or(false);
+    if !has_dll {
+        log::warn!("hf_ai: no QoL mod in Modloader/mods. Install logdot's highfleet-qol: it has the flare crash fix, and hf_ai's flares make that crash much more likely without it");
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string("Modloader/config/qol.json") else { return };
+    let Ok(qol) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+    if qol.get("enable_flare_crash_fix").and_then(|v| v.as_bool()) == Some(false) {
+        log::warn!("hf_ai: qol.json has enable_flare_crash_fix false: turn it on, hf_ai's flares can crash the game without it");
+    }
+    if config.ai_missile_dump_chance > 0.0 && qol.get("ai_missile_dump_chance").and_then(|v| v.as_f64()).unwrap_or(0.0) > 0.0 {
+        log::warn!("hf_ai: qol.json ai_missile_dump_chance is above 0 as well: set it to 0, hf_ai does the missile dump");
+    }
+    if qol.get("ai_flares").and_then(|v| v.get("enabled")).and_then(|v| v.as_bool()) == Some(true) && config.ai_flares.enabled {
+        log::warn!("hf_ai: qol.json ai_flares.enabled is true as well: set it to false, both patch the same sites");
+    }
+}
+
 #[no_mangle]
 unsafe extern "C" fn version(version: *const c_char) -> bool {
     let supported = CStr::from_ptr(version).to_bytes() == b"Steam 1.163";
@@ -410,6 +440,7 @@ unsafe extern "C" fn init() -> bool {
         log::info!("hf_ai: disabled in {CONFIG_PATH}");
         return true;
     }
+    check_qol(&config);
     tactics::init(&config.tactics);
     LOG_STEERING.store(config.log_steering, Ordering::Relaxed);
     scan_log::LOG_BODIES.store(config.log_scan_bodies, Ordering::Relaxed);

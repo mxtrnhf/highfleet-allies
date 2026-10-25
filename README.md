@@ -12,7 +12,7 @@ Both are optional, independent DLLs. Everything is reverse-engineered, so **Stea
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).
 2. Download the pack from [Releases](../../releases) and extract the zip directly into the game folder (the one with `Highfleet.exe`); it contains `Modloader/mods`, `Modloader/config` and `Media`.
-3. Use only **one** `hf_ally` DLL in `Modloader/mods`. Optional: [logdot's QoL mod](https://github.com/logdot/highfleet-qol) (refuel, speed, and a fix for a flare crash); our missile dump no longer needs it.
+3. Install **[logdot's QoL mod](https://github.com/logdot/highfleet-qol/releases) too** (required in practice): it carries the fix for a 1.163 crash when a proximity-fused missile meets a flare, and `hf_ai` drops far more flares than the stock game. Keep its `enable_flare_crash_fix` on (the default) and its own `ai_flares` off. `hf_ai` logs a warning at start-up if the QoL mod is missing or set up wrongly. Use only **one** `hf_ally` DLL in `Modloader/mods`.
 4. Settings are JSON files in `Modloader/config/` (`ally.json`, `hf_ai.json`), written with defaults on first run. `"enabled": false` turns a mod off.
 
 ## Build (developers)
