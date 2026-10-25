@@ -1,0 +1,23 @@
+[package]
+name = "hf-ally"
+version = "0.13.0"
+edition = "2021"
+description = "Prototype: a player-side, AI-run ship in battle. v0.2 can spawn an AI wingman (spawn_ally, default off); the hooks otherwise only log (no behaviour change)."
+
+[features]
+# Debug build: a megalog beside the normal log, heartbeat, every click, game-state changes, crash minidump.
+megalog = []
+# Research telemetry (CSV files of every ship, part damage and missile). NOT in tester builds: build it only for yourself.
+telemetry = []
+
+[lib]
+name = "hf_ally"
+crate-type = ["cdylib"]
+
+[dependencies]
+highfleet-mod-api = { git = "https://github.com/logdot/Highfleet-Modloader.git", tag = "v4.0.0" }
+log = "0.4.28"
+patchy = { package = "patchy-rs", git = "https://github.com/logdot/patchy-rs.git", tag = "v0.1.0" }
+serde = { version = "1.0.221", features = ["derive"] }
+serde_json = "1.0.144"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Diagnostics_Debug", "Win32_System_Threading", "Win32_System_Memory", "Win32_System_Kernel", "Win32_Storage_FileSystem"] }
