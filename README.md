@@ -5,7 +5,7 @@ Two mods for **HighFleet (Steam 1.163)**, built on [logdot's Highfleet-Modloader
 | Mod | What it does |
 |---|---|
 | [`ally/`](ally) (**hf_ally**) | An AI-flown **wingman ship** that fights beside you, pre-combat **ALLY** buttons, radio lines, retreat/fuel logic; a **carrier plane armament button** (bombs, rockets, optional K-13 AA missiles, charged to your inventory); **more enemies per battle** (`max_enemy_ships`, enemy waves); crash guards for three vanilla crashes; the Sprint-intercept fix. |
-| [`qol/`](qol) (optional) | A copy of logdot's QoL mod **plus manual elevation** in the ship editor, until logdot merges [our pull request](https://github.com/logdot/highfleet-qol/pull/20). Not needed for the two mods; logdot's own release is the default recommendation. |
+| [`qol/`](qol) | A copy of logdot's QoL mod **plus manual elevation** in the ship editor (refuel, speed and the flare crash fix come from his `main`). Built into the pack until logdot merges [our pull request](https://github.com/logdot/highfleet-qol/pull/20) and cuts a release. |
 | [`ai/`](ai) (**hf_ai**) | A tactical **AI layer**: enemies dodge your aim line, deny the dive, drop flare curtains and evade missiles (allied AI ships too), and **empty their missile racks** in a burst (`ai_missile_dump_*`). Plain-language guide: [docs/hf-ai-tuning-guide.md](docs/hf-ai-tuning-guide.md). |
 
 Both are optional, independent DLLs. Everything is reverse-engineered, so **Steam 1.163 only**; they refuse to start on other versions. Back up your `Saves` folder first.
@@ -13,7 +13,7 @@ Both are optional, independent DLLs. Everything is reverse-engineered, so **Stea
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).
 2. Download the pack from [Releases](../../releases) and extract the zip directly into the game folder (the one with `Highfleet.exe`); it contains `Modloader/mods`, `Modloader/config` and `Media`.
-3. Install **[logdot's QoL mod](https://github.com/logdot/highfleet-qol/releases) too** (required in practice): it carries the fix for a 1.163 crash when a proximity-fused missile meets a flare, and `hf_ai` drops far more flares than the stock game. Keep its `enable_flare_crash_fix` on (the default) and its own `ai_flares` off. `hf_ai` logs a warning at start-up if the QoL mod is missing or set up wrongly. Use only **one** `hf_ally` DLL in `Modloader/mods`.
+3. The pack already contains the **QoL DLL** (`Modloader/mods/highfleet_qol.dll`): logdot's [highfleet-qol](https://github.com/logdot/highfleet-qol) `main` plus our manual elevation, built from the [`qol/`](qol) folder. It carries the fix for a 1.163 crash when a proximity-fused missile meets a flare (`hf_ai` drops far more flares than the stock game), refuel rate and speed curve. It replaces logdot's DLL until these changes are merged into a release of his repo; then use his release. Keep `enable_flare_crash_fix` on (the default). `hf_ai` logs a warning at start-up if the QoL mod is missing or set up wrongly. Use only **one** `hf_ally` DLL in `Modloader/mods`.
 4. Settings are JSON files in `Modloader/config/` (`ally.json`, `hf_ai.json`), written with defaults on first run. `"enabled": false` turns a mod off.
 
 ## Build (developers)
