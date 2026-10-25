@@ -24,7 +24,7 @@ highfleet_mod_api::export_logger!();
 /// A line for the debug build's megalog (a no-op, and the arguments are not even formatted, otherwise).
 macro_rules! crumb {
     ($($arg:tt)*) => {
-        if diag::DEBUG {
+        if diag::debug() {
             diag::crumb(&format!($($arg)*));
         }
     };
@@ -216,6 +216,9 @@ struct Config {
     /// arcade scene, e.g. `["MDL_MISSILE_03"]` (the R-9 Sprint) for a Sprint modded to be strat-launchable (its category has bit 0x8000000, so
     /// the CIWS and anti-air launchers of both sides would shoot at it). Copy the names from `m_oid=` in OL.seria. Empty = vanilla.
     intercept_ignore_oids: Vec<String>,
+    /// Debug mode for bug reports: writes `Modloader/logs/hf_ally_megalog_<time>.log` (large, 2-5 MB/hour), a watchdog and a
+    /// crash minidump `hf_ally_crash_<time>.dmp` (may hold paths and campaign data: delete it after sending). Default off.
+    debug_log: bool,
     /// Stock-game crash fixes (aircraft target choice, fleet-merge null fleet). Default on.
     fix_plane_ai_crash: bool,
     plane_bombers: bool,
@@ -275,6 +278,7 @@ impl Default for Config {
             gui_inspect: false,
             spare_prizes: true,
             intercept_ignore_oids: Vec::new(),
+            debug_log: false,
             fix_plane_ai_crash: true,
             plane_bombers: false,
             plane_k13: false,
@@ -1331,7 +1335,7 @@ unsafe fn precombat_tick(source: usize) {
     let now = now_ms();
     if sig != TICK_SIG.swap(sig, Ordering::Relaxed) {
         TICK_CHANGED_MS.store(now, Ordering::Relaxed);
-        if diag::DEBUG && TICK_LOGS.fetch_add(1, Ordering::Relaxed) < 4000 {
+        if diag::debug() && TICK_LOGS.fetch_add(1, Ordering::Relaxed) < 4000 {
             log::info!(
                 "ALLY card layout moving: {:?}",
                 cards.iter().map(|c| format!("{:.1}", c.0)).collect::<Vec<_>>()
@@ -1678,7 +1682,7 @@ unsafe fn precombat_dump(which: &str) {
         return;
     }
     let build = PRECOMBAT_BUILDS.fetch_add(1, Ordering::Relaxed);
-    if build >= 24 && !diag::DEBUG {
+    if build >= 24 && !diag::debug() {
         return;
     }
     let head: usize = read(GUI_LIST);
@@ -2406,8 +2410,12 @@ unsafe extern "C" fn init() -> bool {
         log::info!("hf_ally: disabled in {path}");
         return true;
     }
+    if config.debug_log && !diag::debug() {
+        diag::enable_debug();
+        log::info!("hf_ally: debug_log on: megalog, watchdog and crash dump (large files, see ally.json)");
+    }
     // the debug build lifts the line budgets (a session never gets them back: the level name is always "?")
-    let max_lines = if diag::DEBUG { config.max_lines.max(1_000_000) } else { config.max_lines };
+    let max_lines = if diag::debug() { config.max_lines.max(1_000_000) } else { config.max_lines };
     MAX_LINES.store(max_lines, Ordering::Relaxed);
     SPAWN_ALLY.store(config.spawn_ally, Ordering::Relaxed);
     MARKER_SEAM_SEL.store(config.marker_seam.clamp(22, 24), Ordering::Relaxed);
@@ -2416,7 +2424,7 @@ unsafe extern "C" fn init() -> bool {
         // ASCII only; '@' is a line break for the game's text code
         *text = config.marker_text.bytes().filter(|b| (0x20..0x7f).contains(b) && *b != b'@').chain([0]).collect();
     }
-    PROBE_LINES.store(config.probe_lines || diag::DEBUG, Ordering::Relaxed);
+    PROBE_LINES.store(config.probe_lines || diag::debug(), Ordering::Relaxed);
     #[cfg(feature = "telemetry")]
     telemetry::ENABLED.store(config.telemetry, Ordering::Relaxed);
     MAX_ALLIES.store(config.max_allies.max(1), Ordering::Relaxed);
@@ -2499,7 +2507,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             )
             .map_err(|e| e.to_string())?;
     }
-    if config.log_precombat || config.ally_toggle || diag::DEBUG {
+    if config.log_precombat || config.ally_toggle || diag::debug() {
         HAVE_PRECOMBAT_HOOK.store(true, Ordering::Relaxed);
         let sites: [(usize, [u8; 5], *const ()); 3] = [
             (PRECOMBAT_SEAM, PRECOMBAT_SEAM_BYTES, on_precombat as *const ()),
@@ -2608,7 +2616,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             log::warn!("hf_ally: ammoSelectButtonPress? bytes differ, not hooked");
         }
     }
-    LOG_PRECOMBAT.store(config.log_precombat || diag::DEBUG, Ordering::Relaxed);
+    LOG_PRECOMBAT.store(config.log_precombat || diag::debug(), Ordering::Relaxed);
     SPARE_PRIZES.store(config.spare_prizes && config.spawn_ally, Ordering::Relaxed);
     if config.spare_prizes && config.spawn_ally {
         let target_ok = std::slice::from_raw_parts(TARGET_FN as *const u8, 3) == [0x48, 0x8b, 0xc4];

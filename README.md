@@ -21,7 +21,7 @@ Rust nightly/stable ≥ 1.88 with `cargo-xwin` (cross-compiles to Windows MSVC f
     cd ally && cargo xwin build --release --target x86_64-pc-windows-msvc
     cd ai   && cargo xwin build --release --target x86_64-pc-windows-msvc
 
-`ally` also has cargo features: `megalog` (verbose log + crash dump, for bug reports) and `telemetry` (battle CSVs for AI research).
+`ally` has a runtime switch for bug reports: set `"debug_log": true` in `ally.json` to write a verbose megalog, run a watchdog and save a crash dump (`Modloader/logs/hf_ally_megalog_*.log`, `hf_ally_crash_*.dmp`; the dump may contain paths and campaign data, delete it after sending). The cargo feature `megalog` turns the same mode on in the build itself, and `telemetry` adds battle CSVs for AI research.
 Tests for the pure math: `cd ai && cargo xwin test --release --target x86_64-pc-windows-msvc` (needs wine).
 
 ## How it works / research notes

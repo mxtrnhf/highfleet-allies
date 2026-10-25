@@ -33,13 +33,21 @@ use windows_sys::Win32::System::{
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BUILD: &str = env!("HF_ALLY_BUILD");
-pub const DEBUG: bool = cfg!(feature = "megalog");
+/// Debug mode (megalog file, watchdog, crash minidump, verbose lines): on in builds made with the cargo feature
+/// `megalog`, otherwise switched on at start-up by `debug_log` in `ally.json` (see [`enable_debug`]).
+static DEBUG_ON: AtomicBool = AtomicBool::new(cfg!(feature = "megalog"));
+static MEGALOG_STARTED: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+pub fn debug() -> bool {
+    DEBUG_ON.load(Ordering::Relaxed)
+}
 
 /// The first line a tester's log must show: version, build time and whether this is the verbose debug build.
 pub fn banner() -> String {
     format!(
         "hf_ally v{VERSION} (build {BUILD} UTC){}",
-        if DEBUG { " DEBUG BUILD (megalog): verbose, writes a large extra log file and a crash dump" } else { "" }
+        if debug() { " DEBUG BUILD (megalog): verbose, writes a large extra log file and a crash dump" } else { "" }
     )
 }
 
@@ -64,7 +72,7 @@ fn write_file(msg: &str, in_crash: bool) {
 
 /// A line for the megalog only (debug build). Use through the `crumb!` macro so the string is not built otherwise.
 pub fn crumb(msg: &str) {
-    if DEBUG {
+    if debug() {
         write_file(msg, false);
     }
 }
@@ -224,7 +232,7 @@ unsafe extern "system" fn vectored_handler(info: *mut EXCEPTION_POINTERS) -> i32
 unsafe extern "system" fn unhandled_filter(info: *const EXCEPTION_POINTERS) -> i32 {
     if !BUSY.swap(true, Ordering::Relaxed) {
         report("UNHANDLED, the game is dying", info);
-        if DEBUG {
+        if debug() {
             write_dump(info);
         }
     }
@@ -303,23 +311,9 @@ fn watchdog() {
     }
 }
 
-/// Installs the crash capture (every build) and, in the debug build, the megalog file and the watchdog.
+/// Installs the crash capture (every build); in a `megalog` build also starts the debug files at once.
 pub fn install() {
     START.get_or_init(Instant::now);
-    if DEBUG {
-        let _ = std::fs::create_dir_all("Modloader/logs");
-        let path = format!("Modloader/logs/hf_ally_megalog_{}.log", unix_secs());
-        match File::create(&path) {
-            Ok(file) => {
-                if let Ok(mut guard) = FILE.lock() {
-                    *guard = Some(file);
-                }
-                write_file(&banner(), false);
-                write_file(&format!("megalog file {path}, process id {}", unsafe { GetCurrentProcessId() }), false);
-            }
-            Err(error) => log::warn!("hf_ally: cannot create {path}: {error}"),
-        }
-    }
     let previous_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         emit(&format!("PANIC in hf_ally v{VERSION} build {BUILD}, hook running: {}: {info}", current_hook()), true);
@@ -330,9 +324,35 @@ pub fn install() {
         let previous = SetUnhandledExceptionFilter(Some(unhandled_filter));
         PREVIOUS_FILTER.store(previous.map_or(0, |f| f as usize), Ordering::Relaxed);
     }
-    if DEBUG {
-        let _ = std::thread::Builder::new().name("hf_ally_watchdog".into()).spawn(watchdog);
+    if debug() {
+        start_megalog();
     }
+}
+
+/// Turns the debug mode on at run time (config `debug_log`): megalog file, watchdog, crash minidump.
+pub fn enable_debug() {
+    DEBUG_ON.store(true, Ordering::Relaxed);
+    start_megalog();
+}
+
+/// Creates the megalog file and the watchdog thread (once).
+fn start_megalog() {
+    if MEGALOG_STARTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let _ = std::fs::create_dir_all("Modloader/logs");
+    let path = format!("Modloader/logs/hf_ally_megalog_{}.log", unix_secs());
+    match File::create(&path) {
+        Ok(file) => {
+            if let Ok(mut guard) = FILE.lock() {
+                *guard = Some(file);
+            }
+            write_file(&banner(), false);
+            write_file(&format!("megalog file {path}, process id {}", unsafe { GetCurrentProcessId() }), false);
+        }
+        Err(error) => log::warn!("hf_ally: cannot create {path}: {error}"),
+    }
+    let _ = std::thread::Builder::new().name("hf_ally_watchdog".into()).spawn(watchdog);
 }
 
 // --- fleet snapshot (debug build) ---
@@ -392,7 +412,7 @@ unsafe fn ships_of(fleet: usize) -> String {
 /// Logs every fleet of the profile (side marker, flags, ships and their flags) and the player-side fleet vector the
 /// landing scene reads, but only when something changed since the last snapshot. Call from game-thread hooks only.
 pub unsafe fn snapshot(why: &str) {
-    if !DEBUG {
+    if !debug() {
         return;
     }
     let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(crate::GET_PROFILE);
