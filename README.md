@@ -5,6 +5,7 @@ Two mods for **HighFleet (Steam 1.163)**, built on [logdot's Highfleet-Modloader
 | Mod | What it does |
 |---|---|
 | [`ally/`](ally) (**hf_ally**) | An AI-flown **wingman ship** that fights beside you, pre-combat **ALLY** buttons, radio lines, retreat/fuel logic; a **carrier plane armament button** (bombs, rockets, optional K-13 AA missiles, charged to your inventory); **more enemies per battle** (`max_enemy_ships`, enemy waves); crash guards for three vanilla crashes; the Sprint-intercept fix. |
+| [`qol/`](qol) (optional) | A copy of logdot's QoL mod **plus manual elevation** in the ship editor, until logdot merges [our pull request](https://github.com/logdot/highfleet-qol/pull/20). Not needed for the two mods; logdot's own release is the default recommendation. |
 | [`ai/`](ai) (**hf_ai**) | A tactical **AI layer**: enemies dodge your aim line, deny the dive, drop flare curtains and evade missiles (allied AI ships too), and **empty their missile racks** in a burst (`ai_missile_dump_*`). Plain-language guide: [docs/hf-ai-tuning-guide.md](docs/hf-ai-tuning-guide.md). |
 
 Both are optional, independent DLLs. Everything is reverse-engineered, so **Steam 1.163 only**; they refuse to start on other versions. Back up your `Saves` folder first.
