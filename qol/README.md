@@ -1,5 +1,5 @@
 > **This directory is a copy of [logdot/highfleet-qol](https://github.com/logdot/highfleet-qol)** (MIT, (c) Timoteo Rider, see `LICENSE`)
-> at upstream `main` (refuel rate and speed curve, flare crash fix, the cargo-lock fix) **plus one extra feature: manual
+> at upstream `main` (refuel rate and speed curve, flare crash fix, the cargo-lock fix; **refuel and speed are in logdot's `main` but not yet in his v1.3.0 release, so they are included here until the changes are merged into a release of the main repo**) **plus one extra feature: manual
 > elevation in the ship editor** (upstream pull request [#20](https://github.com/logdot/highfleet-qol/pull/20), still a draft).
 > Nothing else is changed. It is here so that people who want elevation can build it or read the source; **once logdot merges
 > the pull request, use his release and delete this copy.** Our AI parts (`ai_flares`, missile dump) are not in it: they live in
