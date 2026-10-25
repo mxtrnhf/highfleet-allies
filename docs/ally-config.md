@@ -33,7 +33,7 @@ Pack values that differ from the code defaults: `max_enemy_ships` 8 (code 5), `p
 | `max_enemy_ships` | `5` | Most enemy ships in one battle (vanilla 5, clamped to 1..=127). |
 | `enemy_group_size` | `3` | Enemy ships placed per wave (vanilla 3, 1..=40). Waves refill every tick after the first 30 s. |
 | `enemy_all_at_once` | `false` | Skip the 30 s wait before the enemy waves start (with `enemy_group_size` > 3: all enemies at once). |
-| `plane_loadouts` | `true` | Pre-combat button that picks the armament of a carrier's planes (charged to the inventory). Default on. |
+| `plane_loadouts` | `true` | Pre-combat buttons that pick the armament of a carrier's planes (charged to the inventory), one button per plane type the ship carries, in a column right of the ALLY button. The plane types, their loadouts, item counts and the bomb / rocket / K-13 kind of each item are read from the game's own tables when first needed, so **custom aircraft and re-priced loadouts registered through the QoL `planes` option get buttons too** (up to six plane types per card; a plane with no plain-gun loadout gets the game's 37 mm gun for "guns only"). Default on. |
 | `log_colors` | `false` | Debug: logs colour calls of the HUD (very chatty). Off. |
 | `ally_damage_blue` | `true` | Damage numbers popping up over ALLIED ships are drawn in the ally colour instead of the enemy colour. |
 | `ally_damage_color` | `58623` | The ally damage colour as a plain number 0xRRGGBB (58623 = 0x00E4FF, cyan). |

@@ -901,8 +901,8 @@ static TICKS_SEEN: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
 static PLANE_BUTTONS: AtomicBool = AtomicBool::new(false);
 /// Text beside each plane button, drawn from the render seam: (slot, x, y in GUI units, size, text with a NUL).
 static PLANE_LABELS: Mutex<Vec<(usize, f32, f32, f32, Vec<u8>)>> = Mutex::new(Vec::new());
-/// One button per card and plane type: index = craft * 9 + (card slot - 1); the click handler splits the number again.
-const LOADOUT_NAMES: [&[u8]; 18] = [
+/// One button per card and plane type (`plane_loadouts::MAX_CRAFTS` types): index = craft * 9 + (card slot - 1); the click handler splits the number again.
+const LOADOUT_NAMES: [&[u8]; 54] = [
     b"PLANE_ARM_1\0",
     b"PLANE_ARM_2\0",
     b"PLANE_ARM_3\0",
@@ -921,8 +921,44 @@ const LOADOUT_NAMES: [&[u8]; 18] = [
     b"PLANE_ARM_16\0",
     b"PLANE_ARM_17\0",
     b"PLANE_ARM_18\0",
+    b"PLANE_ARM_19\0",
+    b"PLANE_ARM_20\0",
+    b"PLANE_ARM_21\0",
+    b"PLANE_ARM_22\0",
+    b"PLANE_ARM_23\0",
+    b"PLANE_ARM_24\0",
+    b"PLANE_ARM_25\0",
+    b"PLANE_ARM_26\0",
+    b"PLANE_ARM_27\0",
+    b"PLANE_ARM_28\0",
+    b"PLANE_ARM_29\0",
+    b"PLANE_ARM_30\0",
+    b"PLANE_ARM_31\0",
+    b"PLANE_ARM_32\0",
+    b"PLANE_ARM_33\0",
+    b"PLANE_ARM_34\0",
+    b"PLANE_ARM_35\0",
+    b"PLANE_ARM_36\0",
+    b"PLANE_ARM_37\0",
+    b"PLANE_ARM_38\0",
+    b"PLANE_ARM_39\0",
+    b"PLANE_ARM_40\0",
+    b"PLANE_ARM_41\0",
+    b"PLANE_ARM_42\0",
+    b"PLANE_ARM_43\0",
+    b"PLANE_ARM_44\0",
+    b"PLANE_ARM_45\0",
+    b"PLANE_ARM_46\0",
+    b"PLANE_ARM_47\0",
+    b"PLANE_ARM_48\0",
+    b"PLANE_ARM_49\0",
+    b"PLANE_ARM_50\0",
+    b"PLANE_ARM_51\0",
+    b"PLANE_ARM_52\0",
+    b"PLANE_ARM_53\0",
+    b"PLANE_ARM_54\0",
 ];
-static LOADOUT_GUIS: [std::sync::atomic::AtomicUsize; 18] = [const { std::sync::atomic::AtomicUsize::new(0) }; 18];
+static LOADOUT_GUIS: [std::sync::atomic::AtomicUsize; 54] = [const { std::sync::atomic::AtomicUsize::new(0) }; 54];
 /// Gap (GUI units) between the ALLY button and the plane button above it.
 const LOADOUT_GAP: f32 = 3.0;
 /// The plane buttons are smaller than the ALLY button so both rows stay in the part of the screen that takes clicks.
@@ -1139,12 +1175,17 @@ unsafe fn paint_loadout(gui: *mut u8, ship: usize, craft: usize) {
     set_bg(gui, 0, sprite.as_ptr(), read::<f32>(BG_MINUS_ONE), 0, -1);
 }
 
+/// The ship carries plane type `craft` and the player can still choose an armament for it (or already did): it gets a button.
+unsafe fn loadout_wanted(ship: usize, craft: usize) -> bool {
+    plane_loadouts::has_craft(ship, craft) && (!plane_loadouts::available_arms(ship, craft).is_empty() || plane_loadouts::choice(ship, craft).is_some())
+}
+
 /// Places, shows or hides the button of plane type `craft` of card `card` (1-based); true when it is shown.
 unsafe fn place_loadout(card: usize, craft: usize, ship: Option<usize>, pos: [f32; 2], size: f32) -> bool {
     let slot = craft * 9 + card; // 1-based button number
     let kept_slot = &LOADOUT_GUIS[slot - 1];
     let name = LOADOUT_NAMES[slot - 1];
-    let shown = ship.filter(|&s| plane_loadouts::has_craft(s, craft) && (!plane_loadouts::available_arms(s, craft).is_empty() || plane_loadouts::choice(s, craft).is_some()));
+    let shown = ship.filter(|&s| loadout_wanted(s, craft));
     if shown.is_none() && craft == 0 {
         if let Some(s) = ship {
             toggle_line(format!("PLANE button card {card} hidden: {}", plane_loadouts::describe(s)));
@@ -1189,7 +1230,7 @@ unsafe fn place_loadout(card: usize, craft: usize, ship: Option<usize>, pos: [f3
         refresh(ptr);
     }
     set_plane_label(slot, Some((pos[0], pos[1], size, plane_loadouts::label_for(craft, plane_loadouts::choice(ship, craft)))));
-    toggle_line(format!("PLANE button {slot}: ship {ship:#x} {} at ({:.0},{:.0}) size {size:.0}, choice {:?}", plane_loadouts::CRAFTS[craft].1, pos[0], pos[1], plane_loadouts::choice(ship, craft).map(|a| plane_loadouts::ARMS[a].key)));
+    toggle_line(format!("PLANE button {slot}: ship {ship:#x} {} at ({:.0},{:.0}) size {size:.0}, choice {:?}", plane_loadouts::crafts()[craft].label, pos[0], pos[1], plane_loadouts::choice(ship, craft).map(|a| plane_loadouts::arms()[a].key.clone())));
     true
 }
 
@@ -1287,7 +1328,7 @@ unsafe fn ensure_toggles() {
         let mut shown: Vec<usize> = Vec::new();
         for slot in 1..=9usize {
             let Some(&(x, _y, _, _)) = cards.get(slot - 1) else {
-                for craft in 0..plane_loadouts::CRAFTS.len() {
+                for craft in 0..plane_loadouts::crafts().len() {
                     place_loadout(slot, craft, None, [0.0, 0.0], 0.0);
                 }
                 continue;
@@ -1295,14 +1336,18 @@ unsafe fn ensure_toggles() {
             let gap = cards.get(slot).map(|n| n.0 - x);
             let dx = gap.map_or(TOGGLE_DX, |g| TOGGLE_DX.min(g * 0.5));
             let size = gap.map_or(TOGGLE_SIZE, |g| (g - NUMBER_WIDTH).clamp(TOGGLE_MIN_SIZE, TOGGLE_SIZE));
-            // plane buttons per card: T-7 under the ALLY button, LA-29 beside it
-            let psize = size; // the sprite is drawn at its own size: scaled down it is blurry
-            for craft in 0..plane_loadouts::CRAFTS.len() {
-                // below the ALLY button, in the clickable (blue) part of the screen; the banner above takes no clicks
-                // T-7 under the ALLY button; LA-29 in the ALLY row, right of it (under the button it would sit on the ship card, which takes the click)
-                let pos = if craft == 0 { [x + dx, GRID_Y + size + LOADOUT_GAP] } else { [x + dx + size + LOADOUT_GAP * 2.0, GRID_Y] };
-                if place_loadout(slot, craft, ships.get(slot - 1).map(|s| s.1), pos, psize) {
+            // plane buttons per card: ONE column right of the ALLY button, one row per plane type the ship carries (in the
+            // game's craft order), the first row level with the ALLY button and the rest below it, each label to its button's
+            // right so no two labels meet. The space under the column is free (user, 2026-10-25), so the buttons keep their
+            // size: six rows of 64 units fit between the ALLY row and the bottom edge of the panel.
+            let ship = ships.get(slot - 1).map(|s| s.1);
+            let psize = size;
+            let mut row = 0usize;
+            for craft in 0..plane_loadouts::crafts().len() {
+                let pos = [x + dx + size + LOADOUT_GAP * 2.0, GRID_Y + row as f32 * (psize + LOADOUT_GAP)];
+                if place_loadout(slot, craft, ship, pos, psize) {
                     shown.push(craft * 9 + slot);
+                    row += 1;
                 }
             }
         }
@@ -1599,7 +1644,7 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
         let now = now_ms();
         let (craft, card) = ((number.max(1) - 1) / 9, (number.max(1) - 1) % 9 + 1);
         let slot = number; // the label key
-        if button as u32 == 1 && (1..=18).contains(&number) && now.wrapping_sub(LAST_TOGGLE_MS.load(Ordering::Relaxed)) > 350 {
+        if button as u32 == 1 && (1..=54).contains(&number) && now.wrapping_sub(LAST_TOGGLE_MS.load(Ordering::Relaxed)) > 350 {
             LAST_TOGGLE_MS.store(now, Ordering::Relaxed);
             if let Some(&(_, ship)) = card_ship_list().get(card - 1) {
                 let next = plane_loadouts::next_choice(ship, craft);
@@ -1615,7 +1660,7 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
                 let vt: usize = read(gui);
                 let refresh: ResetFn = std::mem::transmute(read::<usize>(vt + 0x88));
                 refresh(gui as *mut u8);
-                toggle_line(format!("PLANE button clicked: slot {slot} ship {ship:#x} -> {:?}", next.map(|a| plane_loadouts::ARMS[a].key)));
+                toggle_line(format!("PLANE button clicked: slot {slot} ship {ship:#x} -> {:?}", next.map(|a| plane_loadouts::arms()[a].key.clone())));
             }
         }
         return true;

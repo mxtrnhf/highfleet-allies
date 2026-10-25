@@ -1,6 +1,6 @@
 [package]
 name = "hf-ally"
-version = "0.13.1"
+version = "0.13.2"
 edition = "2021"
 description = "Prototype: a player-side, AI-run ship in battle. v0.2 can spawn an AI wingman (spawn_ally, default off); the hooks otherwise only log (no behaviour change)."
 

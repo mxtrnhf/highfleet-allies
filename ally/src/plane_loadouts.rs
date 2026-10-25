@@ -8,12 +8,18 @@
 //!   that armament. Vanilla consumes no inventory for it; this mod charges the profile inventory (`Profile +0x540`,
 //!   a `std::map<string,int>`, the int at node `+0x40`) once per launch, and falls back to the gun-only loadout when the
 //!   stock is short.
-//! * The loadout table is hard-coded in the game (and can be rewritten by the qol `planes` option, which this module does
-//!   not follow): the counts below are the vanilla ones.
+//! * The loadout table (`PLANE_LOADOUTS`) and the craft list (`PLANE_TLL`) are filled once at startup, from code
+//!   (findings section 14). The armaments offered here are read from the live tables the first time they are needed, so
+//!   loadouts that another mod (or the qol `planes` option) added or re-priced follow; the vanilla list below is only the
+//!   fallback when the tables cannot be read. The crafts are read the same way (vanilla has T-7 and LA-29; qol `planes` can
+//!   register more, up to `MAX_CRAFTS`), and an item's class (bomb, rocket, K-13) comes from the game's ammo list.
 
-use std::sync::{
-    atomic::{AtomicBool, AtomicU32, Ordering},
-    Mutex,
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Mutex, OnceLock,
+    },
 };
 
 use patchy::{PatchSession, ReturnType, Trampoline};
@@ -37,59 +43,315 @@ const PROFILE_REMOVE: usize = 0x1_4029_3ad0;
 /// `GetPropertyLinkedObject(Property*)` -> the ship creature (what `precombatOk` does with a card's link).
 const LINKED_OBJECT: usize = 0x1_4021_b070;
 
-/// One armament: the loadout-name suffix, the inventory item, the button sprite and the item count per plane type.
+/// What a loadout does once armed; decides which of this module's behaviours it gets.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Kind {
+    Bombs,
+    Rockets,
+    /// carries an air-to-air missile (ammo class 5)
+    Aa,
+    /// parts this module knows nothing about: armed and charged, the game's own flight script
+    Other,
+}
+
+/// One armament: a loadout of the game's table with parts (the guns-only loadouts have none).
 pub struct Arm {
-    pub key: &'static str,
-    pub item: &'static str,
-    pub label: &'static str,
-    t7: i32,
-    la29: i32,
+    /// the loadout name (`LOADOUT_T7_FAB100`)
+    pub key: String,
+    /// the craft whose vector lists it (`CRAFT_T7`)
+    craft: String,
+    pub label: String,
+    /// (item name, count) of one plane
+    parts: Vec<(String, i32)>,
+    kind: Kind,
+}
+
+/// A plane type of the game's craft table (`PLANE_TLL`): vanilla T-7 and LA-29, and whatever a mod registered (qol `planes`).
+pub struct Craft {
+    /// the game name (`CRAFT_SB15`)
+    pub name: String,
+    /// the name on the button label (`SB-15`)
+    pub label: String,
+    /// the loadout that arms the plain gun: the craft's own loadout without parts, else a name the game does not know
+    /// (an unknown name arms the plain 37 mm gun, findings section 14.4)
+    guns_only: String,
 }
 
 /// Config `plane_k13`: offer the K-13 air-to-air choice on the carrier buttons (off by default, it is janky).
 pub static K13_ON: AtomicBool = AtomicBool::new(false);
 
-pub const ARMS: [Arm; 5] = [
-    Arm { key: "FAB100", item: "ITEM_FAB100", label: "BOMBS 100", t7: 4, la29: 2 },
-    Arm { key: "FAB250", item: "ITEM_FAB250", label: "BOMBS 250", t7: 2, la29: 1 },
-    Arm { key: "NURS122", item: "ITEM_NAR122", label: "ROCKETS 122", t7: 12, la29: 6 },
-    Arm { key: "NURS340", item: "ITEM_NAR340", label: "ROCKETS 340", t7: 2, la29: 0 },
-    Arm { key: "K13", item: "ITEM_K13", label: "AA K-13", t7: 2, la29: 0 },
+/// Plane types that get a button per card: one column of full-size buttons, six rows fit under the ALLY row.
+pub const MAX_CRAFTS: usize = 6;
+
+/// `PLANE_TLL`: `{ head*, size }` of an MSVC `std::map` CRAFT_* -> Plane (findings section 14).
+const PLANE_TLL: usize = 0x1_43a1_3c50;
+/// Craft node: key at `+0x20`, the loadout pointer vector (each points at a `GameLoadout`) at `+0x48/+0x50`.
+const TLL_VEC: (usize, usize) = (0x48, 0x50);
+/// `GameLoadout`: oid string `+0`, `vec_parts` begin / end `+0x40` / `+0x48`, stride 0x28 (name `+0`, count `+0x20`).
+const LO_PARTS: (usize, usize) = (0x40, 0x48);
+const PART_STRIDE: usize = 0x28;
+const PART_COUNT: usize = 0x20;
+/// The game's ammo list (qol `plane_guns.rs`, 1.163): `{ begin*, end* }` of `Ammo` records of 0x188 bytes, `reticle` (the
+/// class: 2 bombs, 3 rockets, 4 gun, 5 K-13) as the first int, the item name string at `+8`.
+const AMMO_LIST: usize = 0x1_43a1_3be0;
+const AMMO_SIZE: usize = 0x188;
+
+/// The vanilla table, used when the live one cannot be read: (loadout suffix, item, T-7 count, LA-29 count).
+const VANILLA: [(&str, &str, i32, i32); 5] = [
+    ("FAB100", "ITEM_FAB100", 4, 2),
+    ("FAB250", "ITEM_FAB250", 2, 1),
+    ("NURS122", "ITEM_NAR122", 12, 6),
+    ("NURS340", "ITEM_NAR340", 2, 0),
+    ("K13", "ITEM_K13", 2, 0),
 ];
+
 /// Button sprites (round icons of the old order menu): guns only / an armament chosen.
 pub const SPRITE_DEFAULT: &[u8] = b"order_unset\0";
 pub const SPRITE_CHOSEN: &[u8] = b"order_bombing_on\0";
 
-/// The plane types that get a button each: (game craft name, name on the label).
-pub const CRAFTS: [(&str, &str); 2] = [("CRAFT_T7", "T-7"), ("CRAFT_LA29", "LA-29")];
+/// The ammo class of an item: from the game's ammo list, else guessed from the vanilla names.
+fn class_of(item: &str, classes: &HashMap<String, i32>) -> Option<i32> {
+    classes.get(item).copied().or_else(|| {
+        if item.starts_with("ITEM_FAB") {
+            Some(2)
+        } else if item.starts_with("ITEM_NAR") {
+            Some(3)
+        } else if item == "ITEM_K13" {
+            Some(5)
+        } else {
+            None
+        }
+    })
+}
+
+fn classify(parts: &[(String, i32)], classes: &HashMap<String, i32>) -> Kind {
+    let has = |class: i32| parts.iter().any(|(n, _)| class_of(n, classes) == Some(class));
+    if has(5) {
+        Kind::Aa
+    } else if has(2) {
+        Kind::Bombs
+    } else if has(3) {
+        Kind::Rockets
+    } else {
+        Kind::Other
+    }
+}
+
+/// "ITEM_FAB250" -> "BOMBS 250", "ITEM_NAR122" -> "ROCKETS 122", "ITEM_K13" -> "AA K-13", else the name without "ITEM_".
+fn item_label(item: &str) -> String {
+    if let Some(n) = item.strip_prefix("ITEM_FAB") {
+        format!("BOMBS {n}")
+    } else if let Some(n) = item.strip_prefix("ITEM_NAR") {
+        format!("ROCKETS {n}")
+    } else if item == "ITEM_K13" {
+        "AA K-13".to_string()
+    } else {
+        item.strip_prefix("ITEM_AMMO_").or_else(|| item.strip_prefix("ITEM_")).unwrap_or(item).to_string()
+    }
+}
+
+/// "CRAFT_T7" -> "T-7", "CRAFT_LA29" -> "LA-29", "CRAFT_SB15" -> "SB-15", "CRAFT_X" -> "X".
+fn craft_label(name: &str) -> String {
+    let short = name.strip_prefix("CRAFT_").unwrap_or(name);
+    match short.find(|c: char| c.is_ascii_digit()) {
+        Some(i) if i > 0 && short[..i].chars().all(|c| c.is_ascii_alphabetic()) => format!("{}-{}", &short[..i], &short[i..]),
+        _ => short.to_string(),
+    }
+}
+
+fn make_arm(craft: &str, key: String, parts: Vec<(String, i32)>, classes: &HashMap<String, i32>) -> Arm {
+    let label = parts.iter().map(|(n, _)| item_label(n)).collect::<Vec<_>>().join(" + ");
+    Arm { kind: classify(&parts, classes), key, craft: craft.to_string(), label, parts }
+}
+
+fn make_craft(name: &str, guns_only: Option<String>) -> Craft {
+    let guns_only = guns_only.unwrap_or_else(|| format!("LOADOUT_{}_GUNS", name.strip_prefix("CRAFT_").unwrap_or(name)));
+    Craft { name: name.to_string(), label: craft_label(name), guns_only }
+}
+
+/// What the game's own vanilla table holds, used when the live one cannot be read.
+fn vanilla_table() -> Table {
+    let classes = HashMap::new();
+    let (mut crafts, mut arms) = (Vec::new(), Vec::new());
+    for (craft, short) in [("CRAFT_T7", "T7"), ("CRAFT_LA29", "LA29")] {
+        crafts.push(make_craft(craft, Some(format!("LOADOUT_{short}_GUN37"))));
+        for (suffix, item, t7, la29) in VANILLA {
+            let count = if craft == "CRAFT_T7" { t7 } else { la29 };
+            if count > 0 {
+                arms.push(make_arm(craft, format!("LOADOUT_{short}_{suffix}"), vec![(item.to_string(), count)], &classes));
+            }
+        }
+    }
+    Table { crafts, arms }
+}
+
+/// The in-order nodes of an MSVC `std::map` global (`{ head*, size }`); empty when it looks unfilled or unreadable.
+unsafe fn map_nodes(global: usize) -> Vec<usize> {
+    let (head, size): (usize, usize) = (rd(global), rd(global + 8));
+    if size == 0 || size > 4096 || !crate::plausible(head) {
+        return Vec::new();
+    }
+    let isnil = |n: usize| rd::<u8>(n + 0x19) != 0;
+    let mut out = Vec::new();
+    let mut node: usize = rd(head); // head->left = the leftmost node
+    while node != head && out.len() <= size {
+        if !crate::plausible(node) {
+            return Vec::new();
+        }
+        out.push(node);
+        let right: usize = rd(node + 0x10);
+        if crate::plausible(right) && !isnil(right) {
+            node = right;
+            loop {
+                let left: usize = rd(node);
+                if !crate::plausible(left) || isnil(left) {
+                    break;
+                }
+                node = left;
+            }
+        } else {
+            let mut parent: usize = rd(node + 8);
+            while crate::plausible(parent) && !isnil(parent) && node == rd::<usize>(parent + 0x10) {
+                node = parent;
+                parent = rd(node + 8);
+            }
+            node = parent;
+        }
+    }
+    if out.len() > size {
+        return Vec::new();
+    }
+    out
+}
+
+/// item name -> ammo class, from the game's ammo list (empty when it cannot be read: then the vanilla names decide).
+unsafe fn ammo_classes() -> HashMap<String, i32> {
+    let mut out = HashMap::new();
+    let (b, e): (usize, usize) = (rd(AMMO_LIST), rd(AMMO_LIST + 8));
+    if b < 0x10000 || e < b || (e - b) % AMMO_SIZE != 0 || (e - b) / AMMO_SIZE > 10_000 || !crate::plausible(b) {
+        return out;
+    }
+    for rec in (b..e).step_by(AMMO_SIZE) {
+        if let Some(name) = string_at(rec + 8) {
+            out.insert(name, rd::<i32>(rec));
+        }
+    }
+    out
+}
+
+/// The crafts and armaments read from the live tables: every craft in `PLANE_TLL` (the two vanilla ones first, so their
+/// button places stay as they were) and every loadout in its vector that has parts. `None` when the craft map is empty
+/// or unreadable (the tables are filled by `PrepareMainLoop`, and qol's `planes` option replaces them after that).
+unsafe fn read_table() -> Option<Table> {
+    let nodes = map_nodes(PLANE_TLL);
+    if nodes.is_empty() {
+        return None;
+    }
+    let classes = ammo_classes();
+    let mut named: Vec<(String, usize)> = nodes.iter().filter_map(|&n| Some((string_at(n + 0x20)?, n))).collect();
+    named.sort_by_key(|(name, _)| match name.as_str() {
+        "CRAFT_T7" => 0,
+        "CRAFT_LA29" => 1,
+        _ => 2,
+    });
+    named.truncate(MAX_CRAFTS);
+    let (mut crafts, mut arms) = (Vec::new(), Vec::new());
+    for (craft, node) in named {
+        let (b, e): (usize, usize) = (rd(node + TLL_VEC.0), rd(node + TLL_VEC.1));
+        if b < 0x10000 || e < b || (e - b) / 8 > 256 {
+            return None;
+        }
+        let mut guns_only: Option<String> = None;
+        for lo in (b..e).step_by(8).map(|a| rd::<usize>(a)) {
+            if !crate::plausible(lo) {
+                return None;
+            }
+            let (pb, pe): (usize, usize) = (rd(lo + LO_PARTS.0), rd(lo + LO_PARTS.1));
+            let key = string_at(lo).filter(|_| pe >= pb && (pe - pb) / PART_STRIDE <= 16)?;
+            let parts: Vec<(String, i32)> = (pb..pe)
+                .step_by(PART_STRIDE)
+                .filter_map(|p| Some((string_at(p)?, rd::<i32>(p + PART_COUNT))))
+                .filter(|(n, c)| !n.is_empty() && *c > 0)
+                .collect();
+            if parts.is_empty() {
+                if guns_only.is_none() || key.ends_with("GUN37") {
+                    guns_only = Some(key);
+                }
+            } else {
+                arms.push(make_arm(&craft, key, parts, &classes));
+            }
+        }
+        crafts.push(make_craft(&craft, guns_only));
+    }
+    Some(Table { crafts, arms })
+}
+
+struct Table {
+    crafts: Vec<Craft>,
+    arms: Vec<Arm>,
+}
+
+static LIVE_TABLE: OnceLock<Table> = OnceLock::new();
+static VANILLA_TABLE: OnceLock<Table> = OnceLock::new();
+
+/// The crafts and armaments, indexed by the `usize` choices of this module. The live table is read once, the first time
+/// it is readable (a choice index must not move afterwards); until then, and if it never is, the vanilla list.
+fn table() -> &'static Table {
+    if let Some(t) = LIVE_TABLE.get() {
+        return t;
+    }
+    if let Some(t) = unsafe { read_table() } {
+        let t = LIVE_TABLE.get_or_init(|| t);
+        log::info!(
+            "PLANE table read: crafts {:?}, armaments {:?}",
+            t.crafts.iter().map(|c| (c.name.as_str(), c.guns_only.as_str())).collect::<Vec<_>>(),
+            t.arms.iter().map(|x| (x.key.as_str(), x.kind)).collect::<Vec<_>>()
+        );
+        return t;
+    }
+    VANILLA_TABLE.get_or_init(vanilla_table)
+}
+
+pub fn arms() -> &'static [Arm] {
+    &table().arms
+}
+
+pub fn crafts() -> &'static [Craft] {
+    &table().crafts
+}
 
 /// The label drawn beside the button of plane type `craft`: what is chosen and how many of it the player still owns.
 pub unsafe fn label_for(craft: usize, choice: Option<usize>) -> String {
     match choice {
-        None => format!("{}: GUNS ONLY", CRAFTS[craft].1),
-        Some(a) => format!("{}: {} [{}]", CRAFTS[craft].1, ARMS[a].label, owned(ARMS[a].item)),
+        None => format!("{}: GUNS ONLY", crafts()[craft].label),
+        Some(a) => {
+            let arm = &arms()[a];
+            let stock = arm.parts.iter().map(|(n, _)| owned(n).to_string()).collect::<Vec<_>>().join("/");
+            format!("{}: {} [{}]", crafts()[craft].label, arm.label, stock)
+        }
     }
 }
 
 impl Arm {
-    /// Items one plane of `craft` needs for this armament (0 = the craft has no such loadout).
-    fn count(&self, craft: &str) -> i32 {
-        if self.key == "K13" && !K13_ON.load(Ordering::Relaxed) {
-            return 0; // `plane_k13` off: the K-13 choice is not offered
+    /// This armament is offered for planes of `craft` (the game name).
+    fn offered(&self, craft: &str) -> bool {
+        if self.craft != craft {
+            return false;
         }
-        match craft {
-            "CRAFT_T7" => self.t7,
-            "CRAFT_LA29" => self.la29,
-            _ => 0,
-        }
+        !(self.kind == Kind::Aa && !K13_ON.load(Ordering::Relaxed)) // `plane_k13` off: the K-13 choice is not offered
+    }
+
+    /// The player's stock covers one plane.
+    unsafe fn affordable(&self) -> bool {
+        self.parts.iter().all(|(n, c)| owned(n) >= *c)
+    }
+
+    fn short_text(&self) -> String {
+        self.parts.iter().map(|(n, c)| format!("{n} x{c}")).collect::<Vec<_>>().join(", ")
     }
 }
 
-fn loadout_name(craft: &str, arm: &str) -> Option<String> {
-    Some(format!("LOADOUT_{}_{}", craft.strip_prefix("CRAFT_")?, arm))
-}
-
-/// (ship creature, index into `CRAFTS`, index into `ARMS`) chosen on the pre-combat screen.
+/// (ship creature, index into `crafts()`, index into `arms()`) chosen on the pre-combat screen.
 static CHOICE: Mutex<Vec<(usize, usize, usize)>> = Mutex::new(Vec::new());
 /// (plane part, game time of its last charge): the same launch must not be charged twice.
 static CHARGED: Mutex<Vec<(usize, f64)>> = Mutex::new(Vec::new());
@@ -190,17 +452,18 @@ pub unsafe fn ship_of_link(link: usize) -> usize {
     f(link)
 }
 
-/// Armaments (indices into `ARMS`) the player can afford for one plane of type `craft` (index into `CRAFTS`) of `ship`.
+/// Armaments (indices into `arms()`) the player can afford for one plane of type `craft` (index into `crafts()`) of `ship`.
 pub unsafe fn available_arms(ship: usize, craft: usize) -> Vec<usize> {
     if !has_craft(ship, craft) {
         return Vec::new();
     }
-    (0..ARMS.len()).filter(|&i| ARMS[i].count(CRAFTS[craft].0) > 0 && owned(ARMS[i].item) >= ARMS[i].count(CRAFTS[craft].0)).collect()
+    let arms = arms();
+    (0..arms.len()).filter(|&i| arms[i].offered(&crafts()[craft].name) && arms[i].affordable()).collect()
 }
 
 /// The ship carries at least one plane of type `craft`.
 pub unsafe fn has_craft(ship: usize, craft: usize) -> bool {
-    planes_of(ship).iter().any(|p| string_at(*p + OFF_CRAFT).as_deref() == Some(CRAFTS[craft].0))
+    planes_of(ship).iter().any(|p| string_at(*p + OFF_CRAFT).as_deref() == Some(crafts()[craft].name.as_str()))
 }
 
 /// One line for the log: why the button is or is not shown for `ship` (plane parts and crafts, the profile inventory).
@@ -209,16 +472,18 @@ pub unsafe fn describe(ship: usize) -> String {
         return format!("card link gives {ship:#x}, not a creature");
     }
     let planes = planes_of(ship);
-    let crafts: Vec<String> = planes.iter().filter_map(|p| string_at(*p + OFF_CRAFT)).collect();
+    let on_ship: Vec<String> = planes.iter().filter_map(|p| string_at(*p + OFF_CRAFT)).collect();
+    let available: Vec<String> = (0..crafts().len())
+        .map(|c| format!("{} {:?}", crafts()[c].label, available_arms(ship, c).iter().map(|&a| arms()[a].key.as_str()).collect::<Vec<_>>()))
+        .collect();
     let (count, begin, end): (u32, usize, usize) = (rd(ship + 0x17dc), rd(ship + OFF_PLANES.0), rd(ship + OFF_PLANES.1));
-    let inv: Vec<String> = ARMS.iter().map(|a| format!("{}={}", a.item, owned(a.item))).collect();
+    let inv: Vec<String> = arms().iter().flat_map(|a| a.parts.iter().map(|(n, _)| format!("{n}={}", owned(n)))).collect();
     format!(
-        "ship {ship:#x} class {:#x} plane_count(+0x17dc)={count} vector {begin:#x}..{end:#x} parts {} crafts {:?} available T-7 {:?} LA-29 {:?} | stock [{}]",
+        "ship {ship:#x} class {:#x} plane_count(+0x17dc)={count} vector {begin:#x}..{end:#x} parts {} crafts {:?} available {} | stock [{}]",
         rd::<u8>(ship + 0x28),
         planes.len(),
-        crafts,
-        available_arms(ship, 0).iter().map(|&a| ARMS[a].key).collect::<Vec<_>>(),
-        available_arms(ship, 1).iter().map(|&a| ARMS[a].key).collect::<Vec<_>>(),
+        on_ship,
+        available.join(", "),
         inv.join(" ")
     )
 }
@@ -299,26 +564,24 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
     let craft_name = string_at(plane + OFF_CRAFT);
     let picked = choices
         .iter()
-        .find(|(s, c, _)| *s == owner && craft_name.as_deref() == Some(CRAFTS[*c].0))
+        .find(|(s, c, _)| *s == owner && craft_name.as_deref() == Some(crafts()[*c].name.as_str()))
         .map(|(_, _, a)| *a);
     if n < 40 || picked.is_some() {
         log::info!(
             "PLANE arm #{n}: plane={plane:#x} owner={owner:#x} craft={:?} loadout now={:?} chosen={:?}",
             string_at(plane + OFF_CRAFT),
             string_at(plane + OFF_LOADOUT),
-            picked.map(|a| ARMS[a].key)
+            picked.map(|a| arms()[a].key.as_str())
         );
     }
     let Some(arm_i) = picked else {
         drop(choices);
         // no choice = "GUNS ONLY": the game would otherwise roll a loadout from the weights in `qol.json` (bombs, rockets, K-13)
         if crate::ARMED.load(Ordering::Relaxed) && crate::plausible(owner) && rd::<f32>(owner + 0xad4) > 0.0 && rd::<usize>(plane + OFF_LOGIC) == 0 {
-            if let Some(name) = craft_name.as_deref().and_then(|c| loadout_name(c, "GUN37")) {
-                if CRAFTS.iter().any(|(c, _)| Some(*c) == craft_name.as_deref()) {
-                    write_loadout(plane, &name);
-                    no_rockets(plane);
-                    log::info!("PLANE arm #{n}: no choice, {} set to {name} (guns only)", craft_name.as_deref().unwrap_or("?"));
-                }
+            if let Some(c) = crafts().iter().find(|c| Some(c.name.as_str()) == craft_name.as_deref()) {
+                write_loadout(plane, &c.guns_only);
+                no_rockets(plane);
+                log::info!("PLANE arm #{n}: no choice, {} set to {} (guns only)", c.name, c.guns_only);
             }
         }
         return;
@@ -333,40 +596,43 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
         return;
     }
     let Some(craft) = string_at(plane + OFF_CRAFT) else { return };
-    let arm = &ARMS[arm_i];
-    let need = arm.count(&craft);
-    if need == 0 {
+    let arm = &arms()[arm_i];
+    if !arm.offered(&craft) {
         return; // this craft has no such loadout: it keeps its own
     }
-    let (Some(wanted), Some(fallback)) = (loadout_name(&craft, arm.key), loadout_name(&craft, "GUN37")) else { return };
+    let Some(fallback) = crafts().iter().find(|c| c.name == craft).map(|c| c.guns_only.clone()) else { return };
+    let wanted = arm.key.clone();
     let now = crate::read::<f64>(crate::CLOCK);
-    let have = owned(arm.item);
     let Ok(mut charged) = CHARGED.try_lock() else { return };
     let repeat = charged.iter().any(|(p, t)| *p == plane && (now - *t).abs() < SAME_LAUNCH_S);
     if !repeat {
-        if have < need {
-            log::info!("PLANE arm: {} short ({have} < {need}), {craft} keeps guns only", arm.item);
+        if !arm.affordable() {
+            log::info!("PLANE arm: {wanted} short (needs {}), {craft} keeps guns only", arm.short_text());
             write_loadout(plane, &fallback);
             return;
         }
-        take(arm.item, need);
+        let before: Vec<i32> = arm.parts.iter().map(|(n, _)| owned(n)).collect();
+        for (n, c) in &arm.parts {
+            take(n, *c);
+        }
         charged.retain(|(_, t)| now - *t < 60.0);
         charged.push((plane, now));
         let total = CHARGES.fetch_add(1, Ordering::Relaxed) + 1;
-        log::info!("PLANE arm: {craft} takes {} x{need}: stock {have} -> {} (charge #{total})", arm.item, owned(arm.item));
+        let after: Vec<i32> = arm.parts.iter().map(|(n, _)| owned(n)).collect();
+        log::info!("PLANE arm: {craft} takes {}: stock {before:?} -> {after:?} (charge #{total})", arm.short_text());
     }
     write_loadout(plane, &wanted);
-    if arm.key == "K13" {
+    if arm.kind == Kind::Aa {
         no_rockets(plane);
         if let Ok(mut a) = AA.try_lock() {
             a.retain(|p| p.0 != plane);
             a.push((plane, owner, now));
         }
     }
-    if matches!(arm.key, "FAB100" | "FAB250" | "NURS122" | "NURS340") {
+    if arm.kind != Kind::Aa {
         if let Ok(mut w) = WATCH.try_lock() {
             w.retain(|e| e.0 != plane);
-            w.push((plane, arm.key.starts_with("FAB"), false, now));
+            w.push((plane, arm.kind == Kind::Bombs, false, now));
         }
     }
     if let Ok(mut v) = VERIFY.try_lock() {
@@ -924,5 +1190,55 @@ pub unsafe fn install_aa_limits(session: &mut PatchSession, range: f32, angle: f
             Ok(_) => log::info!("hf_ally: K-13 alignment tolerance {angle:.3} rad (was 0.1745)"),
             Err(e) => log::warn!("hf_ally: K-13 alignment patch failed: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vanilla_fallback_matches_the_game_table() {
+        let t = vanilla_table();
+        assert_eq!(t.crafts.iter().map(|c| (c.name.as_str(), c.label.as_str(), c.guns_only.as_str())).collect::<Vec<_>>(), [("CRAFT_T7", "T-7", "LOADOUT_T7_GUN37"), ("CRAFT_LA29", "LA-29", "LOADOUT_LA29_GUN37")]);
+        let of = |craft: &str| t.arms.iter().filter(|a| a.craft == craft).map(|a| (a.key.as_str(), a.parts[0].1)).collect::<Vec<_>>();
+        assert_eq!(of("CRAFT_T7"), [("LOADOUT_T7_FAB100", 4), ("LOADOUT_T7_FAB250", 2), ("LOADOUT_T7_NURS122", 12), ("LOADOUT_T7_NURS340", 2), ("LOADOUT_T7_K13", 2)]);
+        assert_eq!(of("CRAFT_LA29"), [("LOADOUT_LA29_FAB100", 2), ("LOADOUT_LA29_FAB250", 1), ("LOADOUT_LA29_NURS122", 6)]);
+    }
+
+    #[test]
+    fn labels_and_kinds() {
+        let none = HashMap::new();
+        let a = make_arm("CRAFT_T7", "LOADOUT_T7_X".into(), vec![("ITEM_FAB250".into(), 1), ("ITEM_NAR122".into(), 6)], &none);
+        assert_eq!(a.label, "BOMBS 250 + ROCKETS 122");
+        assert_eq!(a.kind, Kind::Bombs);
+        assert_eq!(make_arm("CRAFT_T7", "k".into(), vec![("ITEM_K13".into(), 2)], &none).kind, Kind::Aa);
+        assert_eq!(make_arm("CRAFT_T7", "k".into(), vec![("ITEM_NEW".into(), 1)], &none).kind, Kind::Other);
+        assert_eq!(item_label("ITEM_NEW"), "NEW");
+    }
+
+    /// The Hara Vera bomber: its ROCKET loadout is `ITEM_AMMO_300MM_INC`, a rocket (ammo class 3) with no FAB / NAR in the name.
+    #[test]
+    fn class_comes_from_the_ammo_list_not_the_name() {
+        let mut classes = HashMap::new();
+        classes.insert("ITEM_AMMO_300MM_INC".to_string(), 3);
+        classes.insert("ITEM_SPECIAL_AA".to_string(), 5);
+        let rocket = make_arm("CRAFT_SB15", "LOADOUT_SB15_ROCKET".into(), vec![("ITEM_AMMO_300MM_INC".into(), 1)], &classes);
+        assert_eq!(rocket.kind, Kind::Rockets);
+        assert_eq!(rocket.label, "300MM_INC");
+        // the list wins over a misleading name, and an unknown item without a list is Other
+        assert_eq!(make_arm("CRAFT_X", "k".into(), vec![("ITEM_SPECIAL_AA".into(), 1)], &classes).kind, Kind::Aa);
+        assert_eq!(make_arm("CRAFT_SB15", "k".into(), vec![("ITEM_AMMO_300MM_INC".into(), 1)], &HashMap::new()).kind, Kind::Other);
+    }
+
+    #[test]
+    fn craft_labels_and_the_guns_only_fallback() {
+        assert_eq!(craft_label("CRAFT_T7"), "T-7");
+        assert_eq!(craft_label("CRAFT_LA29"), "LA-29");
+        assert_eq!(craft_label("CRAFT_SB15"), "SB-15");
+        assert_eq!(craft_label("CRAFT_MIG"), "MIG");
+        // a craft without a parts-free loadout (the SB-15) gets a name the game does not know: it arms the plain gun
+        assert_eq!(make_craft("CRAFT_SB15", None).guns_only, "LOADOUT_SB15_GUNS");
+        assert_eq!(make_craft("CRAFT_SB15", Some("LOADOUT_SB15_GUN".into())).guns_only, "LOADOUT_SB15_GUN");
     }
 }
