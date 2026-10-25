@@ -525,6 +525,15 @@ unsafe extern "C" fn init() -> bool {
 mod tests {
     use super::*;
 
+    /// Writes the full default config to the path in `HF_DUMP_CONFIG` (used to produce the example config of the release pack).
+    #[test]
+    #[ignore]
+    fn dump_default_config() {
+        if let Ok(path) = std::env::var("HF_DUMP_CONFIG") {
+            std::fs::write(path, serde_json::to_string_pretty(&Config::default()).unwrap()).unwrap();
+        }
+    }
+
     #[test]
     fn old_config_without_ai_flares_loads_with_it_off() {
         let config: Config = serde_json::from_str(r#"{"enabled": true, "log_steering": false}"#).unwrap();

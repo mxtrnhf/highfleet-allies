@@ -16,6 +16,9 @@ Both are optional, independent DLLs. Everything is reverse-engineered, so **Stea
 3. **QoL mod.** The mods need logdot's [highfleet-qol](https://github.com/logdot/highfleet-qol) for its **flare crash fix** (a 1.163 crash when a proximity-fused missile meets a flare; `hf_ai` drops far more flares than the stock game). **His stock release (v1.3.0) works fine with our mods**: if you already run it, keep it. The pack also ships our build, `Modloader/mods/highfleet_qol.dll`, built from the [`qol/`](qol) folder: logdot's current `main` plus our manual elevation. It adds only features **that are not in his latest release yet**: refuel rate and speed curve (merged into his `main`, no release since) and elevation (our [pull request #20](https://github.com/logdot/highfleet-qol/pull/20), still a draft). It replaces his DLL if you copy it over; once he cuts a release with these, use his release and drop ours. Keep `enable_flare_crash_fix` on (the default). `hf_ai` logs a warning at start-up if QoL is missing or set up wrongly. Use only **one** `hf_ally` DLL in `Modloader/mods`.
 4. Settings are JSON files in `Modloader/config/` (`ally.json`, `hf_ai.json`), written with defaults on first run. `"enabled": false` turns a mod off.
 
+## Settings
+Every setting is already in the config files of the pack, so there is nothing to discover: [`docs/ally-config.md`](docs/ally-config.md) (hf_ally, every key), [`docs/hf-ai-config-reference.md`](docs/hf-ai-config-reference.md) (hf_ai, every key) with the plain-language [`docs/hf-ai-tuning-guide.md`](docs/hf-ai-tuning-guide.md), and [`docs/qol-guide.md`](docs/qol-guide.md) (refuel, speed formulas and manual elevation, for the QoL build).
+
 ## Build (developers)
 Rust nightly/stable ≥ 1.88 with `cargo-xwin` (cross-compiles to Windows MSVC from Linux; works on Windows too):
 

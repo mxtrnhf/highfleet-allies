@@ -2706,3 +2706,17 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     }
     session.install_permanently().map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Writes the full default config to the path in `HF_DUMP_CONFIG` (used to produce the example config of the release pack).
+    #[test]
+    #[ignore]
+    fn dump_default_config() {
+        if let Ok(path) = std::env::var("HF_DUMP_CONFIG") {
+            std::fs::write(path, serde_json::to_string_pretty(&Config::default()).unwrap()).unwrap();
+        }
+    }
+}
