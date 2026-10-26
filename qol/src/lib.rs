@@ -197,6 +197,9 @@ unsafe extern "C" fn version(version: *const c_char) -> bool {
         version == "Steam 1.151"
     } else if cfg!(feature = "1_163") {
         version == "Steam 1.163"
+    } else if version == "Steam 1.163" {
+        // Combined build: other features are gated at run time by GAME_IS_STEAM_1_163.
+        true
     } else if version == "Gog 1.163" {
         log::error!("Gog 1.163 detected");
         log::error!("Your game will crash. QOL only supports steam versions of the game.");
