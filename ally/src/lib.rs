@@ -560,6 +560,9 @@ unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
         if let Ok(mut v) = AMMO_ROLLED.lock() {
             v.clear();
         }
+        if let Ok(mut v) = AMMO_FUNDING.lock() {
+            v.clear();
+        }
         USED_MASK.store(0, Ordering::Relaxed);
         LAST_DEPLOY.store(0, Ordering::Relaxed);
         BATTLE_LOGGED.store(false, Ordering::Relaxed);
@@ -834,6 +837,9 @@ static ALLIES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 static AMMO_ON: AtomicBool = AtomicBool::new(false);
 /// Allies that have had their ammunition doctrine rolled this battle.
 static AMMO_ROLLED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+/// Per-gun ammo index and extra index that the battle reserve was funded with, recorded when the ally is
+/// deployed (before the AI starts re-setting `+0x850`). `(creature, gun, index, extra_index)`.
+static AMMO_FUNDING: Mutex<Vec<(usize, usize, i32, i32)>> = Mutex::new(Vec::new());
 static LAST_DEPLOY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static BATTLE_LOGGED: AtomicBool = AtomicBool::new(false);
 static SUM_SPAWNED: AtomicU32 = AtomicU32::new(0);
@@ -990,6 +996,13 @@ static INSPECT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 /// ammoSelectButtonPress? (0x14026f880): rebuilds the native ammo selector after a press.
 const AMMO_PRESS: usize = 0x1_4026_f880;
 const AMMO_PRESS_STOLEN: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10];
+/// ReturnCreatureGunAmmoToInventory (0x1402698c0, RCX = creature): the end-of-battle refund. It credits each gun's whole
+/// pool (`+0x858` i32, `+0x85c` i32, `+0x860` f32, `+0x868` i32) to the gun's CURRENT ammo index in the profile when that
+/// ammo has a price. Every gun starts the battle with a free 9999-round pool of its base shell (InitBattleGunAmmoReserves
+/// 0x14025fa30), so an ally switched to AP / proximity by `ally_ammo` would mint 9999 priced rounds per gun.
+const REFUND: usize = 0x1_4026_98c0;
+const REFUND_STOLEN: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10];
+const REFUND_GUN_LISTS: [usize; 2] = [0x13a8, 0x13c0];
 static PRECOMBAT_BUILDS: AtomicU32 = AtomicU32::new(0);
 
 /// A NUL-terminated ASCII name at `address`, at most 48 bytes, printable only.
@@ -1365,7 +1378,45 @@ unsafe fn ensure_toggles() {
 /// Per-frame check while the pre-combat screen is up (called from the game thread by two hooks): when the cards
 /// have been standing still for a moment and not where the buttons were placed for, place the buttons again.
 /// Waiting for the cards to settle keeps the buttons from jumping while a card is being dragged.
+/// How long (ms) the player's cards may be missing before the pre-combat screen counts as gone (a ship swap rebuilds them).
+const SCREEN_GONE_MS: u64 = 1500;
+static CARDS_MISSING_SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// True (after hiding our elements) when the pre-combat screen has been torn down without a click we saw (Esc then quit,
+/// a save load, a scene change): `PRECOMBAT_LIVE` would stay set and our text would be drawn over the city view.
+unsafe fn screen_gone() -> bool {
+    if !PRECOMBAT_LIVE.load(Ordering::Relaxed) {
+        return false;
+    }
+    if !card_elements(true).is_empty() {
+        CARDS_MISSING_SINCE.store(0, Ordering::Relaxed);
+        return false;
+    }
+    let now = now_ms();
+    let since = CARDS_MISSING_SINCE.load(Ordering::Relaxed);
+    if since == 0 {
+        CARDS_MISSING_SINCE.store(now, Ordering::Relaxed);
+        return false;
+    }
+    if now.wrapping_sub(since) < SCREEN_GONE_MS {
+        return false;
+    }
+    CARDS_MISSING_SINCE.store(0, Ordering::Relaxed);
+    hide_toggles("screen gone");
+    true
+}
+
+/// The Esc menu's dimming shade (`QUIT_BLACK`, built by 0x1401ecb10) is a GUI element, drawn under our seam text: while
+/// it exists the text would stay bright, so it is not drawn.
+unsafe fn esc_menu_open() -> bool {
+    let find: FindFn = std::mem::transmute(GUI_FIND);
+    find(b"QUIT_BLACK\0".as_ptr()) != 0
+}
+
 unsafe fn precombat_tick(source: usize) {
+    if screen_gone() {
+        return;
+    }
     if !PRECOMBAT_LIVE.load(Ordering::Relaxed) {
         return;
     }
@@ -1441,7 +1492,7 @@ unsafe fn draw_marker(seam: u32) {
 /// The plane buttons' labels, drawn the same way as the slot-1 text and under the same gates.
 unsafe fn draw_plane_labels(seam: u32) {
     let _hook = diag::scope("draw_plane_labels");
-    if seam != MARKER_SEAM_SEL.load(Ordering::Relaxed) || !PRECOMBAT_LIVE.load(Ordering::Relaxed) || doors_closed() {
+    if seam != MARKER_SEAM_SEL.load(Ordering::Relaxed) || !PRECOMBAT_LIVE.load(Ordering::Relaxed) || screen_gone() || esc_menu_open() || doors_closed() {
         return;
     }
     let Ok(labels) = PLANE_LABELS.try_lock().map(|l| l.clone()) else { return };
@@ -1479,7 +1530,7 @@ unsafe fn draw_marker_text(seam: u32) {
     if seam != MARKER_SEAM_SEL.load(Ordering::Relaxed) || now_ms().wrapping_sub(ENTRY_MS.load(Ordering::Relaxed)) < MARKER_DELAY_MS.load(Ordering::Relaxed) {
         return;
     }
-    if !PRECOMBAT_LIVE.load(Ordering::Relaxed) || !MARKER_SHOW.load(Ordering::Relaxed) {
+    if !PRECOMBAT_LIVE.load(Ordering::Relaxed) || !MARKER_SHOW.load(Ordering::Relaxed) || screen_gone() || esc_menu_open() {
         return;
     }
     let Ok(text) = MARKER_TEXT.lock().map(|t| t.clone()) else { return };
@@ -1571,6 +1622,82 @@ unsafe fn hide_toggles(why: &str) {
 fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// Remembers the ammo indices each gun of a freshly deployed ally was funded with. The AI controller re-sets
+/// `+0x850` every tick from the doctrine flags, so by the end of the battle the index no longer says what the
+/// reserve was bought as (or that it was the free 9999 base pool).
+unsafe fn record_ammo_funding(creature: usize) -> usize {
+    let mut n = 0;
+    let Ok(mut funding) = AMMO_FUNDING.lock() else { return 0 };
+    for list in REFUND_GUN_LISTS {
+        let (b, e): (usize, usize) = (read(creature + list), read(creature + list + 8));
+        if b < 0x10000 || e < b || (e - b) / 0x18 > 64 {
+            continue;
+        }
+        for a in (b..e).step_by(0x18) {
+            let gun: usize = read(a + 8);
+            if !plausible(gun) {
+                continue;
+            }
+            let entry = (creature, gun, read::<i32>(gun + 0x850), read::<i32>(gun + 0x854));
+            if let Some(slot) = funding.iter_mut().find(|r| r.1 == gun) {
+                *slot = entry;
+            } else {
+                funding.push(entry);
+            }
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Entry hook of the refund: for a creature whose ammo doctrine we rolled, put every gun back on the ammo
+/// index its reserve was funded with, so the original credits paid rounds under the right type and credits
+/// nothing for the free 9999 base pool.
+///
+/// It must not touch the pre-combat screen: the same fleet ship keeps its pointer across battles and is only
+/// dropped from `AMMO_ROLLED` at the next battle start, while the game refunds a ship's guns every time the
+/// player picks an ammo type there. Zeroing then threw away the share the player had just chosen (ammo
+/// vanished from the inventory when the same type was picked for the player and the ally).
+unsafe extern "C" fn on_refund(creature: usize) {
+    let _hook = diag::scope("on_refund");
+    let ours = AMMO_ROLLED.lock().map_or(false, |v| v.contains(&creature));
+    if !ours {
+        return;
+    }
+    if PRECOMBAT_LIVE.load(Ordering::Relaxed) || !card_elements(true).is_empty() {
+        return;
+    }
+    let Ok(funding) = AMMO_FUNDING.lock() else { return };
+    let (mut restored, mut unrecorded) = (0, 0);
+    for list in REFUND_GUN_LISTS {
+        let (b, e): (usize, usize) = (read(creature + list), read(creature + list + 8));
+        if b < 0x10000 || e < b || (e - b) / 0x18 > 64 {
+            continue;
+        }
+        for a in (b..e).step_by(0x18) {
+            let gun: usize = read(a + 8);
+            if !plausible(gun) {
+                continue;
+            }
+            if let Some(&(_, _, index, extra)) = funding.iter().find(|r| r.0 == creature && r.1 == gun) {
+                (gun as *mut i32).byte_add(0x850).write_unaligned(index);
+                (gun as *mut i32).byte_add(0x854).write_unaligned(extra);
+                restored += 1;
+            } else {
+                // no funding index (should not happen for an ally we deployed): keep the old safeguard
+                for off in [0x858, 0x85c, 0x868] {
+                    ((gun + off) as *mut i32).write_unaligned(0);
+                }
+                ((gun + 0x860) as *mut f32).write_unaligned(0.0);
+                unrecorded += 1;
+            }
+        }
+    }
+    log::info!(
+        "ALLY refund: c={creature:#x} {restored} guns restored to their funded ammo index, {unrecorded} without a record emptied"
+    );
 }
 
 unsafe extern "C" fn on_ammo_press() {
@@ -2388,6 +2515,10 @@ unsafe extern "C" fn on_battle_tick() {
     }
     let Some(&ally) = after.last() else { return };
 
+    // Record the ammo the reserve was funded with before the AI controller starts re-setting `+0x850`.
+    let funded = record_ammo_funding(ally);
+    log::info!("ALLY ammo funding: c={ally:#x} recorded the funded ammo index of {funded} guns");
+
     // hand it back to the stock AI: not controlled (AI flag on), no control slot, wingman mode
     set_controlled(get_profile(), 0, ALLY_SLOT as u32);
     set_link(CONTROLLED_LINKS + ALLY_SLOT * 0x18, 0);
@@ -2659,6 +2790,23 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
         } else {
             log::warn!("hf_ally: ammoSelectButtonPress? bytes differ, not hooked");
+        }
+    }
+    if config.ally_ai_ammo && config.spawn_ally {
+        let found = std::slice::from_raw_parts(REFUND as *const u8, REFUND_STOLEN.len());
+        if found == REFUND_STOLEN {
+            let mut trampoline = Trampoline::new();
+            trampoline.bytes(&[0x48, 0x83, 0xec, 0x08]);
+            trampoline.preserved_call(on_refund as *const (), &[], &[], ReturnType::None);
+            trampoline.bytes(&[0x48, 0x83, 0xc4, 0x08]);
+            trampoline.bytes(&REFUND_STOLEN);
+            trampoline.relative_jump(REFUND + REFUND_STOLEN.len());
+            session
+                .detour_trampoline(REFUND, REFUND_STOLEN.len(), trampoline)
+                .map_err(|e| e.to_string())?;
+        } else {
+            log::warn!("hf_ally: refund function bytes differ ({found:02x?}), not hooked: allies on AP / proximity would credit free ammo");
+            AMMO_ON.store(false, Ordering::Relaxed);
         }
     }
     LOG_PRECOMBAT.store(config.log_precombat || diag::debug(), Ordering::Relaxed);
