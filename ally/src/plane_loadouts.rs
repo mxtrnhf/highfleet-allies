@@ -598,6 +598,8 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
     drop(choices);
     // the game arms a plane only while it has no AircraftLogic (+0xa20); otherwise the loadout name is ignored
     if rd::<usize>(plane + OFF_LOGIC) != 0 {
+        // still keep the vanilla class-3 stock draw off it: the chosen loadout is what it carries
+        no_rockets(plane);
         log::info!("PLANE arm: plane {plane:#x} already has its logic, loadout ignored by the game: nothing charged");
         return;
     }
@@ -618,6 +620,7 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
         if !arm.affordable() {
             log::info!("PLANE arm: {wanted} short (needs {}), {craft} keeps guns only", arm.short_text());
             write_loadout(plane, &fallback);
+            no_rockets(plane);
             return;
         }
         let before: Vec<i32> = arm.parts.iter().map(|(n, _)| owned(n)).collect();
@@ -631,8 +634,10 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
         log::info!("PLANE arm: {craft} takes {}: stock {before:?} -> {after:?} (charge #{total})", arm.short_text());
     }
     write_loadout(plane, &wanted);
+    // The chosen loadout is the whole armament: stop the vanilla class-3 stock draw from topping a FAB loadout up with
+    // NAR-122 from the craft's other loadout (seen in a Shipworks test fight: FAB100 plane also carried 6 rockets).
+    no_rockets(plane);
     if arm.kind == Kind::Aa {
-        no_rockets(plane);
         if let Ok(mut a) = AA.try_lock() {
             a.retain(|p| p.0 != plane);
             a.push((plane, owner, now));
@@ -641,7 +646,10 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
     if arm.kind != Kind::Aa {
         if let Ok(mut w) = WATCH.try_lock() {
             w.retain(|e| e.0 != plane);
-            let gunpod = matches!(arm.kind, Kind::Bombs | Kind::Rockets);
+            // `extra_gunpod` is for the two vanilla carrier planes only. Custom crafts (SB-15 etc.) keep their own
+            // loadout: if a custom plane was not given a gun in its loadout, it must not suddenly get one.
+            let gunpod = matches!(arm.kind, Kind::Bombs | Kind::Rockets)
+                && matches!(craft.as_str(), "CRAFT_T7" | "CRAFT_LA29");
             w.push((plane, arm.kind == Kind::Bombs, gunpod, false, now));
         }
     }
@@ -694,25 +702,36 @@ unsafe fn install_gunpod(logic: usize) -> bool {
     if begin < 0x10000 || end <= begin || (end - begin) / AMMO_SIZE > 64 {
         return false;
     }
+    // Prefer the vanilla 37 mm. A mod may replace/rename it, so fall back to the first class-4 (aircraft gun) ammo.
+    let mut pick: Option<(usize, i32, String)> = None;
     for rec in (begin..end).step_by(AMMO_SIZE) {
-        if string_at(rec + 8).as_deref() != Some("ITEM_GUN37") {
-            continue;
+        let name = string_at(rec + 8).unwrap_or_default();
+        if name == "ITEM_GUN37" {
+            pick = Some((rec, 4, name));
+            break;
         }
-        let index = ((rec - begin) / AMMO_SIZE) as i32;
-        let delay = rd::<f32>(rec + 0x17c);
-        let magazine = rd::<i32>(rec + 0x180).clamp(1, 999);
-        let reserve = (50 - magazine).max(0);
-        (logic as *mut i32).byte_add(0x1a4).write_unaligned(index);
-        (logic as *mut f32).byte_add(0xa0).write_unaligned(2.0);
-        (logic as *mut f32).byte_add(0xa8).write_unaligned(delay);
-        (logic as *mut i32).byte_add(0xb0).write_unaligned(magazine);
-        (logic as *mut i32).byte_add(0xac).write_unaligned(magazine);
-        (logic as *mut i32).byte_add(0xb4).write_unaligned(reserve);
-        log::info!("PLANE gunpod: logic {logic:#x} armed with ITEM_GUN37 (index {index}, magazine {magazine}, reserve {reserve}) in Combat.seria");
-        return true;
+        if pick.is_none() && rd::<i32>(rec) == 4 {
+            pick = Some((rec, 4, name));
+        }
     }
-    log::warn!("PLANE gunpod: ITEM_GUN37 not found in the ammo list; logic {logic:#x} stays without a gun");
-    false
+    let Some((rec, class, name)) = pick else {
+        log::warn!("PLANE gunpod: ITEM_GUN37 and no class-4 gun in the ammo list; logic {logic:#x} stays without a gun");
+        return false;
+    };
+    let index = ((rec - begin) / AMMO_SIZE) as i32;
+    let delay = rd::<f32>(rec + 0x17c);
+    let magazine = rd::<i32>(rec + 0x180).clamp(1, 999);
+    let reserve = (50 - magazine).max(0);
+    (logic as *mut i32).byte_add(0x1a4).write_unaligned(index);
+    (logic as *mut f32).byte_add(0xa0).write_unaligned(2.0);
+    (logic as *mut f32).byte_add(0xa8).write_unaligned(delay);
+    (logic as *mut i32).byte_add(0xb0).write_unaligned(magazine);
+    (logic as *mut i32).byte_add(0xac).write_unaligned(magazine);
+    (logic as *mut i32).byte_add(0xb4).write_unaligned(reserve);
+    log::info!(
+        "PLANE gunpod: logic {logic:#x} armed with {name} (class {class}, index {index}, magazine {magazine}, reserve {reserve}) in Combat.seria"
+    );
+    true
 }
 
 /// Adds the gunpod to a watched bomb / rocket plane, if this is the tactical battle and it still has no gun.
@@ -949,7 +968,10 @@ unsafe fn engage_zenith(logic: usize, owner: usize) -> bool {
     true
 }
 
-/// Planes (plane parts) whose logic must not draw rockets from the player's stock: guns-only and K-13 choices.
+/// Planes (plane parts) whose logic must not draw rockets from the player's stock: every plane whose armament the
+/// pre-combat button chose (guns-only, bombs, rockets, K-13). The chosen loadout is the whole loadout; the vanilla
+/// class-3 auto-draw would otherwise add NAR-122 from another loadout of the same craft (e.g. a FAB100 plane with six
+/// stock rockets).
 static NO_DRAW: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
 fn no_rockets(plane: usize) {
@@ -1146,13 +1168,16 @@ pub unsafe fn verify(now: f64) {
             let logic: usize = rd(plane + OFF_LOGIC);
             let counts = if crate::plausible(logic) {
                 format!(
-                    "logic {logic:#x} bombs(+0x128)={} rockets(+0x138)={} AA(+0x148)={} mode(+0x118)={} state(+0x190)={} target(+0x158)={:#x}",
+                    "logic {logic:#x} bombs(+0x128)={} rockets(+0x138)={} AA(+0x148)={} mode(+0x118)={} state(+0x190)={} target(+0x158)={:#x} gun(+0x1a4)={} mag(+0xac)={} reserve(+0xb4)={}",
                     rd::<i32>(logic + 0x128),
                     rd::<i32>(logic + 0x138),
                     rd::<i32>(logic + 0x148),
                     rd::<i32>(logic + 0x118),
                     rd::<i32>(logic + 0x190),
-                    rd::<usize>(logic + 0x158)
+                    rd::<usize>(logic + 0x158),
+                    rd::<i32>(logic + 0x1a4),
+                    rd::<i32>(logic + 0xac),
+                    rd::<i32>(logic + 0xb4)
                 )
             } else {
                 format!("logic {logic:#x} (none)")
