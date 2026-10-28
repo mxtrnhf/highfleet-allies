@@ -1,4 +1,4 @@
-//! Damage popups of allied ships in blue (`ally_damage_color`).
+//! Damage popups of allied ships in the ally colour (`ally_damage_color`, HEX in the config).
 //!
 //! The yellow-green popup that appears beside a ship when it is hit ("296 ХП", the module lines under it) is drawn every
 //! frame by `displayAmountOfHPDMG?` `0x1402a19c0` (notes `findings/battle-hud-callouts.md` section 6). R13 holds the popup
@@ -6,8 +6,8 @@
 //! (Creature) it belongs to. Two colour sites are replaced:
 //! * `0x1402a2454` `mov edx,0xffa8fc00` (the HP line), and
 //! * `0x1402a2578` `mov edx,ecx` + `mov rcx,r15` (each module line; ECX = the line's own colour with the pulsing alpha).
-//! A ship on the player's side (side float `+0xad4` > 0) that the player does not fly (`+0xd70 != 1`) gets the blue, the
-//! module lines keep their alpha.
+//! A ship on the player's side (side float `+0xad4` > 0) that the player does not fly (`+0xd70 != 1`) gets the ally
+//! colour, the module lines keep their alpha.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 

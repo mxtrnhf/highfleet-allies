@@ -246,8 +246,10 @@ struct Config {
     /// Pre-combat button that picks the armament of a carrier's planes (charged to the inventory). Default on.
     plane_loadouts: bool,
     log_colors: bool,
-    ally_damage_blue: bool,
-    ally_damage_color: u32,
+    /// Damage popups of allied ships are drawn in this colour, as HEX: `"#00E4FF"` (`"00E4FF"` and `"0x00E4FF"` work
+    /// too). A plain number is still accepted so configs from before v0.14.0 keep working (read as 0xRRGGBB).
+    #[serde(deserialize_with = "deserialize_hex_color")]
+    ally_damage_color: String,
     /// Log the whole GUI element list (names, positions, sizes) on every click and when the native ammo selector
     /// is rebuilt: to learn how the game lays out its own selectors (ammo icons, role icons).
     gui_inspect: bool,
@@ -300,8 +302,7 @@ impl Default for Config {
             enemy_all_at_once: false,
             plane_loadouts: true,
             log_colors: false,
-            ally_damage_blue: true,
-            ally_damage_color: 0x00e4ff,
+            ally_damage_color: "#00E4FF".to_string(),
             max_allies: 2,
             log_precombat: true,
             log_creatures: false,
@@ -313,6 +314,36 @@ impl Default for Config {
             marker_delay_ms: 0,
         }
     }
+}
+
+/// Read `ally_damage_color` from the config: a HEX string (`"#00E4FF"`, `"00E4FF"` or `"0x00E4FF"`), or a plain
+/// number from a pre-v0.14.0 config, kept as HEX so the file the mod writes shows the colour the player knows.
+fn deserialize_hex_color<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum HexColor {
+        Text(String),
+        Number(u64),
+    }
+    Ok(match HexColor::deserialize(deserializer)? {
+        HexColor::Text(text) => text,
+        HexColor::Number(value) => format!("#{:06X}", value & 0x00ff_ffff),
+    })
+}
+
+/// Parse a HEX colour (`#RRGGBB`, `RRGGBB` or `0xRRGGBB`; alphabet is case-insensitive; 8 digits are AARRGGBB and the
+/// alpha is dropped) into the game's 0xRRGGBB value.
+fn parse_hex_color(text: &str) -> Option<u32> {
+    let hex = text.trim();
+    let hex = hex.strip_prefix('#').unwrap_or(hex);
+    let hex = hex.strip_prefix("0x").or_else(|| hex.strip_prefix("0X")).unwrap_or(hex);
+    if hex.len() != 6 && hex.len() != 8 {
+        return None;
+    }
+    u32::from_str_radix(hex, 16).ok().map(|value| value & 0x00ff_ffff)
 }
 
 static GAME_IS_STEAM_1_163: AtomicBool = AtomicBool::new(false);
@@ -2856,9 +2887,17 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         }
     }
     plane_loadouts::ATTACK_DELAY_S.store(config.plane_attack_delay.clamp(0.0, 120.0).to_bits(), Ordering::Relaxed);
-    if config.ally_damage_blue {
-        ally_hud::install(&mut session, config.ally_damage_color);
-    }
+    let ally_damage_color = match parse_hex_color(&config.ally_damage_color) {
+        Some(color) => color,
+        None => {
+            log::warn!(
+                "hf_ally: ally_damage_color {:?} is not HEX (want \"#RRGGBB\"); using #00E4FF",
+                config.ally_damage_color
+            );
+            0x00e4ff
+        }
+    };
+    ally_hud::install(&mut session, ally_damage_color);
     if config.log_colors {
         color_probe::install(&mut session);
         LOG_COLORS.store(true, Ordering::Relaxed);
