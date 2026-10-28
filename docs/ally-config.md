@@ -22,6 +22,7 @@ Pack values that differ from the code defaults: `max_enemy_ships` 8 (code 5), `p
 | `debug_log` | `false` | Debug mode for bug reports: writes `Modloader/logs/hf_ally_megalog_<time>.log` (large, 2-5 MB/hour), a watchdog and a crash minidump `hf_ally_crash_<time>.dmp` (may hold paths and campaign data: delete it after sending). Default off. |
 | `fix_plane_ai_crash` | `true` | Stock-game crash fixes (aircraft target choice, fleet-merge null fleet). Default on. |
 | `plane_bombers` | `false` | Experimental: lets carrier planes with bombs/rockets attack in normal campaign battles (the game only does that in some scenes). Off by default. |
+| `extra_gunpod` | `true` | Normal tactical battle (`Combat.seria`) only: give a chosen FAB / NURS plane the vanilla 37 mm gun (`ITEM_GUN37`) and, once both its bombs and rockets are empty, switch it to the interceptor mode so it strafes with that gun until it is dry. Strategic map bombers (`Bombers.seria`) keep their vanilla loadout and leave after the bombing run. Off = old behaviour: the plane leaves when its payload is empty. |
 | `plane_k13` | `false` | Offer the K-13 air-to-air loadout for carrier planes. Default off (janky). |
 | `plane_attack_delay` | `6.0` | Seconds after launch before a bomb/rocket plane starts its attack runs; until then it flies the game's own script (without a delay LA-29 bombers dive into the carrier deck). |
 | `plane_aa_range` | `6000.0` | Farthest distance (game units) at which a K-13 plane may fire at a target (vanilla window ends at 3750). |

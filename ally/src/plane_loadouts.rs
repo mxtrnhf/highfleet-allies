@@ -360,9 +360,18 @@ static VERIFY: Mutex<Vec<(usize, f64, String)>> = Mutex::new(Vec::new());
 /// Seconds after the arming before a bomb / rocket plane starts its attack runs (`plane_attack_delay`): they take off and fly
 /// the game's own script first. Without it LA-29 bombers dived straight into the carrier's deck.
 pub static ATTACK_DELAY_S: AtomicU32 = AtomicU32::new(6.0f32.to_bits());
-/// Planes armed with a chosen bomb / rocket loadout: (plane, true = bombs, list had entries once, game time of the arming). When the list is empty
-/// again the plane is sent out of the screen (state 5) instead of circling over its target without ammunition.
-static WATCH: Mutex<Vec<(usize, bool, bool, f64)>> = Mutex::new(Vec::new());
+/// `extra_gunpod` config: in a normal tactical battle only, add the 37 mm gun to bomb / rocket planes and keep them
+/// in the fight with it after the payload is gone.
+pub static EXTRA_GUNPOD: AtomicBool = AtomicBool::new(false);
+/// `stateSelectorAircraft_` (i32): 4 = the normal tactical battle (`Combat.seria`) mode 6; 2/3 = the scripted
+/// bomber / tutorial scenes (`Bombers.seria` included), 0/1 = the crafts-vs-* scenes.
+const STATE_SELECTOR_AIRCRAFT: usize = 0x1_403b_d008;
+/// `BOOL_147fc6fdb`: set by the scripted bomber / tutorial setup, 0 in a normal tactical battle.
+const SCENARIO_AIRCRAFT: usize = 0x1_47fc_6fdb;
+/// Planes armed with a chosen bomb / rocket loadout: (plane, true = bombs, gunpod eligible, list had entries once, game
+/// time of the arming). When both lists are empty the plane is sent out (state 5), or with `extra_gunpod` switches to the
+/// gun until it is dry.
+static WATCH: Mutex<Vec<(usize, bool, bool, bool, f64)>> = Mutex::new(Vec::new());
 /// The aircraft state setter `FUN_14000ebb0(logic, state)`; 5 = TO_OUT_OF_SCREEN.
 const SET_STATE: usize = 0x1_4000_ebb0;
 /// Plane parts armed with the K-13 choice. The normal battle mode (`logic+0x118 == 6`) never calls the air-to-air launcher
@@ -632,7 +641,8 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
     if arm.kind != Kind::Aa {
         if let Ok(mut w) = WATCH.try_lock() {
             w.retain(|e| e.0 != plane);
-            w.push((plane, arm.kind == Kind::Bombs, false, now));
+            let gunpod = matches!(arm.kind, Kind::Bombs | Kind::Rockets);
+            w.push((plane, arm.kind == Kind::Bombs, gunpod, false, now));
         }
     }
     if let Ok(mut v) = VERIFY.try_lock() {
@@ -648,7 +658,7 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
 /// must be set in the same step. The delay lets the plane take off and leave the carrier first.
 unsafe fn attackers_to_mode_3(logic: usize) {
     let Ok(w) = WATCH.try_lock() else { return };
-    let Some(t0) = w.iter().find(|(p, _, _, _)| crate::plausible(*p) && rd::<usize>(*p + OFF_LOGIC) == logic).map(|e| e.3) else { return };
+    let Some(t0) = w.iter().find(|(p, _, _, _, _)| crate::plausible(*p) && rd::<usize>(*p + OFF_LOGIC) == logic).map(|e| e.4) else { return };
     drop(w);
     if rd::<i32>(logic + 0x118) != 6 || rd::<usize>(logic + 0x158) == 0 || (rd::<i32>(logic + 0x128) <= 0 && rd::<i32>(logic + 0x138) <= 0) {
         return;
@@ -667,8 +677,60 @@ unsafe fn attackers_to_mode_3(logic: usize) {
     );
 }
 
+/// True only in the normal tactical battle (`Combat.seria`): mode selector 4 and not the scripted bomber / tutorial
+/// flag. `extra_gunpod` must be on as well. The strategic bomber scene (`Bombers.seria`) uses selector 2/3 and the
+/// scenario flag, so it is excluded by both tests.
+unsafe fn combat_seria() -> bool {
+    EXTRA_GUNPOD.load(Ordering::Relaxed) && rd::<i32>(STATE_SELECTOR_AIRCRAFT) == 4 && rd::<u8>(SCENARIO_AIRCRAFT) == 0
+}
+
+/// Gives the plane the vanilla 37 mm gun (`ITEM_GUN37`) if it has none. Same fields `configure_plane_gun` `0x14000ea20`
+/// writes; called only for our bomb / rocket planes in a normal tactical battle.
+unsafe fn install_gunpod(logic: usize) -> bool {
+    if rd::<i32>(logic + 0x1a4) != 0 {
+        return true;
+    }
+    let (begin, end): (usize, usize) = (rd(AMMO_LIST), rd(AMMO_LIST + 8));
+    if begin < 0x10000 || end <= begin || (end - begin) / AMMO_SIZE > 64 {
+        return false;
+    }
+    for rec in (begin..end).step_by(AMMO_SIZE) {
+        if string_at(rec + 8).as_deref() != Some("ITEM_GUN37") {
+            continue;
+        }
+        let index = ((rec - begin) / AMMO_SIZE) as i32;
+        let delay = rd::<f32>(rec + 0x17c);
+        let magazine = rd::<i32>(rec + 0x180).clamp(1, 999);
+        let reserve = (50 - magazine).max(0);
+        (logic as *mut i32).byte_add(0x1a4).write_unaligned(index);
+        (logic as *mut f32).byte_add(0xa0).write_unaligned(2.0);
+        (logic as *mut f32).byte_add(0xa8).write_unaligned(delay);
+        (logic as *mut i32).byte_add(0xb0).write_unaligned(magazine);
+        (logic as *mut i32).byte_add(0xac).write_unaligned(magazine);
+        (logic as *mut i32).byte_add(0xb4).write_unaligned(reserve);
+        log::info!("PLANE gunpod: logic {logic:#x} armed with ITEM_GUN37 (index {index}, magazine {magazine}, reserve {reserve}) in Combat.seria");
+        return true;
+    }
+    log::warn!("PLANE gunpod: ITEM_GUN37 not found in the ammo list; logic {logic:#x} stays without a gun");
+    false
+}
+
+/// Adds the gunpod to a watched bomb / rocket plane, if this is the tactical battle and it still has no gun.
+unsafe fn ensure_gunpod(logic: usize) {
+    if !combat_seria() || rd::<i32>(logic + 0x1a4) != 0 {
+        return;
+    }
+    let Ok(w) = WATCH.try_lock() else { return };
+    let applies = w.iter().any(|(p, _, gunpod, _, _)| *gunpod && crate::plausible(*p) && rd::<usize>(*p + OFF_LOGIC) == logic);
+    drop(w);
+    if applies {
+        install_gunpod(logic);
+    }
+}
+
 pub unsafe extern "C" fn on_update(logic: usize, body: usize) {
     if crate::plausible(logic) {
+        ensure_gunpod(logic);
         attackers_to_mode_3(logic);
     }
     census(crate::read::<f64>(crate::CLOCK)); // the body array is only stable inside the aircraft update
@@ -1020,7 +1082,7 @@ pub unsafe fn tick() {
     if w.is_empty() {
         return;
     }
-    w.retain_mut(|(plane, bombs, seen, _)| {
+    w.retain_mut(|(plane, bombs, gunpod, seen, _)| {
         if !crate::plausible(*plane) || rd::<i32>(*plane + 0x48) == 0 {
             return false; // destroyed or gone
         }
@@ -1028,17 +1090,45 @@ pub unsafe fn tick() {
         if !crate::plausible(logic) {
             return true;
         }
-        let (count, state) = (rd::<i32>(logic + if *bombs { 0x128 } else { 0x138 }), rd::<i32>(logic + 0x190));
-        if count > 0 {
+        let bombs_now = rd::<i32>(logic + 0x128);
+        let rockets_now = rd::<i32>(logic + 0x138);
+        let state = rd::<i32>(logic + 0x190);
+        if bombs_now > 0 || rockets_now > 0 {
             *seen = true;
             return true;
         }
         if !*seen || !(1..=4).contains(&state) {
             return !matches!(state, 5..=7);
         }
+        // `extra_gunpod`: stay in the fight and strafe with the 37 mm instead of leaving, but only in the normal
+        // tactical battle. The strategic bomber scene (`Bombers.seria`) is mode 3/selector 2-3 and never reaches this.
+        if *gunpod && combat_seria() && !matches!(state, 5..=7) {
+            if rd::<i32>(logic + 0x1a4) == 0 {
+                install_gunpod(logic);
+            }
+            let rounds = rd::<i32>(logic + 0xac) + rd::<i32>(logic + 0xb4);
+            let target = rd::<usize>(logic + 0x158);
+            if rd::<i32>(logic + 0x1a4) != 0 && rounds > 0 && target != 0 {
+                let mode = rd::<i32>(logic + 0x118);
+                let set: unsafe extern "win64" fn(usize, i32) = std::mem::transmute(SET_STATE);
+                if mode != 2 {
+                    (logic as *mut i32).byte_add(0x118).write_unaligned(2);
+                    set(logic, 3);
+                    log::info!(
+                        "PLANE gunpod: plane {plane:#x} payload gone (bombs {bombs_now}, rockets {rockets_now}), mode {mode} -> 2 / state 3, 37 mm {rounds} rounds, target {target:#x}"
+                    );
+                } else if state != 3 {
+                    set(logic, 3);
+                }
+                return true;
+            }
+        }
         let set: unsafe extern "win64" fn(usize, i32) = std::mem::transmute(SET_STATE);
         set(logic, 5);
-        log::info!("PLANE leaves: plane {plane:#x} used up its {} (state {state} -> 5)", if *bombs { "bombs" } else { "rockets" });
+        log::info!(
+            "PLANE leaves: plane {plane:#x} used up its payload (bombs {bombs_now}, rockets {rockets_now}; watched {}) (state {state} -> 5)",
+            if *bombs { "bombs" } else { "rockets" }
+        );
         false
     });
 }

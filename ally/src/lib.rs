@@ -222,6 +222,11 @@ struct Config {
     /// Stock-game crash fixes (aircraft target choice, fleet-merge null fleet). Default on.
     fix_plane_ai_crash: bool,
     plane_bombers: bool,
+    /// Give a chosen bomb / rocket loadout a 37 mm gunpod and keep the plane in the fight after the payload is gone:
+    /// once bombs and rockets are empty it switches to the interceptor mode and strafes with the gun until that is dry.
+    /// Normal tactical battle only (`Combat.seria`; `stateSelectorAircraft_ == 4`), never the strategic bomber scene.
+    /// Default on.
+    extra_gunpod: bool,
     /// Offer the K-13 air-to-air loadout for carrier planes. Default off (janky).
     plane_k13: bool,
     plane_attack_delay: f32,
@@ -281,6 +286,7 @@ impl Default for Config {
             debug_log: false,
             fix_plane_ai_crash: true,
             plane_bombers: false,
+            extra_gunpod: true,
             plane_k13: false,
             plane_attack_delay: 6.0,
             plane_aa_range: 6000.0,
@@ -2857,6 +2863,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         color_probe::install(&mut session);
         LOG_COLORS.store(true, Ordering::Relaxed);
     }
+    plane_loadouts::EXTRA_GUNPOD.store(config.extra_gunpod, Ordering::Relaxed);
     plane_loadouts::K13_ON.store(config.plane_k13, Ordering::Relaxed);
     if config.plane_bombers {
         plane_loadouts::install_bomber_gate(&mut session);
