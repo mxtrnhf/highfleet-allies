@@ -43,7 +43,7 @@ Pack values that differ from the code defaults: `max_enemy_ships` 8 (code 5), `p
 | `ally_sounds` | `true` | Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed. |
 | `ally_fuel_retreat_percent` | `0.0` | An ally leaves the battle (same order as the retreat key) when its COMBAT fuel (the ship's own tank, the one the battle burns; not the map fuel of the fleet) falls to this percent. 0 = off. Allies only. |
 | `marker_text` | `"PLAYER"` | Text drawn next to ship number 1 on the pre-combat screen (the flagship, always your own ship); "" = none. |
-| `marker_seam` | `24` | Render seam that draws the label: 22, 23 or 24 (24 is the topmost; a lower one may sit under the sliding doors). |
+| `marker_seam` | `23` | Render seam that draws the PLAYER and plane-loadout labels: 22 or 23 (22 may sit under the sliding doors). Legacy 24 is remapped to 23 because the game skips B24 when GLITCH is OFF. |
 | `marker_delay_ms` | `0` | The label stays hidden this many milliseconds after the screen is entered (the doors slide in). |
 
 `intercept_ignore_oids` is a list of part names (`m_oid` from `OL.seria`, case-sensitive) that the AI of both sides never treats as a strategic launch to shoot at, default empty in code and `["MDL_MISSILE_03"]` (the stock R-9 Sprint) in the pack.

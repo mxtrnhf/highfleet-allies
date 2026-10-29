@@ -264,7 +264,7 @@ struct Config {
     ally_fuel_retreat_percent: f32,
     /// Text drawn next to ship number 1 on the pre-combat screen (the flagship, always your own ship); "" = none.
     marker_text: String,
-    /// Render seam that draws the label: 22, 23 or 24 (24 is the topmost; a lower one may sit under the sliding doors).
+    /// Render seam that draws the label: 22 or 23 (22 may sit under the sliding doors). Legacy 24 is remapped to 23.
     marker_seam: u32,
     /// The label stays hidden this many milliseconds after the screen is entered (the doors slide in).
     marker_delay_ms: u64,
@@ -310,7 +310,7 @@ impl Default for Config {
             ally_sounds: true,
             ally_fuel_retreat_percent: 0.0,
             marker_text: "PLAYER".to_string(),
-            marker_seam: 24,
+            marker_seam: 23,
             marker_delay_ms: 0,
         }
     }
@@ -916,11 +916,17 @@ static MARKER_TEXT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static MARKER_DRAWS: AtomicU32 = AtomicU32::new(0);
 /// The label sits a little right of where a button would (it is wider than one).
 const MARKER_DX: f32 = 14.0;
-/// Render seam B24 (the call to the layer flush at the end of the battle-branch renderer; the same code draws the
-/// pre-combat screen): checked as `E8 rel32` to FLUSH before use. Text is the elevation readout's way: fixed_16.
-const MARKER_SEAMS: [usize; 3] = [0x1_4030_9327, 0x1_4030_9408, 0x1_4030_9897]; // B22, B23, B24
-/// Which of them draws (config `marker_seam`, 22 to 24): a lower seam may be drawn under the sliding doors.
-static MARKER_SEAM_SEL: AtomicU32 = AtomicU32::new(24);
+/// Calls to the layer flush in the battle-branch renderer (which also draws the pre-combat screen), checked as
+/// `E8 rel32` to FLUSH before use. B24 (0x140309897) is deliberately absent: the game skips it when GLITCH is OFF.
+const MARKER_SEAMS: [usize; 2] = [0x1_4030_9327, 0x1_4030_9408]; // B22, B23
+/// Which of them draws (config `marker_seam`): B22 may be drawn under the sliding doors.
+static MARKER_SEAM_SEL: AtomicU32 = AtomicU32::new(23);
+
+/// B24 was the old default, but it runs only inside the glitch pass. Remap old configurations to B23 so turning
+/// GLITCH OFF cannot hide the PLAYER label or plane-loadout labels.
+fn select_marker_seam(configured: u32) -> u32 {
+    configured.clamp(22, 23)
+}
 /// The label stays hidden this long (ms) after the screen is entered, while the doors slide.
 static MARKER_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static ENTRY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1489,9 +1495,6 @@ unsafe extern "C" fn draw_marker_b22() {
 }
 unsafe extern "C" fn draw_marker_b23() {
     draw_marker(23);
-}
-unsafe extern "C" fn draw_marker_b24() {
-    draw_marker(24);
 }
 
 /// The metal roller covers that play when the pre-combat screen opens (`ROLL_DESK`, `ROLL_TABLET`, `ROLL_TASK`,
@@ -2631,7 +2634,7 @@ unsafe extern "C" fn init() -> bool {
     let max_lines = if diag::debug() { config.max_lines.max(1_000_000) } else { config.max_lines };
     MAX_LINES.store(max_lines, Ordering::Relaxed);
     SPAWN_ALLY.store(config.spawn_ally, Ordering::Relaxed);
-    MARKER_SEAM_SEL.store(config.marker_seam.clamp(22, 24), Ordering::Relaxed);
+    MARKER_SEAM_SEL.store(select_marker_seam(config.marker_seam), Ordering::Relaxed);
     MARKER_DELAY_MS.store(config.marker_delay_ms, Ordering::Relaxed);
     if let Ok(mut text) = MARKER_TEXT.lock() {
         // ASCII only; '@' is a line break for the game's text code
@@ -2777,7 +2780,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         }
     }
     if config.ally_toggle && config.spawn_ally {
-        for (seam, handler) in MARKER_SEAMS.iter().zip([draw_marker_b22 as *const (), draw_marker_b23 as *const (), draw_marker_b24 as *const ()]) {
+        for (seam, handler) in MARKER_SEAMS.iter().zip([draw_marker_b22 as *const (), draw_marker_b23 as *const ()]) {
             let bytes = std::slice::from_raw_parts(*seam as *const u8, 5);
             let target = (*seam + 5).wrapping_add(i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as isize as usize);
             if bytes[0] == 0xe8 && target == FLUSH {
@@ -2949,6 +2952,15 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glitch_only_b24_is_never_selected() {
+        assert_eq!(select_marker_seam(22), 22);
+        assert_eq!(select_marker_seam(23), 23);
+        assert_eq!(select_marker_seam(24), 23);
+        assert_eq!(select_marker_seam(u32::MAX), 23);
+        assert_eq!(Config::default().marker_seam, 23);
+    }
 
     /// Writes the full default config to the path in `HF_DUMP_CONFIG` (used to produce the example config of the release pack).
     #[test]
