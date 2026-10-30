@@ -52,3 +52,12 @@ The optional QoL build and its `qol.full.json` reference are unchanged in scope.
 The pack does not ship an active `qol.json`, so it does not replace existing QoL
 settings. The voice asset and logging/QoL reference files live under `release/`.
 Old local snapshots under the workspace's `config_references/` remain untouched.
+
+## GitHub-built releases
+
+Use the **Build and publish release** workflow (`.github/workflows/release.yml`)
+with the pack version. GitHub Windows runners build all three DLLs with locked
+dependencies and no telemetry/megalog features; Ubuntu runs the host checks and
+assembles the ZIP. Only artifacts from those Windows jobs are used in the public
+release. `manifest.json` records the source commit and GitHub Actions run URL.
+No game or mod DLL is executed by the workflow.

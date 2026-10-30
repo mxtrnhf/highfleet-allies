@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -65,6 +66,14 @@ def populate(stage, version, versions, commit):
         assert destination.read_bytes() == preset.read_bytes()
     manifest = {
         "pack_version": version, "source_commit": commit, "components": versions,
+        "build_origin": {
+            "github_actions": os.environ.get("GITHUB_ACTIONS") == "true",
+            "run_url": (
+                os.environ.get("GITHUB_SERVER_URL", "https://github.com") + "/"
+                + os.environ.get("GITHUB_REPOSITORY", "") + "/actions/runs/"
+                + os.environ["GITHUB_RUN_ID"]
+            ) if os.environ.get("GITHUB_RUN_ID") else None,
+        },
         "target": TARGET, "cargo_features": {"ally": [], "ai": [], "qol": []},
         "gameplay_validation": "Not run by the agent; player testing required.",
         "files": {

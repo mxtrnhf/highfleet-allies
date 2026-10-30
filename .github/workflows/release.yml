@@ -1,0 +1,102 @@
+name: Build and publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Pack version without the v prefix
+        required: true
+        default: "0.14.2"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check player defaults and pure decisions without running game DLLs
+        run: python3 tools/check_player_defaults.py
+
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crate: ally
+            library: hf_ally.dll
+          - crate: ai
+            library: hf_ai.dll
+          - crate: qol
+            library: highfleet_qol.dll
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build native Windows release without telemetry or megalog features
+        working-directory: ${{ matrix.crate }}
+        run: cargo build --release --locked --no-default-features --target x86_64-pc-windows-msvc
+      - name: Compile Windows tests without executing DLLs or the game
+        if: matrix.crate != 'qol'
+        working-directory: ${{ matrix.crate }}
+        run: cargo test --release --locked --no-default-features --target x86_64-pc-windows-msvc --no-run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.crate }}
+          path: ${{ matrix.crate }}/target/x86_64-pc-windows-msvc/release/${{ matrix.library }}
+          if-no-files-found: error
+
+  publish:
+    needs: [host-tests, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-ally
+          path: ally/target/x86_64-pc-windows-msvc/release
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-ai
+          path: ai/target/x86_64-pc-windows-msvc/release
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-qol
+          path: qol/target/x86_64-pc-windows-msvc/release
+      - name: Package only the GitHub-built DLLs with tracked player presets
+        env:
+          PACK_VERSION: ${{ inputs.version }}
+        run: python3 tools/package_release.py --version "$PACK_VERSION" --output release-artifacts
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PACK_VERSION: ${{ inputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          archive = Path("release-artifacts") / ("hf_release_pack_v" + os.environ["PACK_VERSION"])
+          run = os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + os.environ["GITHUB_RUN_ID"]
+          notes = "Built and validated by [GitHub Actions](" + run + ").\n\n```text\n" + (archive / "README.txt").read_text() + "\n```\n"
+          Path("release-notes.md").write_text(notes)
+          PY
+          gh release create "v$PACK_VERSION" \
+            "release-artifacts/hf_release_pack_v$PACK_VERSION.zip" \
+            "release-artifacts/hf_release_pack_v$PACK_VERSION.zip.sha256" \
+            --target "$GITHUB_SHA" --title "v$PACK_VERSION: player defaults" \
+            --notes-file release-notes.md --latest

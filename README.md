@@ -32,7 +32,7 @@ Rust nightly/stable ≥ 1.88 with `cargo-xwin` (cross-compiles to Windows MSVC f
     cd ai   && cargo xwin build --release --target x86_64-pc-windows-msvc
 
 `ally` has a runtime switch for bug reports: set `"debug_log": true` in `ally.json` to write a verbose megalog, run a watchdog and save a crash dump (`Modloader/logs/hf_ally_megalog_*.log`, `hf_ally_crash_*.dmp`; the dump may contain paths and campaign data, delete it after sending). The cargo feature `megalog` turns the same mode on in the build itself, and `telemetry` adds battle CSVs for AI research.
-Package a built release: `python3 tools/package_release.py --version 0.14.2 --output ../release_packs`.
+Build and publish releases through [GitHub Actions](.github/workflows/release.yml): run **Build and publish release** with the pack version. It builds all three DLLs on Windows, runs host checks, packages the tracked presets, and publishes the ZIP/checksum to GitHub Releases. For local packaging only: `python3 tools/package_release.py --version 0.14.2 --output ../release_packs`.
 
 Tests for the pure math: `cd ai && cargo xwin test --release --target x86_64-pc-windows-msvc` (needs wine).
 
