@@ -669,10 +669,12 @@ unsafe fn creature_update(creature: usize) {
         }
 
         let ship = ships.by_creature.entry(creature).or_default();
+        let mut params = runtime.params;
+        params.evade &= crate::maneuvers_allowed(creature);
         let event = panic_math::scan(
             ship,
             now,
-            &runtime.params,
+            &params,
             || threatened(runtime, creature),
             &mut || rng::random_f32(),
         );
@@ -1164,7 +1166,7 @@ pub unsafe fn steer(creature: usize, now: f64, wanted: (f32, f32), ship: (f32, f
 unsafe fn steering(creature: usize, now: f64, wanted: (f32, f32), ship: (f32, f32)) -> Option<(f32, f32)> {
     let runtime = RUNTIME.get()?;
     // hf_ai: with evade off the original installs no steering hook at all; this keeps that explicit.
-    if !runtime.params.evade || !is_ai(creature) {
+    if !runtime.params.evade || !is_ai(creature) || !crate::maneuvers_allowed(creature) {
         return None;
     }
 
@@ -1250,7 +1252,7 @@ unsafe fn engine_commands(creature: usize, command: *mut f32) {
     let Some(runtime) = RUNTIME.get() else {
         return;
     };
-    if command.is_null() || !is_ai(creature) {
+    if command.is_null() || !is_ai(creature) || !crate::maneuvers_allowed(creature) {
         return;
     }
 
@@ -1456,7 +1458,7 @@ unsafe fn threatened(runtime: &Runtime, creature: usize) -> Option<Threat> {
     let count: u32 = memory.read(runtime.body_count)?;
     let range = runtime.config.trigger_range;
     let mut nearest: Option<Threat> = None;
-    let stray_enabled = runtime.config.stray_missiles;
+    let stray_enabled = runtime.config.stray_missiles && crate::maneuvers_allowed(creature);
     let tracks = if stray_enabled { track_snapshot() } else { HashMap::new() };
     let here = if stray_enabled { ship_position(creature) } else { (f32::NAN, f32::NAN) };
     let size = if stray_enabled { memory.read::<f32>(creature + CREATURE_RADIUS).unwrap_or(0.0) } else { 0.0 };

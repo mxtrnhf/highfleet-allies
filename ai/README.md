@@ -172,3 +172,23 @@ Then A/B tactics on/off against the same enemy.
 **Known tuning risk:** the stock AI often already orbits the target in the band (stand-off 0.35 x reach, orbit weight
 1 - |radial|). With `blend_weight` 1.0 a strafe side opposite to the stock orbit cancels it (blend < 0.2 = stock, no override),
 so the reversal may barely show. First A/B knob: `blend_weight` 2.0. Test `orbiting_stock_vs_strafe_side_weight_matters`.
+
+## Battle TWR cutoff
+
+Set top-level `"twr_cutoff": 3.5` in `Modloader/config/hf_ai.json`, alongside
+`"ai_flares": {...}` and `"tactics": {...}`. Restart the game after editing.
+The default `0.0` disables this gate and keeps existing behavior. Negative or
+non-finite cutoffs fall back to `0.0`.
+
+Ships with battle TWR **below** the cutoff use stock movement: tactics, missile
+sidesteps, panic boosts, barrel rolls, and curtain retreat/shelter are suppressed.
+Their stray-missile reactions are also disabled. At or above the cutoff, the
+existing `ai_flares.evade`, `ai_flares.stray_missiles`, `tactics.enabled`, and
+other individual settings still apply. Flare bursts against locked-on missiles
+and preventive flare curtains remain available below the cutoff.
+
+TWR is read live from the Steam 1.163 battle stat at creature `+0x1604` (not map
+TWR); see `hf_notes/docs/findings/ship-profiles.md` and Ghidra
+`Creature_HasTWRStat` at `0x140073450`. With a positive cutoff, unreadable or
+non-finite TWR suppresses these capabilities too. Existing tactics acceleration
+gates remain additional requirements.

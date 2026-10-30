@@ -211,7 +211,7 @@ fn release_fire(creature: usize, now: f64) {
 }
 
 fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)>, State) {
-    if !ENABLED.load(Ordering::Relaxed) {
+    if !ENABLED.load(Ordering::Relaxed) || !crate::maneuvers_allowed(ctx.creature) {
         return (None, State::Stock);
     }
     let Some(p) = PARAMS.get() else { return (None, State::Stock) };

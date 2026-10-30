@@ -43,6 +43,7 @@ mod scan_log;
 mod tactics;
 mod tactics_config;
 mod tactics_math;
+mod twr_math;
 
 use flares_config::AiFlaresConfig;
 use tactics_config::TacticsConfig;
@@ -168,6 +169,20 @@ unsafe extern "C" fn on_steering(creature: usize) {
 }
 
 static LOGGED_STEER_PANIC: AtomicBool = AtomicBool::new(false);
+
+static TWR_CUTOFF: AtomicU32 = AtomicU32::new(0);
+
+/// Steam 1.163 battle TWR, not map TWR. See hf_notes/docs/findings/ship-profiles.md;
+/// confirmed against Creature_HasTWRStat (0x140073450) in the live Ghidra program.
+fn maneuvers_allowed(creature: usize) -> bool {
+    let cutoff = f32::from_bits(TWR_CUTOFF.load(Ordering::Relaxed));
+    if cutoff == 0.0 {
+        return true;
+    }
+    // SAFETY: page-checked read; missing/invalid TWR fails the enabled gate.
+    twr_math::allows(unsafe { rd::<f32>(creature + 0x1604) }, cutoff)
+}
+
 
 unsafe fn steering(creature: usize) {
     let load = |index: usize| f32::from_bits(STEER_BUFFER[index].load(Ordering::Relaxed));
@@ -347,6 +362,8 @@ unsafe fn prepare_steering_hook(session: &mut PatchSession, module: ProcessModul
 struct Config {
     /// Master switch.
     enabled: bool,
+    /// Minimum battle TWR for evasion, stray-missile reactions and tactics; 0 disables the gate.
+    twr_cutoff: f32,
     /// Write `Modloader/logs/hf_ai_steer_<unix>.csv`: the stock AI's wanted waypoint per ship.
     log_steering: bool,
     /// Rows per second per ship in that file.
@@ -371,7 +388,7 @@ struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { enabled: true, log_steering: true, log_hz: 10.0, log_scan: false, log_scan_bodies: false, ai_flares: AiFlaresConfig::default(), tactics: TacticsConfig::default(), ai_missile_dump_chance: 0.0, ai_missile_dump_min_delay: missile_dump::DEFAULT_MIN_DELAY, ai_missile_dump_max_delay: missile_dump::DEFAULT_MAX_DELAY }
+        Self { enabled: true, twr_cutoff: 0.0, log_steering: true, log_hz: 10.0, log_scan: false, log_scan_bodies: false, ai_flares: AiFlaresConfig::default(), tactics: TacticsConfig::default(), ai_missile_dump_chance: 0.0, ai_missile_dump_min_delay: missile_dump::DEFAULT_MIN_DELAY, ai_missile_dump_max_delay: missile_dump::DEFAULT_MAX_DELAY }
     }
 }
 
@@ -441,6 +458,9 @@ unsafe extern "C" fn init() -> bool {
         return true;
     }
     check_qol(&config);
+    let cutoff = twr_math::sanitize_cutoff(config.twr_cutoff);
+    TWR_CUTOFF.store(cutoff.to_bits(), Ordering::Relaxed);
+    log::info!("hf_ai: maneuver TWR cutoff {cutoff}");
     tactics::init(&config.tactics);
     LOG_STEERING.store(config.log_steering, Ordering::Relaxed);
     scan_log::LOG_BODIES.store(config.log_scan_bodies, Ordering::Relaxed);
@@ -524,6 +544,16 @@ unsafe extern "C" fn init() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn twr_cutoff_is_optional_and_configurable() {
+        let old: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.twr_cutoff, 0.0);
+        let configured: Config = serde_json::from_str(r#"{"twr_cutoff":3.5}"#).unwrap();
+        assert_eq!(configured.twr_cutoff, 3.5);
+        assert_eq!(serde_json::to_value(&configured).unwrap()["twr_cutoff"], 3.5);
+    }
+
 
     /// Writes the full default config to the path in `HF_DUMP_CONFIG` (used to produce the example config of the release pack).
     #[test]
