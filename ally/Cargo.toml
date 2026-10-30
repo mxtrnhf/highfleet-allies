@@ -15,6 +15,7 @@ name = "hf_ally"
 crate-type = ["cdylib"]
 
 [dependencies]
+highfleet = { git = "https://github.com/logdot/highfleet-rs.git", rev = "8a6a8a399d89af035adb0087b19ac1021fc9c2f8" }
 highfleet-mod-api = { git = "https://github.com/logdot/Highfleet-Modloader.git", tag = "v4.0.0" }
 log = "0.4.28"
 patchy = { package = "patchy-rs", git = "https://github.com/logdot/patchy-rs.git", tag = "v0.1.0" }

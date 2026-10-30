@@ -32,6 +32,7 @@ Tests for the pure math: `cd ai && cargo xwin test --release --target x86_64-pc-
 The game's addresses, struct layouts and findings are in a separate repo: **[mxtrnhf/hf_notes](https://github.com/mxtrnhf/hf_notes)** (Ghidra notes on 1.163, battle AI, missiles, planes, pre-combat screen). Source comments cite these notes by file name.
 
 ## Credits and legal
-* Built on logdot's [Highfleet-Modloader](https://github.com/logdot/Highfleet-Modloader), [patchy-rs](https://github.com/logdot/patchy-rs) and [highfleet-qol](https://github.com/logdot/highfleet-qol); the `ai_flares` and missile-dump ideas started in the QoL fork.
+* Built on logdot's [Highfleet-Modloader](https://github.com/logdot/Highfleet-Modloader), [patchy-rs](https://github.com/logdot/patchy-rs), [highfleet-qol](https://github.com/logdot/highfleet-qol) and [highfleet-rs](https://github.com/logdot/highfleet-rs); the `ai_flares` and missile-dump ideas started in the QoL fork.
+* `hf_ally` pins `highfleet-rs` to revision `8a6a8a3` for Steam 1.163 aircraft/loadout and GUI layouts. Compile-time checks preserve the existing field offsets; game-native constructors, string assignment and link operations still manage game-owned objects.
 * Much of the code and notes were written with the help of Claude Code (Anthropic); commits carry the co-author line.
 * Unofficial fan project, not affiliated with the HighFleet developers or publisher. No game files are included. MIT licensed, see [LICENSE](LICENSE).

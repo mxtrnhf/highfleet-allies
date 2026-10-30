@@ -37,6 +37,7 @@ mod crash_fixes;
 mod diag;
 mod intercept;
 mod max_enemy;
+mod native_layout;
 mod plane_loadouts;
 #[cfg(feature = "telemetry")]
 mod telemetry;
@@ -48,6 +49,10 @@ use std::{
         Mutex,
     },
 };
+
+use std::mem::{offset_of, size_of};
+
+use native_layout::{Body, Gui, Link, Node};
 
 use patchy::{PatchSession, ProcessModule, ReturnType, Trampoline};
 use serde::{Deserialize, Serialize};
@@ -99,7 +104,8 @@ const PRECOMBAT_SEAM_TARGET: usize = 0x1_4027_5850;
 /// `GUI_ELEMENTS`: a std::list sentinel pointer; node +0 next, +0x10 the GUI object; name at object +0xa40.
 const GUI_LIST: usize = 0x1_43a1_3ac8;
 const GUI_COUNT: usize = 0x1_43a1_3ad0;
-const GUI_NAME: usize = 0xa40;
+const GUI_NAME: usize = offset_of!(Gui, identifier);
+const GUI_LINK_TARGET: usize = offset_of!(Gui, gui_l1) + offset_of!(Link, target);
 // --- GUI element recipe (read from the PRECOMBAT_OK block of 0x1402d7620, see precombat-screen.md) ---
 const GUI_NEW: usize = 0x1_4033_4094; // operator new(size)
 const GUI_NEW_PROLOGUE: [u8; 9] = [0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9];
@@ -152,7 +158,7 @@ const DEPLOY_AGGR: usize = 0x1_4035_24d8; // f32, 1.0
 const CONTROLLED_LINKS: usize = 0x1_43a1_c260;
 const ALLY_SLOT: usize = 1;
 const OFF_MODE_D70: usize = 0xd70; // i32: 1 = flown by the player, 2 = wingman
-const OFF_ACTIVE: usize = 0x48; // i32: non-zero while the ship is in the level
+const OFF_ACTIVE: usize = offset_of!(Node, state); // i32: non-zero while the ship is in the level
 
 /// Global creature list (`Link` entries, 0x18 bytes, pointer at +8): begin / end.
 const CREATURES_BEGIN: usize = 0x1_43fa_a5d8;
@@ -1109,7 +1115,7 @@ unsafe fn card_elements(quiet: bool) -> Vec<(f32, f32, f32, f32)> {
         let element: usize = read(node + 0x10);
         if element != 0 && read::<i32>(element + OFF_ACTIVE) != 0 {
             let name = cstr(element + GUI_NAME);
-            let entry = (read::<f32>(element + 0x128), read::<f32>(element + 0x12c), read::<f32>(element + 0x218), read::<f32>(element + 0x21c));
+            let entry = (read::<f32>(element + offset_of!(Body, position_x)), read::<f32>(element + offset_of!(Body, position_y)), read::<f32>(element + 0x218), read::<f32>(element + 0x21c));
             if name == "PRECOMBAT_A" {
                 out.push(entry);
             } else if !quiet && (name == "PRECOMBAT_B" || name == "MINIFIG_NUMBER" || name == "MES_APP") {
@@ -1138,7 +1144,7 @@ unsafe fn make_gui(name: &[u8]) -> *mut u8 {
     }
     let new: NewFn = std::mem::transmute(GUI_NEW);
     let ctor: CtorFn = std::mem::transmute(GUI_CTOR);
-    let mem = new(0xe70);
+    let mem = new(size_of::<Gui>());
     if mem.is_null() {
         return mem;
     }
@@ -1204,7 +1210,7 @@ unsafe fn card_ship_list() -> Vec<(f32, usize)> {
         }
         let element: usize = read(node + 0x10);
         if element != 0 && read::<i32>(element + OFF_ACTIVE) != 0 && cstr(element + GUI_NAME) == "PRECOMBAT_A" {
-            out.push((read::<f32>(element + 0x128), plane_loadouts::ship_of_link(read::<usize>(element + 0xbc0))));
+            out.push((read::<f32>(element + offset_of!(Body, position_x)), plane_loadouts::ship_of_link(read::<usize>(element + GUI_LINK_TARGET))));
         }
         node = read(node);
     }
@@ -1511,7 +1517,7 @@ unsafe fn doors_closed() -> bool {
         ROLL_SEEN.store(true, Ordering::Relaxed);
     }
     let hold = desk != 0 || (!ROLL_SEEN.load(Ordering::Relaxed) && since_entry < ROLL_TIMEOUT_MS);
-    let y = if desk == 0 { f32::NEG_INFINITY } else { read::<f32>(desk + 0x12c) };
+    let y = if desk == 0 { f32::NEG_INFINITY } else { read::<f32>(desk + offset_of!(Body, position_y)) };
     let state = (hold as u32) | (((y / 50.0) as i32 as u32) << 1);
     if state != DOOR_STATE.swap(state, Ordering::Relaxed) && DOOR_LOGS.fetch_add(1, Ordering::Relaxed) < 400 {
         toggle_line(format!("ALLY roller cover: ROLL_DESK y={y:.0} label held back={hold} t+{since_entry}ms"));
@@ -1767,13 +1773,13 @@ unsafe fn inspect_gui(trigger: &str) {
                 cstr(e + GUI_NAME),
                 cstr(e + 8),
                 read::<i32>(e + OFF_ACTIVE),
-                read::<f32>(e + 0x128),
-                read::<f32>(e + 0x12c),
+                read::<f32>(e + offset_of!(Body, position_x)),
+                read::<f32>(e + offset_of!(Body, position_y)),
                 read::<f32>(e + 0x218),
                 read::<f32>(e + 0x21c),
                 read::<usize>(e).wrapping_sub(IMAGE_BASE),
-                read::<i32>(e + 0xc00),
-                read::<usize>(e + 0xbc0),
+                read::<i32>(e + offset_of!(Gui, gui_i1)),
+                read::<usize>(e + GUI_LINK_TARGET),
             ));
         }
         node = read(node);

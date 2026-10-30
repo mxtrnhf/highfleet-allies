@@ -22,6 +22,10 @@ use std::{
     },
 };
 
+use std::mem::{offset_of, size_of};
+
+use crate::native_layout::{Ammo, Body, Link, Loadout, Munition, Plane, PlaneNode};
+
 use patchy::{PatchSession, ReturnType, Trampoline};
 
 const ARM_FN: usize = 0x1_4002_e930;
@@ -31,10 +35,10 @@ const ARM_BYTES: [u8; 15] = [0x48, 0x8b, 0xc4, 0x55, 0x53, 0x56, 0x57, 0x41, 0x5
 const COPY_ASSIGN: usize = 0x1_4001_7e20;
 const GET_PROFILE: usize = 0x1_4029_2a90;
 
-const OFF_CRAFT: usize = 0x190;
-const OFF_LOADOUT: usize = 0x3f8;
+const OFF_CRAFT: usize = offset_of!(Body, oid);
+const OFF_LOADOUT: usize = offset_of!(Body, logic_s1);
 /// The plane's AircraftLogic; its +0x128 / +0x138 are the bomb / rocket entry counts, +0x190 its state.
-const OFF_LOGIC: usize = 0xa20;
+const OFF_LOGIC: usize = offset_of!(Body, aircraft_logic);
 const CAMPAIGN_BYTES: (usize, usize) = (0x1_47fc_6f80, 0x1_47fc_6f81);
 const OFF_PLANES: (usize, usize) = (0x14c8, 0x14d0);
 /// Profile API (win64 fastcall, RCX = profile): owned count / remove, by item name ("ITEM_FAB100"). The ammo shop uses the same.
@@ -86,15 +90,16 @@ pub const MAX_CRAFTS: usize = 6;
 /// `PLANE_TLL`: `{ head*, size }` of an MSVC `std::map` CRAFT_* -> Plane (findings section 14).
 const PLANE_TLL: usize = 0x1_43a1_3c50;
 /// Craft node: key at `+0x20`, the loadout pointer vector (each points at a `GameLoadout`) at `+0x48/+0x50`.
-const TLL_VEC: (usize, usize) = (0x48, 0x50);
+const TLL_VECTOR: usize = offset_of!(PlaneNode, data) + offset_of!(Plane, loadouts);
+const TLL_VEC: (usize, usize) = (TLL_VECTOR, TLL_VECTOR + size_of::<usize>());
 /// `GameLoadout`: oid string `+0`, `vec_parts` begin / end `+0x40` / `+0x48`, stride 0x28 (name `+0`, count `+0x20`).
-const LO_PARTS: (usize, usize) = (0x40, 0x48);
-const PART_STRIDE: usize = 0x28;
-const PART_COUNT: usize = 0x20;
+const LO_PARTS: (usize, usize) = (offset_of!(Loadout, parts), offset_of!(Loadout, parts) + size_of::<usize>());
+const PART_STRIDE: usize = size_of::<Munition>();
+const PART_COUNT: usize = offset_of!(Munition, count);
 /// The game's ammo list (qol `plane_guns.rs`, 1.163): `{ begin*, end* }` of `Ammo` records of 0x188 bytes, `reticle` (the
 /// class: 2 bombs, 3 rockets, 4 gun, 5 K-13) as the first int, the item name string at `+8`.
 const AMMO_LIST: usize = 0x1_43a1_3be0;
-const AMMO_SIZE: usize = 0x188;
+const AMMO_SIZE: usize = size_of::<Ammo>();
 
 /// The vanilla table, used when the live one cannot be read: (loadout suffix, item, T-7 count, LA-29 count).
 const VANILLA: [(&str, &str, i32, i32); 5] = [
@@ -191,7 +196,7 @@ unsafe fn map_nodes(global: usize) -> Vec<usize> {
     if size == 0 || size > 4096 || !crate::plausible(head) {
         return Vec::new();
     }
-    let isnil = |n: usize| rd::<u8>(n + 0x19) != 0;
+    let isnil = |n: usize| rd::<u8>(n + offset_of!(PlaneNode, is_sentinel)) != 0;
     let mut out = Vec::new();
     let mut node: usize = rd(head); // head->left = the leftmost node
     while node != head && out.len() <= size {
@@ -199,7 +204,7 @@ unsafe fn map_nodes(global: usize) -> Vec<usize> {
             return Vec::new();
         }
         out.push(node);
-        let right: usize = rd(node + 0x10);
+        let right: usize = rd(node + offset_of!(PlaneNode, right));
         if crate::plausible(right) && !isnil(right) {
             node = right;
             loop {
@@ -210,10 +215,10 @@ unsafe fn map_nodes(global: usize) -> Vec<usize> {
                 node = left;
             }
         } else {
-            let mut parent: usize = rd(node + 8);
-            while crate::plausible(parent) && !isnil(parent) && node == rd::<usize>(parent + 0x10) {
+            let mut parent: usize = rd(node + offset_of!(PlaneNode, parent));
+            while crate::plausible(parent) && !isnil(parent) && node == rd::<usize>(parent + offset_of!(PlaneNode, right)) {
                 node = parent;
-                parent = rd(node + 8);
+                parent = rd(node + offset_of!(PlaneNode, parent));
             }
             node = parent;
         }
@@ -232,8 +237,8 @@ unsafe fn ammo_classes() -> HashMap<String, i32> {
         return out;
     }
     for rec in (b..e).step_by(AMMO_SIZE) {
-        if let Some(name) = string_at(rec + 8) {
-            out.insert(name, rd::<i32>(rec));
+        if let Some(name) = string_at(rec + offset_of!(Ammo, item_name)) {
+            out.insert(name, rd::<i32>(rec + offset_of!(Ammo, reticle)));
         }
     }
     out
@@ -248,7 +253,7 @@ unsafe fn read_table() -> Option<Table> {
         return None;
     }
     let classes = ammo_classes();
-    let mut named: Vec<(String, usize)> = nodes.iter().filter_map(|&n| Some((string_at(n + 0x20)?, n))).collect();
+    let mut named: Vec<(String, usize)> = nodes.iter().filter_map(|&n| Some((string_at(n + offset_of!(PlaneNode, key))?, n))).collect();
     named.sort_by_key(|(name, _)| match name.as_str() {
         "CRAFT_T7" => 0,
         "CRAFT_LA29" => 1,
@@ -417,10 +422,10 @@ unsafe fn planes_of(ship: usize) -> Vec<usize> {
         return Vec::new();
     }
     let (b, e): (usize, usize) = (rd(ship + OFF_PLANES.0), rd(ship + OFF_PLANES.1));
-    if b < 0x10000 || e < b || (e - b) / 0x18 > 64 {
+    if b < 0x10000 || e < b || (e - b) / size_of::<Link>() > 64 {
         return Vec::new();
     }
-    (b..e).step_by(0x18).map(|a| rd::<usize>(a + 8)).filter(|p| crate::plausible(*p)).collect()
+    (b..e).step_by(size_of::<Link>()).map(|a| rd::<usize>(a + offset_of!(Link, target))).filter(|p| crate::plausible(*p)).collect()
 }
 
 unsafe fn profile() -> usize {
@@ -705,12 +710,12 @@ unsafe fn install_gunpod(logic: usize) -> bool {
     // Prefer the vanilla 37 mm. A mod may replace/rename it, so fall back to the first class-4 (aircraft gun) ammo.
     let mut pick: Option<(usize, i32, String)> = None;
     for rec in (begin..end).step_by(AMMO_SIZE) {
-        let name = string_at(rec + 8).unwrap_or_default();
+        let name = string_at(rec + offset_of!(Ammo, item_name)).unwrap_or_default();
         if name == "ITEM_GUN37" {
             pick = Some((rec, 4, name));
             break;
         }
-        if pick.is_none() && rd::<i32>(rec) == 4 {
+        if pick.is_none() && rd::<i32>(rec + offset_of!(Ammo, reticle)) == 4 {
             pick = Some((rec, 4, name));
         }
     }
@@ -719,8 +724,8 @@ unsafe fn install_gunpod(logic: usize) -> bool {
         return false;
     };
     let index = ((rec - begin) / AMMO_SIZE) as i32;
-    let delay = rd::<f32>(rec + 0x17c);
-    let magazine = rd::<i32>(rec + 0x180).clamp(1, 999);
+    let delay = rd::<f32>(rec + offset_of!(Ammo, fire_delay));
+    let magazine = rd::<i32>(rec + offset_of!(Ammo, salvo_size)).clamp(1, 999);
     let reserve = (50 - magazine).max(0);
     (logic as *mut i32).byte_add(0x1a4).write_unaligned(index);
     (logic as *mut f32).byte_add(0xa0).write_unaligned(2.0);

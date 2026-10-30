@@ -70,12 +70,24 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 name = "hf-ally"
 version = "0.14.1"
 dependencies = [
+ "highfleet",
  "highfleet-mod-api",
  "log",
  "patchy-rs",
  "serde",
  "serde_json",
  "windows-sys",
+]
+
+[[package]]
+name = "highfleet"
+version = "0.1.0"
+source = "git+https://github.com/logdot/highfleet-rs.git?rev=8a6a8a399d89af035adb0087b19ac1021fc9c2f8#8a6a8a399d89af035adb0087b19ac1021fc9c2f8"
+dependencies = [
+ "libc",
+ "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
