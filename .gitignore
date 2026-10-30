@@ -1,3 +1,6 @@
 target/
 *.dmp
 *.bin
+
+__pycache__/
+*.pyc

@@ -223,7 +223,7 @@ struct Config {
     /// the CIWS and anti-air launchers of both sides would shoot at it). Copy the names from `m_oid=` in OL.seria. Empty = vanilla.
     intercept_ignore_oids: Vec<String>,
     /// Debug mode for bug reports: writes `Modloader/logs/hf_ally_megalog_<time>.log` (large, 2-5 MB/hour), a watchdog and a
-    /// crash minidump `hf_ally_crash_<time>.dmp` (may hold paths and campaign data: delete it after sending). Default off.
+    /// crash minidump `hf_ally_crash_<time>.dmp` (may hold paths and campaign data: delete it after sending). Enabled in the player default preset.
     debug_log: bool,
     /// Stock-game crash fixes (aircraft target choice, fleet-merge null fleet). Default on.
     fix_plane_ai_crash: bool,
@@ -233,7 +233,7 @@ struct Config {
     /// Normal tactical battle only (`Combat.seria`; `stateSelectorAircraft_ == 4`), never the strategic bomber scene.
     /// Default on.
     extra_gunpod: bool,
-    /// Offer the K-13 air-to-air loadout for carrier planes. Default off (janky).
+    /// Offer the K-13 air-to-air loadout for carrier planes. Enabled in the player default preset.
     plane_k13: bool,
     plane_attack_delay: f32,
     plane_aa_range: f32,
@@ -287,34 +287,34 @@ impl Default for Config {
             flagship_leaves: "handover".to_string(),
             retreat_key: 0x77,
             ally_toggle: true,
-            probe_lines: true,
+            probe_lines: false,
             gui_inspect: false,
             spare_prizes: true,
-            intercept_ignore_oids: Vec::new(),
-            debug_log: false,
+            intercept_ignore_oids: vec!["MDL_MISSILE_03".to_string()],
+            debug_log: true,
             fix_plane_ai_crash: true,
             plane_bombers: false,
             extra_gunpod: true,
-            plane_k13: false,
-            plane_attack_delay: 6.0,
+            plane_k13: true,
+            plane_attack_delay: 1.0,
             plane_aa_range: 6000.0,
-            plane_aa_delay: 3.0,
+            plane_aa_delay: 1.0,
             plane_aa_angle: 0.35,
             plane_aa_speed: 1.5,
             fix_merge_crash: true,
             ally_ai_ammo: true,
-            max_enemy_ships: 5,
+            max_enemy_ships: 8,
             enemy_group_size: 3,
             enemy_all_at_once: false,
             plane_loadouts: true,
             log_colors: false,
             ally_damage_color: "#00E4FF".to_string(),
             max_allies: 2,
-            log_precombat: true,
+            log_precombat: false,
             log_creatures: false,
             telemetry: false,
             ally_sounds: true,
-            ally_fuel_retreat_percent: 0.0,
+            ally_fuel_retreat_percent: 30.0,
             marker_text: "PLAYER".to_string(),
             marker_seam: 23,
             marker_delay_ms: 0,
@@ -2966,6 +2966,15 @@ mod tests {
         assert_eq!(select_marker_seam(24), 23);
         assert_eq!(select_marker_seam(u32::MAX), 23);
         assert_eq!(Config::default().marker_seam, 23);
+    }
+
+    #[test]
+    fn defaults_match_the_checked_in_player_preset() {
+        let preset: Config = serde_json::from_str(include_str!("../config/ally.json")).unwrap();
+        let expected = serde_json::to_value(preset).unwrap();
+        assert_eq!(serde_json::to_value(Config::default()).unwrap(), expected);
+        let omitted: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(serde_json::to_value(omitted).unwrap(), expected);
     }
 
     /// Writes the full default config to the path in `HF_DUMP_CONFIG` (used to produce the example config of the release pack).

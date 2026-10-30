@@ -379,8 +379,8 @@ struct Config {
     log_scan: bool,
     /// With `log_scan`: also list every body the scan considered (only on ticks with a kept node).
     log_scan_bodies: bool,
-    /// The ported qol `ai_flares` (flares burst, sidestep, panic evasion, barrel roll, allies). Off by default:
-    /// enable it only with qol's `ai_flares.enabled` (and `evade`) turned off.
+    /// The ported qol `ai_flares` (flares burst, sidestep, panic evasion, barrel roll, allies). Enabled by player default:
+    /// use it only with qol's `ai_flares.enabled` (and `evade`) turned off.
     ai_flares: AiFlaresConfig,
     /// Aim dodging and dive avoidance. Off by default.
     tactics: TacticsConfig,
@@ -394,7 +394,21 @@ struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { enabled: true, plane_group_per_launch: plane_group_math::DEFAULT_GROUP_SIZE, plane_group_launch_delay_seconds: plane_group_math::DEFAULT_DELAY, twr_cutoff: 0.0, log_steering: true, log_hz: 10.0, log_scan: false, log_scan_bodies: false, ai_flares: AiFlaresConfig::default(), tactics: TacticsConfig::default(), ai_missile_dump_chance: 0.0, ai_missile_dump_min_delay: missile_dump::DEFAULT_MIN_DELAY, ai_missile_dump_max_delay: missile_dump::DEFAULT_MAX_DELAY }
+        Self {
+            enabled: true,
+            plane_group_per_launch: plane_group_math::DEFAULT_GROUP_SIZE,
+            plane_group_launch_delay_seconds: plane_group_math::DEFAULT_DELAY,
+            twr_cutoff: 2.0,
+            log_steering: false,
+            log_hz: 10.0,
+            log_scan: false,
+            log_scan_bodies: false,
+            ai_flares: AiFlaresConfig::default(),
+            tactics: TacticsConfig::default(),
+            ai_missile_dump_chance: 0.4,
+            ai_missile_dump_min_delay: 0.6,
+            ai_missile_dump_max_delay: 1.5,
+        }
     }
 }
 
@@ -576,12 +590,21 @@ mod tests {
     #[test]
     fn twr_cutoff_is_optional_and_configurable() {
         let old: Config = serde_json::from_str("{}").unwrap();
-        assert_eq!(old.twr_cutoff, 0.0);
+        assert_eq!(old.twr_cutoff, 2.0);
         let configured: Config = serde_json::from_str(r#"{"twr_cutoff":3.5}"#).unwrap();
         assert_eq!(configured.twr_cutoff, 3.5);
         assert_eq!(serde_json::to_value(&configured).unwrap()["twr_cutoff"], 3.5);
     }
 
+
+    #[test]
+    fn defaults_match_the_checked_in_player_preset() {
+        let preset: Config = serde_json::from_str(include_str!("../config/hf_ai.json")).unwrap();
+        let expected = serde_json::to_value(preset).unwrap();
+        assert_eq!(serde_json::to_value(Config::default()).unwrap(), expected);
+        let omitted: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(serde_json::to_value(omitted).unwrap(), expected);
+    }
 
     /// Writes the full default config to the path in `HF_DUMP_CONFIG` (used to produce the example config of the release pack).
     #[test]
@@ -593,9 +616,9 @@ mod tests {
     }
 
     #[test]
-    fn old_config_without_ai_flares_loads_with_it_off() {
+    fn missing_flare_block_uses_player_defaults_and_explicit_off_is_respected() {
         let config: Config = serde_json::from_str(r#"{"enabled": true, "log_steering": false}"#).unwrap();
-        assert!(!config.log_steering && !config.ai_flares.enabled);
+        assert!(!config.log_steering && config.ai_flares.enabled);
         assert_eq!(config.ai_flares.trigger_range, 400.0);
         let text = serde_json::to_string_pretty(&Config::default()).unwrap();
         assert!(text.contains("\"ai_flares\"") && text.contains("\"log_panic\": false"));
@@ -604,14 +627,18 @@ mod tests {
     }
 
     #[test]
-    fn v0_2_0_config_without_tactics_loads_with_tactics_off() {
+    fn missing_tactics_block_uses_player_defaults_and_explicit_off_is_respected() {
         let config: Config = serde_json::from_str(r#"{"enabled": true, "ai_flares": {"enabled": true}}"#).unwrap();
-        assert!(!config.tactics.enabled && config.ai_flares.enabled);
-        assert!(!config.tactics.params().enabled);
+        assert!(config.tactics.enabled && config.ai_flares.enabled);
+        assert!(config.tactics.params().enabled);
         let text = serde_json::to_string_pretty(&Config::default()).unwrap();
-        assert!(text.contains("\"tactics\"") && text.contains("\"k_center\""));
+        assert!(text.contains("\"tactics\"") && text.contains("\"aim_enabled\""));
         let on: Config = serde_json::from_str(r#"{"tactics": {"enabled": true}}"#).unwrap();
-        assert!(on.tactics.params().enabled && !on.ai_flares.enabled);
+        assert!(on.tactics.params().enabled && on.ai_flares.enabled);
+        let off: Config = serde_json::from_str(
+            r#"{"tactics":{"enabled":false},"ai_flares":{"enabled":false}}"#,
+        ).unwrap();
+        assert!(!off.tactics.params().enabled && !off.ai_flares.enabled);
     }
 
     #[test]

@@ -13,12 +13,12 @@ pub const MAX_SECONDS: f32 = 60.0;
 /// panics when a missile that has locked on to it comes within `trigger_range`: it dumps flares and
 /// throws itself sideways until the missile is gone.
 ///
-/// Only has an effect on Steam 1.163. Defaults are the values the author runs in `qol.json`, except `enabled`
-/// (off until qol's own `ai_flares` is turned off: exactly one of the two may be enabled).
+/// Only has an effect on Steam 1.163. Defaults match config/hf_ai.json. Keep any separate QoL ai_flares feature off;
+/// exactly one implementation may own the flare hooks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiFlaresConfig {
-    /// Turns AI flares on. Disabled by default. Enable it only when qol's `ai_flares.enabled` is `false`: both
+    /// Turns AI flares on. Enabled by player default. Enable it only when qol's `ai_flares.enabled` is `false`: both
     /// patch the same three sites and whichever loads second finds other bytes and skips.
     pub enabled: bool,
     /// How close, in game units, an incoming missile has to be before the ship reacts.
@@ -155,7 +155,7 @@ pub struct AiFlaresConfig {
 impl Default for AiFlaresConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             trigger_range: 400.0,
             reaction_probability: 0.6,
             burst_seconds: 1.5,
@@ -163,14 +163,14 @@ impl Default for AiFlaresConfig {
             evade: true,
             allies: true,
             evasion_seconds: 3.0,
-            evasion_strength: 0.9,
-            barrel_roll_probability: 0.01,
+            evasion_strength: 0.5,
+            barrel_roll_probability: 0.001,
             barrel_roll_seconds: 2.0,
-            panic_evasion_probability: 0.3,
+            panic_evasion_probability: 0.1,
             panic_boost: 2.0,
-            panic_evasion_seconds: 8.0,
+            panic_evasion_seconds: 5.0,
             log_panic: false,
-            launch_flares_probability: 0.0,
+            launch_flares_probability: 0.6,
             launch_flares_interval_min: 0.5,
             launch_flares_interval_max: 1.0,
             launch_flares_seconds: 5.0,
@@ -320,14 +320,14 @@ mod tests {
     fn omitted_fields_use_defaults() {
         let config: AiFlaresConfig = serde_json::from_str("{}").unwrap();
 
-        assert!(!config.enabled);
+        assert!(config.enabled);
         assert_eq!(config.trigger_range, 400.0);
         assert_eq!(config.burst_seconds, 1.5);
         assert!(config.evade);
         assert!(config.allies);
         assert!(!config.log_panic);
-        assert_eq!(config.panic_evasion_probability, 0.3);
-        assert_eq!(config.panic_evasion_seconds, 8.0);
+        assert_eq!(config.panic_evasion_probability, 0.1);
+        assert_eq!(config.panic_evasion_seconds, 5.0);
         assert_eq!(config.barrel_roll_seconds, 2.0);
     }
 
@@ -339,7 +339,7 @@ mod tests {
         assert!(config.enabled);
         assert_eq!(config.trigger_range, 900.0);
         assert_eq!(config.min_interval_seconds, 1.5);
-        assert_eq!(config.barrel_roll_probability, 0.01);
+        assert_eq!(config.barrel_roll_probability, 0.001);
     }
 
     #[test]
@@ -377,9 +377,9 @@ mod tests {
     }
 
     #[test]
-    fn launch_flares_defaults_off_and_sanitize() {
+    fn launch_flares_player_defaults_and_sanitize() {
         let config: AiFlaresConfig = serde_json::from_str("{}").unwrap();
-        assert_eq!(config.launch_flares_probability, 0.0);
+        assert_eq!(config.launch_flares_probability, 0.6);
         let c = AiFlaresConfig {
             launch_flares_probability: 3.0,
             launch_flares_interval_min: 2.0,

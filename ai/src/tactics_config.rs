@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::tactics_math::Params;
 
-/// The aim-dodge and dive-avoidance `tactics` block of `hf_ai.json`. Off by default; every key optional.
+/// The aim-dodge and dive-avoidance `tactics` block of `hf_ai.json`. Enabled by player default; every key optional.
 /// Distances are game units, times are game seconds. Applies to AI-flown, airborne ships with a living target only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -44,7 +44,7 @@ pub struct TacticsConfig {
     pub dive_under_dwell_s: f32,
     /// Vertical pull onto the target's altitude mixed into the dodge (0 = purely sideways).
     pub dive_level_weight: f32,
-    /// "Aim awareness" (off by default): in shared awareness windows the enemies that target the player see the
+    /// "Aim awareness" (enabled by player default): in shared awareness windows the enemies that target the player see the
     /// player's aim line and slip off it. Window length, random time from the start of one window to the start of the next, hit tolerance
     /// (miss distance from the aim ray), range along the ray, sidestep weight and engine boost.
     pub aim_enabled: bool,
@@ -68,7 +68,7 @@ impl Default for TacticsConfig {
     fn default() -> Self {
         let p = Params::default();
         Self {
-            enabled: false,
+            enabled: p.enabled,
             apply_to_allies: p.apply_to_allies,
             ground_y: p.ground_y,
             ground_clearance: p.ground_clearance,
@@ -198,10 +198,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_are_off_and_match_the_math_defaults() {
+    fn player_defaults_enable_tactics_and_match_the_math_defaults() {
         let config: TacticsConfig = serde_json::from_str("{}").unwrap();
-        assert!(!config.enabled && !config.apply_to_allies);
-        assert!(config.params().dive_enabled && !config.params().aim_enabled);
+        assert!(config.enabled && config.apply_to_allies);
+        assert!(config.params().dive_enabled && config.params().aim_enabled);
         let partial: TacticsConfig = serde_json::from_str(r#"{"enabled":true,"dive_weight":10.0}"#).unwrap();
         assert!(partial.enabled);
         assert_eq!(partial.params().dive_weight, 10.0);

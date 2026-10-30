@@ -1,0 +1,159 @@
+{
+  "enable_anti_wobble": false,
+  "enable_unblocked_guns": false,
+  "enable_reduced_shake": false,
+  "enable_flare_crash_fix": true,
+  "enable_unblocked_ttl": false,
+  "enable_arcade_zoom": true,
+  "max_zoom_level": 5,
+  "min_zoom_level": 3,
+  "zoom_levels": [
+    14.0,
+    7.0,
+    1.0,
+    0.7,
+    0.5,
+    0.3
+  ],
+  "planes": {
+    "CRAFT_LA29": {
+      "health": 30.0,
+      "loadouts": [
+        {
+          "oid": "LOADOUT_LA29_GUN37",
+          "icon": "LOADOUT_GUN37",
+          "vec_parts": [],
+          "launch_loadout_weight": 10,
+          "gun_ammo": "ITEM_GUN37"
+        },
+        {
+          "oid": "LOADOUT_LA29_FAB100",
+          "icon": "LOADOUT_FAB100",
+          "vec_parts": [
+            {
+              "name": "ITEM_FAB100",
+              "count": 2
+            }
+          ],
+          "launch_loadout_weight": 10
+        },
+        {
+          "oid": "LOADOUT_LA29_FAB250",
+          "icon": "LOADOUT_FAB250",
+          "vec_parts": [
+            {
+              "name": "ITEM_FAB250",
+              "count": 1
+            }
+          ],
+          "launch_loadout_weight": 10
+        },
+        {
+          "oid": "LOADOUT_LA29_NURS122",
+          "icon": "LOADOUT_NURS122",
+          "vec_parts": [
+            {
+              "name": "ITEM_NAR122",
+              "count": 6
+            }
+          ],
+          "launch_loadout_weight": 10
+        }
+      ]
+    },
+    "CRAFT_T7": {
+      "health": 30.0,
+      "loadouts": [
+        {
+          "oid": "LOADOUT_T7_GUN37",
+          "icon": "LOADOUT_GUN37",
+          "vec_parts": [],
+          "launch_loadout_weight": 10,
+          "gun_ammo": "ITEM_GUN37"
+        },
+        {
+          "oid": "LOADOUT_T7_FAB100",
+          "icon": "LOADOUT_FAB100",
+          "vec_parts": [
+            {
+              "name": "ITEM_FAB100",
+              "count": 4
+            }
+          ],
+          "launch_loadout_weight": 10
+        },
+        {
+          "oid": "LOADOUT_T7_FAB250",
+          "icon": "LOADOUT_FAB250",
+          "vec_parts": [
+            {
+              "name": "ITEM_FAB250",
+              "count": 2
+            }
+          ],
+          "launch_loadout_weight": 10
+        },
+        {
+          "oid": "LOADOUT_T7_NURS122",
+          "icon": "LOADOUT_NURS122",
+          "vec_parts": [
+            {
+              "name": "ITEM_NAR122",
+              "count": 12
+            }
+          ],
+          "launch_loadout_weight": 10
+        },
+        {
+          "oid": "LOADOUT_T7_NURS340",
+          "icon": "LOADOUT_NURS340",
+          "vec_parts": [
+            {
+              "name": "ITEM_NAR340",
+              "count": 2
+            }
+          ],
+          "launch_loadout_weight": 10
+        },
+        {
+          "oid": "LOADOUT_T7_K13",
+          "icon": "LOADOUT_K13",
+          "vec_parts": [
+            {
+              "name": "ITEM_K13",
+              "count": 2
+            }
+          ],
+          "launch_loadout_weight": 5,
+          "gun_ammo": "ITEM_GUN37"
+        }
+      ]
+    }
+  },
+  "enable_shop_parts": false,
+  "shop_parts": {},
+  "sell_multiplier": 1.0,
+  "refuel": {
+    "player_rate_multiplier": 1.0,
+    "ai_rate_multiplier": 1.0
+  },
+  "speed": {
+    "preset": "vanilla",
+    "coefficient": 50.0,
+    "subtract": 1.0,
+    "exponent": 0.5,
+    "max_kmh": 0.0
+  },
+  "elevation": {
+    "enabled": false,
+    "max_floor": 3,
+    "sync_children": true,
+    "child_offset": 0,
+    "hint": "native",
+    "keys": {
+      "raise": "U",
+      "lower": "P",
+      "auto": "Backslash"
+    }
+  }
+}

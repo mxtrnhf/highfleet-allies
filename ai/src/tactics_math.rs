@@ -112,8 +112,8 @@ pub struct Params {
 impl Default for Params {
     fn default() -> Self {
         Self {
-            enabled: false,
-            apply_to_allies: false,
+            enabled: true,
+            apply_to_allies: true,
             ground_y: 200.0,
             ground_clearance: 450.0,
             ground_hard_y: 120.0,
@@ -134,7 +134,7 @@ impl Default for Params {
             dive_under_chance: 1.0,
             dive_under_dwell_s: 0.5,
             dive_level_weight: 0.7,
-            aim_enabled: false,
+            aim_enabled: true,
             aim_window_s: 1.5,
             aim_gap_min_s: 2.5,
             aim_gap_max_s: 3.5,
@@ -143,7 +143,7 @@ impl Default for Params {
             aim_weight: 12.0,
             aim_boost: 2.5,
             aim_require_fire: true,
-            aim_fire_probability: 0.0,
+            aim_fire_probability: 0.5,
             aim_fire_s: 1.0,
             aim_fire_range: 1.6,
         }
@@ -592,7 +592,7 @@ mod tests {
         Bounds { xmin: -1500.0, xmax: 1500.0, ymin: -2000.0 }
     }
     fn on() -> Params {
-        Params { enabled: true, ..Params::default() }
+        Params { enabled: true, apply_to_allies: false, ..Params::default() }
     }
     fn ok_gate() -> GateInput {
         GateInput { ai_flag: 1, side: -1.0, mode: Some(1), has_target: true, panicking: false }
@@ -640,7 +640,7 @@ mod tests {
     fn gate_combinations() {
         let p = on();
         assert_eq!(gate(&p, &ok_gate()), Gate::Pass);
-        assert_eq!(gate(&Params::default(), &ok_gate()), Gate::Stock, "disabled");
+        assert_eq!(gate(&Params { enabled: false, ..Params::default() }, &ok_gate()), Gate::Stock, "disabled");
         assert_eq!(gate(&p, &GateInput { ai_flag: 0, ..ok_gate() }), Gate::Stock, "player-flown");
         assert_eq!(gate(&p, &GateInput { side: 1.0, ..ok_gate() }), Gate::Stock, "ally");
         assert_eq!(gate(&Params { apply_to_allies: true, ..p }, &GateInput { side: 1.0, ..ok_gate() }), Gate::Pass);

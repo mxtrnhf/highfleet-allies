@@ -14,9 +14,15 @@ Both are optional, independent DLLs. Everything is reverse-engineered, so **Stea
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).
 2. Download the pack from [Releases](../../releases) and extract the zip directly into the game folder (the one with `Highfleet.exe`); it contains `Modloader/mods`, `Modloader/config` and `Media`.
 3. **QoL mod.** The mods need logdot's [highfleet-qol](https://github.com/logdot/highfleet-qol) for its **flare crash fix** (a 1.163 crash when a proximity-fused missile meets a flare; `hf_ai` drops far more flares than the stock game). **His stock release (v1.3.0) works fine with our mods**: if you already run it, keep it. The pack also ships our build, `Modloader/mods/highfleet_qol.dll`, built from the [`qol/`](qol) folder: logdot's current `main` plus our manual elevation. It adds only features **that are not in his latest release yet**: refuel rate and speed curve (merged into his `main`, no release since) and elevation (our [pull request #20](https://github.com/logdot/highfleet-qol/pull/20), still a draft). It replaces his DLL if you copy it over; once he cuts a release with these, use his release and drop ours. Keep `enable_flare_crash_fix` on (the default). `hf_ai` logs a warning at start-up if QoL is missing or set up wrongly. Use only **one** `hf_ally` DLL in `Modloader/mods`.
-4. Settings are JSON files in `Modloader/config/` (`ally.json`, `hf_ai.json`), written with defaults on first run. `"enabled": false` turns a mod off.
+4. Settings are JSON files in `Modloader/config/` (`ally.json`, `hf_ai.json`), written with the checked-in player defaults on first run. `"enabled": false` turns a mod off.
 
 ## Settings
+
+The player defaults are version-controlled in [`ally/config/ally.json`](ally/config/ally.json)
+and [`ai/config/hf_ai.json`](ai/config/hf_ai.json). Release files and compiled
+missing-key defaults match those presets. See [player-defaults.md](docs/player-defaults.md)
+for the profile and release policy. Existing configs keep their explicit values.
+
 Every setting is already in the config files of the pack, so there is nothing to discover: [`docs/ally-config.md`](docs/ally-config.md) (hf_ally, every key), [`docs/hf-ai-config-reference.md`](docs/hf-ai-config-reference.md) (hf_ai, every key) with the plain-language [`docs/hf-ai-tuning-guide.md`](docs/hf-ai-tuning-guide.md), and [`docs/qol-guide.md`](docs/qol-guide.md) (refuel, speed formulas and manual elevation, for the QoL build).
 
 ## Build (developers)
@@ -26,6 +32,8 @@ Rust nightly/stable ≥ 1.88 with `cargo-xwin` (cross-compiles to Windows MSVC f
     cd ai   && cargo xwin build --release --target x86_64-pc-windows-msvc
 
 `ally` has a runtime switch for bug reports: set `"debug_log": true` in `ally.json` to write a verbose megalog, run a watchdog and save a crash dump (`Modloader/logs/hf_ally_megalog_*.log`, `hf_ally_crash_*.dmp`; the dump may contain paths and campaign data, delete it after sending). The cargo feature `megalog` turns the same mode on in the build itself, and `telemetry` adds battle CSVs for AI research.
+Package a built release: `python3 tools/package_release.py --version 0.14.2 --output ../release_packs`.
+
 Tests for the pure math: `cd ai && cargo xwin test --release --target x86_64-pc-windows-msvc` (needs wine).
 
 ## How it works / research notes

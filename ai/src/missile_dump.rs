@@ -51,8 +51,8 @@ const RANDOM_SLOT: usize = 0x110;
 const GAME_TIME: usize = 0x143a119c0;
 
 /// Default shortest and longest wait between the launches of a burst, in seconds.
-pub const DEFAULT_MIN_DELAY: f32 = 0.1;
-pub const DEFAULT_MAX_DELAY: f32 = 0.5;
+pub const DEFAULT_MIN_DELAY: f32 = 0.6;
+pub const DEFAULT_MAX_DELAY: f32 = 1.5;
 /// Longest wait that can be configured, in seconds.
 const MAX_CONFIGURABLE_DELAY: f32 = 10.0;
 /// How long a burst waits for its next launch before it is dropped, in seconds.

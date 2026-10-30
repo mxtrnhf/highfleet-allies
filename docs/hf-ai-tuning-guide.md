@@ -1,4 +1,4 @@
-# Tuning hf_ai: a plain-language guide (v0.9.0)
+# Tuning hf_ai: a plain-language guide (player defaults: v0.10.7)
 
 Written 2026-10-24 for the person who tunes the AI, not for the person who reads the code. Every number below is a key in `Modloader/config/hf_ai.json`; the code defaults are in `hf_ai/src/tactics_math.rs` (`Params::default`) and `hf_ai/src/flares_config.rs`. Where I only know something from reading the code and not from playing, it says so.
 
@@ -84,9 +84,16 @@ Unconfirmed in play: whether allies really dodge as intended. The ally curtain a
 5. **Safe order for a "harder" AI:** raise `reaction_probability`, then the dive weights, then the aim window frequency, last the early fire. For an "easier" one reverse it. Early fire is the one that makes the AI visibly dangerous, so move it in steps of 0.1.
 6. **Pitfalls.** (a) Boosts need `ai_flares.enabled` true. (b) Qol's own `ai_flares` must be false while hf_ai's is true: both patch the same sites. (c) A ship under 30 thrust/mass never does anything, so heavies feel "stock". (d) Settings are read at game start (no hot reload that I know of; restart the game after editing). (e) Wrong key names are silently ignored (every key is optional), so check the `hf_ai: tactics ON (...)` log line shows your numbers.
 
-## 6. Release defaults (pack v0.13.0-rel.3)
+## 6. Player defaults (hf_ai v0.10.7)
 
-`enabled` true; `ai_flares`: enabled, allies, evade, `panic_evasion_probability` 0.3, `launch_flares_probability` 0.6, `log_panic` true, everything else at the code defaults; `tactics`: enabled, `allies` true, `dive_enabled` true, `aim_enabled` true, `aim_fire_probability` 0.5; steering and scan logs off.
+The exact [player preset](../ai/config/hf_ai.json) is shipped in the release and
+matches compiled defaults, including defaults for omitted fields. Flares,
+allied flares, tactics, allied tactics, dive and aim dodging are enabled.
+Early-fire probability is 0.5. Missile-dump chance is 0.4 with a 0.6..1.5 s delay.
+Missile evasion strength is 0.5, roll chance 0.001, panic-evasion chance 0.1 and
+panic duration 5 s. The top-level TWR cutoff is 2.0; carrier groups are 3 planes
+at 0.5 s intervals. Steering, scan and panic logging are off. Existing full
+configs keep their explicit values; partial configs inherit this player profile.
 
 ## 7. Recipes: "I see X, so I change Y"
 
@@ -137,8 +144,7 @@ and manual launches keep their existing behavior. Restart after editing.
 ## TWR cutoff for dodging and tactics
 
 Set `"twr_cutoff": 3.5` at the top level of `Modloader/config/hf_ai.json`,
-alongside `ai_flares` and `tactics`, then restart the game. The default `0.0`
-means no TWR restriction. A positive value suppresses tactics and missile
+alongside `ai_flares` and `tactics`, then restart the game. The player default is `2.0`; `0.0` means no TWR restriction. A positive value suppresses tactics and missile
 maneuvers for ships below that battle TWR; a ship exactly at the cutoff remains
 eligible. Individual feature switches and normal target, timing and safety checks still apply; there are no separate acceleration gates.
 
