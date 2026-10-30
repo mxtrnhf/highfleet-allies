@@ -1,6 +1,6 @@
 [package]
 name = "hf-ai"
-version = "0.10.4"
+version = "0.10.5"
 edition = "2021"
 description = "Tactical AI layer for Highfleet 1.163: overrides the outputs of the stock per-ship AI tick (steering waypoint, engine strength, fire, launches). Standalone; not part of QoL."
 

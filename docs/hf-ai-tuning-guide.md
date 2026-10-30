@@ -12,7 +12,7 @@ Yes, with two corrections.
 
 ## 2. What happens every tick
 
-1. **Gates** (cheap checks first). hf_ai stays out (`stock`) unless: the ship is AI-flown (never the ship you fly), it is airborne (mode 1), it has a living target that is not itself, the arena bounds are readable, and the ship is on a side that is allowed (enemy always; your allies only with `apply_to_allies`).
+1. **Gates** (cheap checks first). hf_ai stays out (`stock`) unless: the ship is AI-flown (never the ship you fly), it is airborne (mode 1), it has a living target that is not itself, the arena bounds are readable, and the ship is on a side that is allowed (enemy always; your allies only with `allies`).
 2. **TWR gate.** The top-level `twr_cutoff` is the sole capability threshold. `0.0` admits every ship; a positive value admits battle TWR at or above that value. Individual tactic switches and safety checks still apply. The former strafe/dive acceleration settings are deprecated and ignored.
 3. **Priority order** (first match wins): **panic** > **aim** > **dive** > **strafe (far / band / close)** > stock.
 4. The winning state produces a direction. It is mixed with the game's own direction as `stock_direction + weight * tactic_direction` and re-normalised, so a large weight means "mostly my direction", weight 0 means stock. Ground, arena edges and "never steer down when low" limits are applied after.
@@ -65,7 +65,7 @@ Keeps the ship in a distance band around the target (centre = `k_center` 0.32 x 
 |---|---|
 | Panic and flares, stray missiles | yes (`ai_flares.allies` true) |
 | Flare curtain | yes, triggered by **enemy** launches at the player's side |
-| Dive | yes (`tactics.apply_to_allies` true), against the ally's own target |
+| Dive | yes (`tactics.allies` true), against the ally's own target |
 | Strafe | only if strafe is on |
 | Aim awareness / early fire | no |
 | The ship you fly | never touched |
@@ -83,7 +83,7 @@ Unconfirmed in play: whether allies really dodge as intended. The ally curtain a
 
 ## 6. Release defaults (pack v0.13.0-rel.3)
 
-`enabled` true; `ai_flares`: enabled, allies, evade, `panic_evasion_probability` 0.3, `launch_flares_probability` 0.6, `log_panic` true, everything else at the code defaults; `tactics`: enabled, `apply_to_allies` true, `strafe_enabled` false, `dive_enabled` true, `aim_enabled` true, `aim_fire_probability` 0.5; steering and scan logs off.
+`enabled` true; `ai_flares`: enabled, allies, evade, `panic_evasion_probability` 0.3, `launch_flares_probability` 0.6, `log_panic` true, everything else at the code defaults; `tactics`: enabled, `allies` true, `strafe_enabled` false, `dive_enabled` true, `aim_enabled` true, `aim_fire_probability` 0.5; steering and scan logs off.
 
 ## 7. Recipes: "I see X, so I change Y"
 

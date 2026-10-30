@@ -10,6 +10,7 @@ pub struct TacticsConfig {
     /// Master switch (A/B tests).
     pub enabled: bool,
     /// Also steer AI ships of the player's side (allies). The ship you fly is never touched.
+    #[serde(rename = "allies", alias = "apply_to_allies")]
     pub apply_to_allies: bool,
     /// Band centre = `k_center` x own gun reach, limited to `band_min..band_max`.
     pub k_center: f32,
@@ -254,6 +255,26 @@ mod tests {
         assert_eq!((p.band_min, p.band_max, p.half_width), (300.0, 550.0, 100.0));
         let partial: TacticsConfig = serde_json::from_str(r#"{"enabled": true, "half_width": 80}"#).unwrap();
         assert!(partial.enabled && partial.half_width == 80.0 && partial.strafe_max_s == 5.0);
+    }
+
+    #[test]
+    fn allies_key_and_legacy_alias_preserve_the_allied_steering_gate() {
+        use crate::tactics_math::{gate, Gate, GateInput};
+
+        let input = GateInput {
+            ai_flag: 1, side: 1.0, mode: Some(1), has_target: true, panicking: false,
+        };
+        for key in ["allies", "apply_to_allies"] {
+            for enabled in [false, true] {
+                let text = format!(r#"{{"enabled":true,"{key}":{enabled}}}"#);
+                let config: TacticsConfig = serde_json::from_str(&text).unwrap();
+                assert_eq!(config.apply_to_allies, enabled);
+                assert_eq!(gate(&config.params(), &input), if enabled { Gate::Pass } else { Gate::Stock });
+                let json = serde_json::to_value(config.sanitized()).unwrap();
+                assert_eq!(json["allies"], enabled);
+                assert!(json.get("apply_to_allies").is_none());
+            }
+        }
     }
 
     #[test]

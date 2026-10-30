@@ -43,7 +43,7 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Plain evasion steering only | `ai_flares.evasion_strength: 0.0` | Neutralizes its steering contribution, but the panic state, boosted panic evasion and rolls remain possible. |
 | Stray/lost-lock missile evasion | `ai_flares.stray_missiles: false` | Locked-missile behaviour remains. |
 | Allied flares, panic, curtains and shared engine boosts | `ai_flares.allies: false` | Enemy behaviour remains. The player-flown ship is always excluded. |
-| Allied tactical steering | `tactics.apply_to_allies: false` | Independent of `ai_flares.allies`; set both to false to exclude allies from everything. |
+| Allied tactical steering | `tactics.allies: false` | Independent of `ai_flares.allies`; set both to false to exclude allies from everything. |
 | Preventive flare curtains, including target ships | `ai_flares.launch_flares_probability: 0.0` | Disables the whole curtain even when `launch_flares_target_probability` is nonzero: drops, retreat and shelter. |
 | Curtain for the target ship only | `ai_flares.launch_flares_target_probability: 0.0` | Neighbouring ships can still start curtains using `launch_flares_probability`. |
 | Curtain drops only, while preserving retreat | **No independent drop-free-retreat switch** | `launch_flares_max_drops: 0` ends drop-capable curtains instead. Disable the whole curtain with `launch_flares_probability: 0.0`. |
@@ -132,7 +132,7 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Key | Default | If key omitted | What it does |
 |---|---|---|---|
 | `enabled` | `false` | All tactical steering and early fire are off. | Master switch (A/B tests). |
-| `apply_to_allies` | `false` | If tactics are enabled, allied AI ships are excluded. | Also steer AI ships of the player's side (allies). The ship you fly is never touched. |
+| `allies` | `false` | If tactics are enabled, allied AI ships are excluded. | Also steer AI ships of the player's side (allies). The ship you fly is never touched. |
 | `k_center` | `0.32` | If tactics/strafe are enabled, the band centre factor is 0.32. | Band centre = `k_center` x own gun reach, limited to `band_min..band_max`. |
 | `band_min` | `300.0` | If tactics/strafe are enabled, the minimum band centre is 300. | Lowest centre of the strafing distance band (units). |
 | `band_max` | `550.0` | If tactics/strafe are enabled, the maximum band centre is 550. | Highest centre of the strafing distance band (units). |
@@ -191,3 +191,12 @@ Retiring these keys does not disable the tactics. At or above `twr_cutoff` (or
 with `0.0`, for every ship), their individual switches and normal target, timing,
 ground and arena checks determine whether they act. Low or unavailable thrust/mass
 readings no longer prevent a decision.
+
+### Renamed settings
+
+| Former key | Current key | Compatibility |
+|---|---|---|
+| `tactics.apply_to_allies` | `tactics.allies` | Renamed in v0.10.5. Old spelling remains accepted as an alias; new configs serialize `allies`. Use only one spelling. Value, default (`false`), and behavior are unchanged. |
+
+`ai_flares.allies` and `tactics.allies` remain independent switches for their
+respective subsystems. Renaming does not change which ships qualify.

@@ -74,7 +74,7 @@ Code: `tactics_math.rs` (pure, host-testable: `rustc --edition 2021 --test src/t
 per-ship table), `tactics_config.rs` (the `tactics` block). Spec: `hf_notes/docs/findings/ai-hf-ai-design.md`.
 
 **Gates (any failure = stock, nothing changes):** `tactics.enabled`; AI-flown (`+0xbd4 != 0`); enemy side (`+0xad4 < 0`; allies
-only with `apply_to_allies`); airborne combat mode (`+0xb48 == 1`; landed 3 and takeoff 0 stay stock; this is the telemetry
+only with `tactics.allies`); airborne combat mode (`+0xb48 == 1`; landed 3 and takeoff 0 stay stock; this is the telemetry
 `mode` column, NOT `+0xd70` which is the role); a living target ship; the top-level `twr_cutoff` gate;
 not in a missile panic; arena bounds readable and sane.
 **Band:** centre = `k_center` x own reach (max of `+0x1838/+0x183c`, the largest value seen per ship, because AP shells
@@ -90,7 +90,7 @@ not seen for 2 s are dropped. No hot reload: edit the config and restart the gam
 
 ```json
 "tactics": {
-  "enabled": false, "apply_to_allies": false,
+  "enabled": false, "allies": false,
   "k_center": 0.32, "band_min": 300.0, "band_max": 550.0, "half_width": 100.0, "outrange_extra": 150.0,
   "blend_weight": 1.0, "strafe_min_s": 2.0, "strafe_max_s": 5.0, "retreat_tangent": 0.7,
   "ground_y": 200.0, "ground_clearance": 450.0, "edge_margin": 300.0,
@@ -225,3 +225,11 @@ No acceleration reading is required for these tactics. `twr_cutoff: 0.0` allows
 all ships through the capability gate; a positive value admits ships at or above
 that battle TWR. Existing feature switches, target checks, timing and ground/arena
 safety limits still apply. Older JSON files load normally without migration.
+
+## Allied tactics setting (v0.10.5)
+
+Use `tactics.allies` for allied tactical steering, matching the spelling of
+`ai_flares.allies`. Their scopes remain independent; both default to their
+existing values (`tactics.allies` false, `ai_flares.allies` true). The former
+`tactics.apply_to_allies` spelling remains a compatibility alias. Use only one
+spelling in a config; newly generated configs write `allies`.
