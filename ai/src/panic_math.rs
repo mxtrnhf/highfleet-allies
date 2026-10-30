@@ -39,6 +39,8 @@ pub struct Threat {
     pub position: (f32, f32),
     /// Address of the missile body (used for the trace only; the hand-over for later velocity logic).
     pub body: usize,
+    /// Not locked on this ship, but on a collision course: evade without dumping flares.
+    pub stray: bool,
 }
 
 pub struct Ship {
@@ -148,6 +150,11 @@ pub fn scan(
             // A missile that is still coming keeps the evasion going.
             if let Some(found) = threat {
                 ship.threat = Some(found.position);
+                // A stray starts evasion only. If a locked missile appears during that evasion, add one flare burst;
+                // a burst that already ran has a non-zero expiry and is not restarted on every scan.
+                if !found.stray && ship.burst_until == 0.0 {
+                    ship.burst_until = now + f64::from(p.burst_seconds);
+                }
                 if p.evade && !ship.roll {
                     let extension = if ship.panic {
                         PANIC_EVASION_EXTENSION
@@ -167,7 +174,7 @@ pub fn scan(
             // the port is behaviour-identical to qol `ai_flares`.
             if rand() < p.reaction_probability {
                 ship.threat = Some(found.position);
-                ship.burst_until = now + f64::from(p.burst_seconds);
+                ship.burst_until = if found.stray { 0.0 } else { now + f64::from(p.burst_seconds) };
                 ship.roll = p.evade && rand() < p.barrel_roll_probability;
                 ship.roll_start = now;
                 ship.panic = p.evade && !ship.roll && rand() < p.panic_evasion_probability;
@@ -398,7 +405,11 @@ mod tests {
     }
 
     fn threat() -> Threat {
-        Threat { distance: 300.0, position: (500.0, 0.0), body: 0x1000 }
+        Threat { distance: 300.0, position: (500.0, 0.0), body: 0x1000, stray: false }
+    }
+
+    fn stray_threat() -> Threat {
+        Threat { stray: true, ..threat() }
     }
 
     fn length(from: (f32, f32), to: (f32, f32)) -> f32 {
@@ -482,6 +493,31 @@ mod tests {
         assert_eq!(ship.threat, Some((500.0, 0.0)));
         assert!(ship.firing(10.5) && !ship.firing(11.5));
         assert!(ship.panicking(17.9) && !ship.panicking(18.0));
+    }
+
+    #[test]
+    fn stray_evasion_has_no_flares_but_a_lock_adds_one_burst() {
+        let mut ship = Ship::default();
+        let mut rolls = [0.1, 0.5, 0.9, 0.9].into_iter();
+        let mut rand = || rolls.next().unwrap();
+        let event = scan(&mut ship, 0.0, &params(), || Some(stray_threat()), &mut rand);
+        assert_eq!(event, ScanEvent::Started(stray_threat()));
+        assert_eq!(ship.burst_until, 0.0);
+        assert_eq!(ship.evade_until, 3.0);
+        assert!(ship.panicking(0.0));
+        assert!(!ship.firing(0.0));
+
+        // A locked missile during stray evasion adds flares without another reaction roll.
+        let mut none = || panic!("no dice while extending a panic");
+        assert_eq!(scan(&mut ship, 1.0, &params(), || Some(threat()), &mut none), ScanEvent::Seen(threat()));
+        assert_eq!(ship.burst_until, 2.5);
+        assert!(ship.firing(1.0));
+        assert!(!ship.firing(2.5));
+
+        // The finished burst is not restarted while the same evasion is still running.
+        assert_eq!(scan(&mut ship, 2.6, &params(), || Some(threat()), &mut none), ScanEvent::Seen(threat()));
+        assert_eq!(ship.burst_until, 2.5);
+        assert!(!ship.firing(2.6));
     }
 
     #[test]

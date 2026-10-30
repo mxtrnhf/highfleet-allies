@@ -21,7 +21,7 @@ Yes, with two corrections.
 ## 3. The states and what each knob does
 
 ### 3.1 Panic (the `ai_flares` block): incoming missile
-Triggers when a missile that has locked on to the ship (or, with `stray_missiles`, a loose one whose straight-line path passes close) comes within `trigger_range` (400). Each check (about 10 per second) rolls `reaction_probability` (0.6): a failed roll means no reaction yet, so lower values make the AI slower and sloppier.
+Triggers when a missile that has locked on to the ship comes within `trigger_range` (400), or—with `stray_missiles`—when a loose one's straight-line path passes close. A locked missile starts flares and evasion; a stray starts evasion only, and a later lock can add one flare burst. Each check (about 10 per second) rolls `reaction_probability` (0.6): a failed roll means no reaction yet, so lower values make the AI slower and sloppier.
 * It drops flares for `burst_seconds` (1.5 s, about 10 flares per launcher), then waits `min_interval_seconds` before the next panic.
 * `evade` true: it also steers sideways (perpendicular to the missile's line of approach) for `evasion_seconds`, `evasion_strength` 0..1 = how much of its course is taken over. Extended by 1 s each time a locked missile is still inside the range.
 * With `panic_evasion_probability` (rolled once per panic) it instead commits to one escape direction at `panic_boost` x thrust for `panic_evasion_seconds` (extended 2.5 s at a time). It prefers the higher sidestep and never dives toward the ground when low.

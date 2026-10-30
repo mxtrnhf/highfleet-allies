@@ -52,7 +52,7 @@ All keys are in the release pack's `hf_ai.json`. The plain-language explanation 
 | `launch_flares_eta_max_wait` | `8.0` | Longest the curtain waits for the missile's estimated arrival before dropping, seconds. |
 | `launch_flares_missile_speed` | `230.0` | Assumed missile speed (units/s) for the arrival estimate: distance / this = ETA. |
 | `launch_flares_target_probability` | `1.0` | Chance for the ship the missile is aimed at (the neighbours use `launch_flares_probability`). |
-| `stray_missiles` | `true` | Stray missiles: a missile that is NOT locked on to the ship (it lost its lock or is aimed at someone else) but flies a path that passes within `stray_missile_radius` (+ half the ship's size) of the ship within `stray_missile_eta_s` seconds, closer than `stray_missile_range`, counts as a threat for the panic. |
+| `stray_missiles` | `true` | Stray missiles: a missile that is NOT locked on to the ship (it lost its lock or is aimed at someone else) but flies a path that passes within `stray_missile_radius` (+ half the ship's size) of the ship within `stray_missile_eta_s` seconds, closer than `stray_missile_range`, triggers evasion only, without a flare burst. A locked missile can still add one flare burst during that evasion. |
 | `stray_missile_radius` | `150.0` | A loose missile (not locked on) counts as a threat if its straight path passes within this distance of the ship (units). Raise for a more nervous AI. |
 | `stray_missile_eta_s` | `3.0` | ...and it would arrive within this many seconds. |
 | `stray_missile_range` | `1200.0` | ...and it is closer than this distance (units). |

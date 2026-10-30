@@ -1540,7 +1540,7 @@ unsafe fn threatened(runtime: &Runtime, creature: usize) -> Option<Threat> {
             ) else {
                 continue;
             };
-            nearest = Some(Threat { distance, position: (x, y), body });
+            nearest = Some(Threat { distance, position: (x, y), body, stray });
 
             if stray && !LOGGED_STRAY.swap(true, Ordering::Relaxed) {
                 log::info!("hf_ai ai_flares: first STRAY missile threat (not locked on this ship, its path crosses it): distance {distance:.0}, missile at {x:.0},{y:.0}");
