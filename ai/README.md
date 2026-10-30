@@ -13,7 +13,7 @@ Build: `cargo xwin build --release --target x86_64-pc-windows-msvc`.
 Tests: `cargo xwin test --release --target x86_64-pc-windows-msvc` (runs under wine); the pure math alone:
 `rustc --edition 2021 --test src/panic_math.rs -o /tmp/pm_test && /tmp/pm_test`.
 
-Status: **v0.10.0** (adds the AI missile dump moved from the qol fork). Earlier: v0.7.1 was played (tactics: deny the dive, aim awareness, early fire, stray avoidance; ai_flares: ETA-timed flare curtain with shelter and retreat). Versions and config: `hf_notes/docs/mods/hf-ai.md`.
+Status: **v0.10.2** (stray/lost-lock missiles evade without an initial flare burst; a locked missile can add one burst during that evasion). v0.10.0 added the AI missile dump moved from the qol fork. Earlier: v0.7.1 was played (tactics: deny the dive, aim awareness, early fire, stray avoidance; ai_flares: ETA-timed flare curtain with shelter and retreat). Versions and config: `hf_notes/docs/mods/hf-ai.md`.
 
 ## Stages in the steering hook (`0x140064a8d`, every AI tick of every ship)
 1. the stock AI's waypoint (200 units from the ship along the wanted direction);
@@ -145,7 +145,7 @@ v0.7.0: (1) curtain delay `launch_flares_delay_min/max` (1.0..2.0 s): the first 
 
 v0.7.1 (after the v0.6.4 analysis: flares live exactly 5.0 s, the missile arrives 3-9 s after the launch, 48% of drops were gone when it arrived; 10 of 15 targeted ships had no launcher; the two flare ships whose 60% roll failed were both hit; shelter never acted): the first drop is now timed by the missile ETA (distance / `launch_flares_missile_speed` 230) as `ETA - launch_flares_eta_lead` (4 s), between `launch_flares_delay_min` and `launch_flares_eta_max_wait` (8 s), the fixed random delay is only the fallback; the ship the missile is aimed at rolls `launch_flares_target_probability` (1.0), neighbours keep `launch_flares_probability`; the retreat/shelter range is 3000 u (was 1800), so it starts at the launch; any curtain ship that cannot drop (no launcher OR racks under the reserve) shelters behind a dropping ally.
 
-Unreleased: a stray/lost-lock missile now starts **evasion only**, without a flare burst. If a locked missile appears while that evasion runs, the ship adds one flare burst; an expired burst is not restarted on every scan.
+v0.10.2: a stray/lost-lock missile now starts **evasion only**, without a flare burst. If a locked missile appears while that evasion runs, the ship adds one flare burst; an expired burst is not restarted on every scan.
 
 ### Deny the dive (v0.4.0)
 v0.5.4: a target BELOW the ship ("under", the damaging case) has its own `dive_under_chance` (1.0) and `dive_under_dwell_s` (0.5 s); `dive_chance` / `dive_dwell_s` now apply to a target above. The dodge adds a pull onto the target's altitude (`dive_level_weight` 0.7, full strength from 150 u of height difference): the ship tries to get onto your level so the keel cannot be shot at. `dive_weight` default 4 -> 8 (the dodge started too slowly).
