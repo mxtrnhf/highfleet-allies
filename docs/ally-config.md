@@ -31,6 +31,7 @@ For individual features, use this table. Settings for an already-disabled parent
 | Ally arrival delay only | `ally_delay_seconds: 0.0` | Allies still deploy immediately; use `spawn_ally: false` to deploy none. |
 | Number of allies | **No zero/disable value** | `max_allies: 0` is clamped to one. Use `spawn_ally: false` for none. |
 | Pre-combat ALLY buttons | `ally_toggle: false` | Hides the buttons but does **not** stop automatic deployment; also set `spawn_ally: false` for no allies. |
+| Player/flagship ALLY button | `player_ship_ally: false` | The slot-1 card keeps only the `PLAYER` label; slots 2.. still get ALLY buttons. |
 | Automatic flagship-leaves retreat/handover | `auto_retreat: false` | `flagship_leaves` then has no effect. |
 | F8 ally retreat hotkey | `retreat_key: 0` | Automatic and fuel-triggered retreat remain independently configurable. |
 | Low-fuel ally retreat | `ally_fuel_retreat_percent: 0.0` | F8 and flagship-leaves behaviour remain. |
@@ -74,6 +75,7 @@ For individual features, use this table. Settings for an already-disabled parent
 | `flagship_leaves` | `"handover"` | Uses player default `"handover"`. | What `auto_retreat` does when the flagship leaves alive: "retreat" = the ally is extracted with it and the battle ends as a retreat; "handover" = the ally is promoted to your ship (the game's own behaviour) and the retreat point the flagship used up is put back, so the new flagship can still retreat. |
 | `retreat_key` | `119` | Uses player default `119`. | Virtual-key code of the "ally, retreat" key (0x77 = F8); 0 disables the key. |
 | `ally_toggle` | `true` | Uses player default `true`. | Add the "ALLY" on/off button to the pre-combat screen (needs `spawn_ally`; click it to bring or skip the ally). |
+| `player_ship_ally` | `false` | Uses player default `false`. | Experimental: also show the ALLY button on the player/flagship card (slot 1, the leftmost card). When it is switched ON, that ship is handed to the stock AI at battle start: its AI flag is set, it joins the AI update list, and its player-control link is kept so the camera/HUD/retreat code still treat it as your ship. You do not fly it. Requires `spawn_ally` and `ally_toggle`. Other selected ships still arrive as normal allies. |
 | `log_precombat` | `false` | Uses player default `false`. | Log the GUI elements of the pre-combat screen each time it is built (step 1 of the "ally yes/no" button). |
 | `probe_lines` | `false` | Uses player default `false`. | Per-second ally/enemy probe and track lines (very chatty; for AI analysis, off for ordinary play). |
 | `max_allies` | `2` | Uses player default `2`. | How many AI allies may fight at the same time. Ships switched on beyond that wait in the reserve and step in, in ship-number order, when an ally is destroyed or has left. |
@@ -107,5 +109,7 @@ For individual features, use this table. Settings for an already-disabled parent
 | `marker_delay_ms` | `0` | Uses player default `0`. | The label stays hidden this many milliseconds after the screen is entered (the doors slide in). |
 
 `intercept_ignore_oids` is a list of part names (`m_oid` from `OL.seria`, case-sensitive) that the AI of both sides never treats as a strategic launch to shoot at, player default `["MDL_MISSILE_03"]` (the stock R-9 Sprint), in both code and the release preset.
+
+`player_ship_ally` is experimental. The ship stays in the game's player slot so the camera/HUD/retreat code still follow it. The mod calls the stock per-ship AI driver for it directly each battle tick instead of adding a Link to the game's AI vector (that Link outlived the ship at scene teardown and crashed the game on exit). Just before the vanilla player update runs, the mod replaces the mouse aim angle with the bearing to the target the AI chose; the update then sends the guns and target links to that target instead of the crosshair. Skipping the update entirely made the AI ship passive, so only the aim value is replaced. The per-battle state is re-armed on the player's spawn, so Shipworks test fights after the first one work too. Mouse input can still move the crosshair/HUD aim ray, but it should not decide where the turrets point.
 
 Enemy waves: the game spawns enemy ships in waves of `enemy_group_size` (vanilla 3); the first wave comes at the start, the next ones every 30 seconds (or at once with `enemy_all_at_once`). `max_enemy_ships` is the size of the whole list.

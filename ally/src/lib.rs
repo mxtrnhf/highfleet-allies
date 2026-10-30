@@ -156,6 +156,14 @@ const DEPLOY_K: usize = 0x1_4035_b974; // f32, -300.0
 const DEPLOY_AGGR: usize = 0x1_4035_24d8; // f32, 1.0
 /// Controlled-ship links, one per control slot (0x18 bytes each).
 const CONTROLLED_LINKS: usize = 0x1_43a1_c260;
+/// The per-frame player update (`UpdateShipsAndMapFrame`) is reached through this call. Its player loop turns
+/// `ship+0xbb4` (mouse aim) into target links and gun command 200; before the call we replace the mouse angle
+/// with the AI target's bearing.
+const UPDATE_SHIPS: usize = 0x1_402a_9940;
+const UPDATE_SHIPS_SITE: usize = 0x1_4012_7615;
+const UPDATE_SHIPS_BYTES: [u8; 5] = [0xe8, 0x26, 0x23, 0x18, 0x00];
+/// Hull aim angle written by `Input_UpdateMouseAim` and read by the player aim sender.
+const OFF_HULL_AIM: usize = 0xbb4;
 const ALLY_SLOT: usize = 1;
 const OFF_MODE_D70: usize = 0xd70; // i32: 1 = flown by the player, 2 = wingman
 const OFF_ACTIVE: usize = offset_of!(Node, state); // i32: non-zero while the ship is in the level
@@ -163,9 +171,12 @@ const OFF_ACTIVE: usize = offset_of!(Node, state); // i32: non-zero while the sh
 /// Global creature list (`Link` entries, 0x18 bytes, pointer at +8): begin / end.
 const CREATURES_BEGIN: usize = 0x1_43fa_a5d8;
 const CREATURES_END: usize = 0x1_43fa_a5e0;
-/// Vector of creatures the AI task runs (same entry layout): begin / end.
+/// Vector of creatures the AI task runs (same entry layout): begin / end / capacity (read-only: the
+/// player ship is driven directly, not inserted, so no Link outlives the ship at scene teardown).
 const AI_BEGIN: usize = 0x1_43fa_a608;
 const AI_END: usize = 0x1_43fa_a610;
+/// The stock per-ship AI driver (`aiShipDriver`), normally called for every entry of the AI vector.
+const AI_DRIVER: usize = 0x1_4007_39c0;
 /// Side buckets (vectors of raw 8-byte pointers): begin / end.
 const NEG_BEGIN: usize = 0x1_43fa_a5f0;
 const NEG_END: usize = 0x1_43fa_a5f8;
@@ -208,6 +219,9 @@ struct Config {
     retreat_key: u32,
     /// Add the "ALLY" on/off button to the pre-combat screen (needs `spawn_ally`; click it to bring or skip the ally).
     ally_toggle: bool,
+    /// Experimental: also put an ALLY button on the player/flagship card (slot 1). When that button is ON, the ship you
+    /// would fly is handed to the stock AI at battle start; the camera keeps following it and you do not control it.
+    player_ship_ally: bool,
     /// Log the GUI elements of the pre-combat screen each time it is built (step 1 of the "ally yes/no" button).
     log_precombat: bool,
     /// Per-second ally/enemy probe and track lines (very chatty; for AI analysis, off for ordinary play).
@@ -287,6 +301,7 @@ impl Default for Config {
             flagship_leaves: "handover".to_string(),
             retreat_key: 0x77,
             ally_toggle: true,
+            player_ship_ally: false,
             probe_lines: false,
             gui_inspect: false,
             spare_prizes: true,
@@ -581,6 +596,8 @@ unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
     if caller.wrapping_sub(IMAGE_BASE) == PLAYER_DEPLOY_CALLER_RVA && read::<u32>(SCENE_SELECTOR) == BATTLE_START_SELECTOR {
         restore_orders("next battle", true);
         ALLY_DONE.store(false, Ordering::Relaxed);
+        PLAYER_AI_DONE.store(false, Ordering::Relaxed);
+        AI_PLAYER_SHIP.store(0, Ordering::Relaxed);
         PLAYER_SEEN.store(0, Ordering::Relaxed);
         TRACK_ALLY.store(0, Ordering::Relaxed);
         SPAWN_LINES.store(0, Ordering::Relaxed);
@@ -691,6 +708,70 @@ unsafe fn roster() -> Vec<usize> {
         return Vec::new();
     }
     (0..(e - b) / 0x18).map(|i| read::<usize>(b + i * 0x18 + 8)).filter(|p| *p != 0).collect()
+}
+
+/// Hands the player's flagship to the stock AI: keep its `+0xd70 == 1` marker (so `battleManagerTick` does not
+/// promote/deploy a replacement) and its controlled links (camera, HUD, retreat), but set the AI flag and put the
+/// ship on the AI vector. Returns the ship if converted.
+unsafe fn convert_player_ship_to_ai(ships: &[usize]) -> Option<usize> {
+    if !PLAYER_ALLY_ALLOWED.load(Ordering::Relaxed)
+        || SLOT_MASK.load(Ordering::Relaxed) & (1 << 1) == 0
+        || PLAYER_AI_DONE.load(Ordering::Relaxed)
+    {
+        return None;
+    }
+    let ship = ships.iter().copied().find(|&p| {
+        read::<i32>(p + OFF_MODE_D70) == 1
+            && read::<i32>(p + OFF_ACTIVE) != 0
+            && !matches!(read::<i32>(p + OFF_STATE), 6 | 7)
+    })?;
+    PLAYER_AI_DONE.store(true, Ordering::Relaxed);
+    AI_PLAYER_SHIP.store(ship, Ordering::Relaxed);
+    (ship as *mut i32).byte_add(OFF_MODE_D70).write_unaligned(1);
+    (ship as *mut u8).byte_add(OFF_AI_FLAG).write(1);
+    log::info!("ALLY player ship c={ship:#x} handed to the AI (player_ship_ally)");
+    flush_log();
+    Some(ship)
+}
+
+/// Before the vanilla player update, replace the mouse aim angle of the AI-flown flagship with the bearing
+/// to the target its AI chose. The update then writes that target into the ship and sends the matching gun
+/// command, while every other per-frame player update still runs (skipping it entirely stopped the AI ship
+/// from fighting). The mouse is overwritten again on the next input frame, so this runs every frame.
+unsafe fn aim_ai_player_at_target() {
+    let ai = AI_PLAYER_SHIP.load(Ordering::Relaxed);
+    if ai == 0 || !in_creature_list(ai) {
+        return;
+    }
+    let target: usize = read(ai + OFF_TARGET);
+    if !in_creature_list(target) || !live_ship(target) {
+        return;
+    }
+    let (sx, sy) = (read::<f32>(ai + OFF_POS_X), read::<f32>(ai + OFF_POS_Y));
+    let (tx, ty) = (read::<f32>(target + OFF_POS_X), read::<f32>(target + OFF_POS_Y));
+    let (dx, dy) = (tx - sx, ty - sy);
+    if dx == 0.0 && dy == 0.0 {
+        return;
+    }
+    // Input_UpdateMouseAim stores -atan2(-dx, -dy), the convention the player aim sender expects.
+    let aim = -(-dx).atan2(-dy);
+    (ai as *mut f32).byte_add(OFF_HULL_AIM).write_unaligned(aim);
+}
+
+unsafe extern "C" fn on_update_ships(profile: usize) {
+    aim_ai_player_at_target();
+    let original: unsafe extern "C" fn(usize) = std::mem::transmute(UPDATE_SHIPS);
+    original(profile);
+}
+
+/// Runs the stock per-ship AI for the player's flagship directly, once per battle-manager tick. Inserting it
+/// into the game's AI vector made a Link outlive the ship at scene teardown and crashed the game on exit.
+unsafe fn drive_ai_player(ships: &[usize]) {
+    let ai = AI_PLAYER_SHIP.load(Ordering::Relaxed);
+    if ai != 0 && ships.contains(&ai) && live_ship(ai) {
+        let drive: unsafe extern "C" fn(usize) = std::mem::transmute(AI_DRIVER);
+        drive(ai);
+    }
 }
 
 type DeployFn = unsafe extern "C" fn(usize, usize, *mut u64, u64, f32, f32, f32, f32, u32, i32) -> u8;
@@ -872,9 +953,16 @@ unsafe fn track_ally(ships: &[usize]) {
 
 static TOGGLE_ENABLED: AtomicBool = AtomicBool::new(false);
 static LOG_PRECOMBAT: AtomicBool = AtomicBool::new(false);
-/// Per-ship ally choice: bit n = ship number n (2..=9, as numbered on the pre-combat screen) may be the ally.
+/// Per-ship ally choice: bit n = ship number n (1..=9, as numbered on the pre-combat screen) may be the ally.
+/// Bit 1 is the player/flagship slot and only counts with `player_ship_ally`.
 static SLOT_MASK: AtomicU32 = AtomicU32::new(1 << 2);
 static USED_MASK: AtomicU32 = AtomicU32::new(0);
+/// `player_ship_ally`: show the slot-1 button and allow the flagship to be handed to the AI.
+static PLAYER_ALLY_ALLOWED: AtomicBool = AtomicBool::new(false);
+/// The player ship of this battle has already been converted (once per battle).
+static PLAYER_AI_DONE: AtomicBool = AtomicBool::new(false);
+/// The ship handed to the AI: the player update call skips it while its player-input hooks run.
+static AI_PLAYER_SHIP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static MAX_ALLIES: AtomicU32 = AtomicU32::new(1);
 static ALLIES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 static AMMO_ON: AtomicBool = AtomicBool::new(false);
@@ -888,7 +976,8 @@ static BATTLE_LOGGED: AtomicBool = AtomicBool::new(false);
 static SUM_SPAWNED: AtomicU32 = AtomicU32::new(0);
 static SUM_LOST: AtomicU32 = AtomicU32::new(0);
 static TOGGLE_LINES: AtomicU32 = AtomicU32::new(0);
-const TOGGLE_NAMES: [&[u8]; 8] = [
+const TOGGLE_NAMES: [&[u8]; 9] = [
+    b"ALLY_TOGGLE_1\0",
     b"ALLY_TOGGLE_2\0",
     b"ALLY_TOGGLE_3\0",
     b"ALLY_TOGGLE_4\0",
@@ -917,6 +1006,8 @@ const TOGGLE_MIN_SIZE: f32 = 40.0;
 const SETTLE_MS: u64 = 150;
 /// The slot-1 label ("PLAYER", text from a render seam): where (GUI units, centre origin, y down) and whether to draw.
 static MARKER_X: AtomicU32 = AtomicU32::new(0);
+/// y of the PLAYER label (GUI units); moved above the slot-1 ALLY button when `player_ship_ally` is on.
+static MARKER_Y: AtomicU32 = AtomicU32::new(0);
 static MARKER_SHOW: AtomicBool = AtomicBool::new(false);
 static MARKER_TEXT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static MARKER_DRAWS: AtomicU32 = AtomicU32::new(0);
@@ -1019,7 +1110,7 @@ const LOADOUT_GAP: f32 = 3.0;
 /// The plane buttons are smaller than the ALLY button so both rows stay in the part of the screen that takes clicks.
 const LOADOUT_SIZE: f32 = 44.0;
 const LABEL_FONT: &std::ffi::CStr = c"flash_large_shadow";
-static TOGGLE_GUIS: [std::sync::atomic::AtomicUsize; 8] = [const { std::sync::atomic::AtomicUsize::new(0) }; 8];
+static TOGGLE_GUIS: [std::sync::atomic::AtomicUsize; 9] = [const { std::sync::atomic::AtomicUsize::new(0) }; 9];
 static LAST_TOGGLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PROBE_LINES: AtomicBool = AtomicBool::new(false);
 // per-battle summary (logged when the roster empties)
@@ -1326,15 +1417,14 @@ unsafe fn ensure_toggles() {
     }
     let set_pos: SetPosFn = std::mem::transmute(GUI_SETPOS);
     let mut layout = Vec::new();
-    // slot 1 (the flagship, always the player's ship) gets the marker, slots 2.. the toggles
+    // slot 1 gets the marker; its ALLY button appears only with `player_ship_ally`. Slots 2.. always get toggles.
     for slot in 1..=9usize {
         let Some(&(x, _y, _, _)) = cards.get(slot - 1) else {
             if slot == 1 {
                 MARKER_SHOW.store(false, Ordering::Relaxed);
-                continue;
             }
             // no such ship on this screen: hide a button kept from an earlier build
-            let kept = TOGGLE_GUIS[slot - 2].load(Ordering::Relaxed);
+            let kept = TOGGLE_GUIS[slot - 1].load(Ordering::Relaxed);
             if kept != 0 && cstr(kept + GUI_NAME) == format!("ALLY_TOGGLE_{slot}") {
                 (kept as *mut i32).byte_add(OFF_ACTIVE).write_unaligned(0);
             }
@@ -1348,11 +1438,19 @@ unsafe fn ensure_toggles() {
         if slot == 1 {
             // the slot-1 label is text drawn from a render seam (`draw_marker`), not a GUI element: it only needs the spot
             MARKER_X.store((x + dx + MARKER_DX).to_bits(), Ordering::Relaxed);
+            let marker_y = if PLAYER_ALLY_ALLOWED.load(Ordering::Relaxed) { GRID_Y - 44.0 } else { GRID_Y };
+            MARKER_Y.store(marker_y.to_bits(), Ordering::Relaxed);
             MARKER_SHOW.store(true, Ordering::Relaxed);
             layout.push(format!("1@{x:.0}+{dx:.0}/text"));
-            continue;
+            if !PLAYER_ALLY_ALLOWED.load(Ordering::Relaxed) {
+                let kept = TOGGLE_GUIS[0].load(Ordering::Relaxed);
+                if kept != 0 && cstr(kept + GUI_NAME) == "ALLY_TOGGLE_1" {
+                    (kept as *mut i32).byte_add(OFF_ACTIVE).write_unaligned(0);
+                }
+                continue;
+            }
         }
-        let (name, kept_slot) = (TOGGLE_NAMES[slot - 2], &TOGGLE_GUIS[slot - 2]);
+        let (name, kept_slot) = (TOGGLE_NAMES[slot - 1], &TOGGLE_GUIS[slot - 1]);
         let Some((gui, created)) = get_or_make(name, kept_slot) else {
             toggle_line(format!("ALLY toggle {slot}: not created"));
             return;
@@ -1599,7 +1697,8 @@ unsafe fn draw_marker_text(seam: u32) {
     // GUI units have the origin in the middle of the 1920 x 1080 frame; text coordinates start at the top left
     // whole pixels (a bitmap font between pixels is blurred); PLAYER_NUDGE brings it closer to the ship number
     let x = (960.0 + f32::from_bits(MARKER_X.load(Ordering::Relaxed)) + PLAYER_NUDGE).round();
-    let y = (540.0 + GRID_Y - 11.0 * MARKER_SCALE).round();
+    let marker_y = if MARKER_Y.load(Ordering::Relaxed) == 0 { GRID_Y } else { f32::from_bits(MARKER_Y.load(Ordering::Relaxed)) };
+    let y = (540.0 + marker_y - 11.0 * MARKER_SCALE).round();
     let render: RenderTextFn = std::mem::transmute(FONT_RENDER);
     render(font, x, y, 2, text.as_ptr() as *const _, std::ptr::null_mut(), std::ptr::null_mut(), 0, 0.0);
     style(MARKER_FONT.as_ptr(), old_scale, old_blend, old_color);
@@ -1843,7 +1942,8 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
     };
     // the game delivers one click twice (press and release): one toggle per 350 ms
     let now = now_ms();
-    if button as u32 == 1 && (2..=9).contains(&slot) && now.wrapping_sub(LAST_TOGGLE_MS.load(Ordering::Relaxed)) > 350 {
+    let lowest = if PLAYER_ALLY_ALLOWED.load(Ordering::Relaxed) { 1 } else { 2 };
+    if button as u32 == 1 && (lowest..=9).contains(&slot) && now.wrapping_sub(LAST_TOGGLE_MS.load(Ordering::Relaxed)) > 350 {
         LAST_TOGGLE_MS.store(now, Ordering::Relaxed);
         let mask = SLOT_MASK.fetch_xor(1 << slot, Ordering::Relaxed) ^ (1 << slot);
         paint_toggle(gui as *mut u8, slot);
@@ -1944,6 +2044,16 @@ fn plausible(p: usize) -> bool {
 /// A creature that is still part of the battle: plausible pointer, creature class code, active, not dead.
 unsafe fn live_ship(p: usize) -> bool {
     plausible(p) && read::<u8>(p + 0x28) & 0x2f == 0x2f && read::<i32>(p + OFF_ACTIVE) != 0 && !matches!(read::<i32>(p + OFF_STATE), 6 | 7)
+}
+
+/// True only when `p` is currently in the game's creature list. A target link can still hold a freed pointer
+/// during battle teardown; `plausible` alone is not enough to dereference it (crash reading `0x6b63696c28`).
+unsafe fn in_creature_list(p: usize) -> bool {
+    let (b, e): (usize, usize) = (read(CREATURES_BEGIN), read(CREATURES_END));
+    if b == 0 || e < b || (e - b) % 0x18 != 0 || (e - b) / 0x18 > 4096 {
+        return false;
+    }
+    (b..e).step_by(0x18).any(|entry| read::<usize>(entry + 8) == p)
 }
 
 /// Ships the F8 order has put on the bombing role (`+0xd70 = 2`): (ship, order before, checks that did not find it).
@@ -2412,6 +2522,8 @@ unsafe extern "C" fn on_battle_tick() {
         }
         return;
     }
+    convert_player_ship_to_ai(&ships);
+    drive_ai_player(&ships);
     track_ally(&ships);
     retreat_logic(&ships);
     ally_sound_events(&ships);
@@ -2425,6 +2537,8 @@ unsafe extern "C" fn on_battle_tick() {
             log::info!("ALLY battle over, armed again");
             flush_log();
         }
+        PLAYER_AI_DONE.store(false, Ordering::Relaxed);
+        AI_PLAYER_SHIP.store(0, Ordering::Relaxed);
         PLAYER_SEEN.store(0, Ordering::Relaxed);
         return;
     }
@@ -2640,6 +2754,7 @@ unsafe extern "C" fn init() -> bool {
     let max_lines = if diag::debug() { config.max_lines.max(1_000_000) } else { config.max_lines };
     MAX_LINES.store(max_lines, Ordering::Relaxed);
     SPAWN_ALLY.store(config.spawn_ally, Ordering::Relaxed);
+    PLAYER_ALLY_ALLOWED.store(config.player_ship_ally, Ordering::Relaxed);
     MARKER_SEAM_SEL.store(select_marker_seam(config.marker_seam), Ordering::Relaxed);
     MARKER_DELAY_MS.store(config.marker_delay_ms, Ordering::Relaxed);
     if let Ok(mut text) = MARKER_TEXT.lock() {
@@ -2930,6 +3045,19 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
                 return Err(format!("{name} at {address:#x} has unexpected bytes {found:02x?}"));
             }
         }
+    }
+    if config.player_ship_ally {
+        let (site, bytes, target) = (UPDATE_SHIPS_SITE, &UPDATE_SHIPS_BYTES[..], UPDATE_SHIPS);
+        let found = std::slice::from_raw_parts(site as *const u8, bytes.len());
+        let called = (site + 5).wrapping_add(i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as isize as usize);
+        if found != bytes || called != target {
+            return Err(format!(
+                "player update call at {site:#x} has unexpected bytes {found:02x?} (target {called:#x}, want {target:#x})"
+            ));
+        }
+        session
+            .patch_call(UPDATE_SHIPS_SITE, on_update_ships as *const (), 5, false, ReturnType::None)
+            .map_err(|e| e.to_string())?;
     }
     // the battle manager hook also carries the telemetry, so it is installed when either is on
     if config.spawn_ally || (cfg!(feature = "telemetry") && config.telemetry) {

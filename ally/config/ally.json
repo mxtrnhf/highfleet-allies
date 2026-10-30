@@ -7,6 +7,7 @@
   "flagship_leaves": "handover",
   "retreat_key": 119,
   "ally_toggle": true,
+  "player_ship_ally": false,
   "log_precombat": false,
   "probe_lines": false,
   "max_allies": 2,
