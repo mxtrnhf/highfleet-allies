@@ -1,5 +1,5 @@
-//! The pure part of the `tactics` stage ("strafe in the band"): gates, band, state classification, strafe / retreat
-//! directions, the blend with the stock direction and every safety clamp. No game memory, no serde, no `crate::`, so it
+//! The pure part of the `tactics` stage: aim dodging, dive avoidance,
+//! steering composition, eligibility gates and shared safety clamps. No game memory, no serde, no `crate::`, so it
 //! can be tested on the host alone: `rustc --edition 2021 --test src/tactics_math.rs -o /tmp/tm_test && /tmp/tm_test`.
 //!
 //! Coordinates are the game's: **y points down** (landed ships sit at y +165..+400, airborne fights run up to y -2000).
@@ -9,10 +9,6 @@
 pub const WAYPOINT_LEN: f32 = 200.0;
 /// A blended direction shorter than this (stock unit vector + weighted tactic) means the two nearly cancel: stock.
 pub const MIN_BLEND_LEN: f32 = 0.2;
-/// Range hysteresis in units, so a ship at a band edge does not flip state every tick.
-pub const HYSTERESIS: f32 = 40.0;
-/// Gun reach used when the game's value is unreadable or not positive.
-pub const FALLBACK_REACH: f32 = 800.0;
 /// The game clock moving forward by more than this between two calls (or backwards at all) means a new battle.
 pub const CLOCK_JUMP: f64 = 5.0;
 /// Entries not seen for this long are dropped.
@@ -22,12 +18,8 @@ const EPS: f32 = 1.0e-3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
-    /// A gate failed, hf_ai did nothing.
+    /// No reactive dodge applies, or an eligibility gate failed; leave stock steering.
     Stock,
-    /// Beyond the band: the stock charge.
-    Far,
-    Band,
-    Close,
     /// The ported missile panic owns the waypoint (set by the caller).
     Panic,
     /// "Deny the dive": sidestepping out of the line straight above / below the target.
@@ -42,9 +34,6 @@ impl State {
     pub fn name(self) -> &'static str {
         match self {
             State::Stock => "stock",
-            State::Far => "far",
-            State::Band => "band",
-            State::Close => "close",
             State::Panic => "panic",
             State::Dive => "dive",
             State::DiveSkip => "dive_skip",
@@ -58,16 +47,6 @@ impl State {
 pub struct Params {
     pub enabled: bool,
     pub apply_to_allies: bool,
-    pub k_center: f32,
-    pub band_min: f32,
-    pub band_max: f32,
-    pub half_width: f32,
-    pub outrange_extra: f32,
-    pub blend_weight: f32,
-    pub strafe_min_s: f32,
-    pub strafe_max_s: f32,
-    /// Share of tangential motion mixed into the retreat (0 = straight back, 1 = 45 degrees).
-    pub retreat_tangent: f32,
     /// Ground reference in game y (y grows downward). The ground itself varies with x; see `ground_clearance`.
     pub ground_y: f32,
     /// Closer than this above `ground_y` (ship.y > ground_y - ground_clearance) no downward component is added.
@@ -77,8 +56,6 @@ pub struct Params {
     pub ground_hard_y: f32,
     /// No outward component within this distance of an arena edge.
     pub edge_margin: f32,
-    /// "Strafe in the band" on/off (the master `enabled` still gates everything).
-    pub strafe_enabled: bool,
     /// "Deny the dive": when the target hangs straight below / above for `dive_dwell_s`, sidestep for a while.
     pub dive_enabled: bool,
     /// Chance the dodge starts, rolled once per time the target enters the cone.
@@ -94,7 +71,7 @@ pub struct Params {
     pub dive_max_s: f32,
     /// After a dodge ends, no new dodge for this long.
     pub dive_cooldown_s: f32,
-    /// Weight of the sidestep against the unit stock direction (a wider range than `blend_weight`).
+    /// Weight of the dive sidestep against the unit stock direction.
     pub dive_weight: f32,
     /// React to a target below us ("under") and / or above us ("over").
     pub dive_under: bool,
@@ -137,20 +114,10 @@ impl Default for Params {
         Self {
             enabled: false,
             apply_to_allies: false,
-            k_center: 0.32,
-            band_min: 300.0,
-            band_max: 550.0,
-            half_width: 100.0,
-            outrange_extra: 150.0,
-            blend_weight: 1.0,
-            strafe_min_s: 2.0,
-            strafe_max_s: 5.0,
-            retreat_tangent: 0.7,
             ground_y: 200.0,
             ground_clearance: 450.0,
             ground_hard_y: 120.0,
             edge_margin: 300.0,
-            strafe_enabled: true,
             dive_enabled: true,
             dive_chance: 0.8,
             dive_cone_deg: 45.0,
@@ -272,34 +239,6 @@ pub fn best_reach(a: f32, b: f32) -> Option<f32> {
     [a, b].into_iter().filter(|r| r.is_finite() && *r > 0.0).fold(None, |m, r| Some(m.map_or(r, |m: f32| m.max(r))))
 }
 
-/// `(inner, center, outer)` of the band. `reach_self` should be the latched maximum (AP shells drop the live value
-/// to 500 while the ship is inside ~1000 u, which would collapse the band exactly when it closes in).
-pub fn band(reach_self: Option<f32>, reach_target: Option<f32>, p: &Params) -> (f32, f32, f32) {
-    let own = reach_self.filter(|r| r.is_finite() && *r > 0.0).unwrap_or(FALLBACK_REACH);
-    let mut center = (p.k_center * own).clamp(p.band_min, p.band_max.max(p.band_min));
-    if let Some(t) = reach_target {
-        if t.is_finite() && t > own {
-            center += p.outrange_extra;
-        }
-    }
-    ((center - p.half_width).max(100.0), center, center + p.half_width)
-}
-
-/// State by range, with hysteresis relative to the previous state.
-pub fn classify(d: f32, prev: State, inner: f32, outer: f32) -> State {
-    if !d.is_finite() {
-        return State::Far;
-    }
-    let in_range_before = matches!(prev, State::Band | State::Close);
-    if d > if in_range_before { outer + HYSTERESIS } else { outer } {
-        return State::Far;
-    }
-    if d < if prev == State::Close { inner + HYSTERESIS } else { inner } {
-        return State::Close;
-    }
-    State::Band
-}
-
 pub fn normalized(x: f32, y: f32) -> Option<(f32, f32)> {
     let len = (x * x + y * y).sqrt();
     (x.is_finite() && y.is_finite() && len.is_finite() && len > 1.0e-3).then(|| (x / len, y / len))
@@ -308,16 +247,9 @@ pub fn normalized(x: f32, y: f32) -> Option<(f32, f32)> {
 /// Per-ship tactic state.
 #[derive(Clone, Debug)]
 pub struct ShipState {
-    /// +1 / -1: which way round the target the strafe goes.
-    pub side: f32,
-    pub next_flip: f64,
     pub last_seen: f64,
-    pub state: State,
     /// Largest own reach seen (0 = none yet).
     pub reach_self: f32,
-    /// Target the latched `reach_target` belongs to.
-    pub target: usize,
-    pub reach_target: f32,
     /// Target in the dive cone since this time.
     pub aligned_since: Option<f64>,
     /// The roll for the current alignment said no.
@@ -331,53 +263,29 @@ pub struct ShipState {
 }
 
 impl ShipState {
-    pub fn new(now: f64, rng: &mut Rng, p: &Params) -> Self {
-        let side = if rng.unit() < 0.5 { -1.0 } else { 1.0 };
-        let next_flip = now + f64::from(rng.range(p.strafe_min_s, p.strafe_max_s));
-        ShipState { side, next_flip, last_seen: now, state: State::Far, reach_self: 0.0, target: 0, reach_target: 0.0, aligned_since: None, declined: false, dive: None, dive_cooldown_until: 0.0, prev_target: None, target_vx: 0.0 }
-    }
-
-    /// Reverses the side when the timer ran out (once per call, then re-arms from `now`).
-    pub fn update_side(&mut self, now: f64, rng: &mut Rng, p: &Params) {
-        if now >= self.next_flip {
-            self.side = -self.side;
-            self.next_flip = now + f64::from(rng.range(p.strafe_min_s, p.strafe_max_s));
+    pub fn new(now: f64) -> Self {
+        Self {
+            last_seen: now, reach_self: 0.0, aligned_since: None, declined: false,
+            dive: None, dive_cooldown_until: 0.0, prev_target: None, target_vx: 0.0,
         }
     }
 
-    /// Keeps the largest reach seen; a new target resets the target's.
-    pub fn latch_reach(&mut self, own: Option<f32>, target: usize, target_reach: Option<f32>) {
-        if let Some(r) = own.filter(|r| r.is_finite() && *r > 0.0) {
-            self.reach_self = self.reach_self.max(r);
-        }
-        if target != self.target {
-            self.target = target;
-            self.reach_target = 0.0;
-        }
-        if let Some(r) = target_reach.filter(|r| r.is_finite() && *r > 0.0) {
-            self.reach_target = self.reach_target.max(r);
+    /// Keep the largest own gun reach seen for early fire; AP can lower the live value.
+    pub fn latch_reach(&mut self, own: Option<f32>) {
+        if let Some(reach) = own.filter(|r| r.is_finite() && *r > 0.0) {
+            self.reach_self = self.reach_self.max(reach);
         }
     }
 
-    pub fn reaches(&self) -> (Option<f32>, Option<f32>) {
-        ((self.reach_self > 0.0).then_some(self.reach_self), (self.reach_target > 0.0).then_some(self.reach_target))
+    pub fn reach(&self) -> Option<f32> {
+        (self.reach_self > 0.0).then_some(self.reach_self)
     }
+
 }
 
 /// Whether the per-ship table must be cleared: the clock went backwards or jumped (a new battle).
 pub fn clock_reset(last: f64, now: f64) -> bool {
     !now.is_finite() || now < last || now - last > CLOCK_JUMP
-}
-
-/// Direction the tactic wants, from the unit vector ship -> target and the strafe side.
-/// Band: tangential (perpendicular to the line to the target). Close: away from the target plus a tangential share.
-pub fn tactic_dir(state: State, to_target: (f32, f32), side: f32, retreat_tangent: f32) -> Option<(f32, f32)> {
-    let tangent = (-to_target.1 * side, to_target.0 * side);
-    match state {
-        State::Band => normalized(tangent.0, tangent.1),
-        State::Close => normalized(-to_target.0 + tangent.0 * retreat_tangent, -to_target.1 + tangent.1 * retreat_tangent),
-        _ => None,
-    }
 }
 
 /// Makes `d[axis] <= limit` by turning the unit vector (the other component keeps its sign).
@@ -673,22 +581,7 @@ pub fn step(p: &Params, st: &mut ShipState, bounds: &Bounds, inp: &StepInput, rn
             Dive::Idle => {}
         }
     }
-    if !p.strafe_enabled {
-        return Step { state: if skipped { State::DiveSkip } else { State::Stock }, waypoint: None };
-    }
-    st.update_side(inp.now, rng, p);
-    let d = (to.0 * to.0 + to.1 * to.1).sqrt();
-    let (rs, rt) = st.reaches();
-    let (inner, _center, outer) = band(rs, rt, p);
-    let state = classify(d, st.state, inner, outer);
-    st.state = state;
-    if state == State::Far {
-        return Step { state: if skipped { State::DiveSkip } else { state }, waypoint: None };
-    }
-    let waypoint = normalized(to.0, to.1)
-        .and_then(|unit| tactic_dir(state, unit, st.side, p.retreat_tangent))
-        .and_then(|t| compose(inp.ship, stock_vec, t, p.blend_weight, bounds, p));
-    Step { state: if skipped { State::DiveSkip } else { state }, waypoint }
+    Step { state: if skipped { State::DiveSkip } else { State::Stock }, waypoint: None }
 }
 
 #[cfg(test)]
@@ -706,6 +599,41 @@ mod tests {
     }
     fn len(a: (f32, f32), b: (f32, f32)) -> f32 {
         ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
+    }
+
+    #[test]
+    fn no_dodge_leaves_stock_steering_at_every_former_band_distance() {
+        let params = on();
+        let mut state = ShipState::new(0.0);
+        let mut rng = Rng::new(3);
+        for distance in [100.0, 250.0, 480.0, 580.0, 900.0, 2000.0] {
+            let input = StepInput {
+                now: 1.0, aim: None, ship: (0.0, -1000.0),
+                wanted: (200.0, -1000.0), target: (distance, -1000.0),
+            };
+            let decision = step(&params, &mut state, &bounds(), &input, &mut rng);
+            assert_eq!((decision.state, decision.waypoint), (State::Stock, None));
+        }
+    }
+
+    #[test]
+    fn aim_dodge_still_preempts_dive_and_dive_works_without_aim() {
+        let input = StepInput {
+            now: 1.0, ship: (0.0, -1000.0), wanted: (200.0, -1000.0),
+            target: (0.0, -700.0),
+            aim: Some(AimInput { player: (0.0, -700.0), dir: (0.0, -1.0) }),
+        };
+        for (aim_enabled, expected) in [(true, State::Aim), (false, State::Dive)] {
+            let params = Params {
+                enabled: true, aim_enabled, dive_under_dwell_s: 0.0,
+                dive_under_chance: 1.0, ..Params::default()
+            };
+            let mut state = ShipState::new(0.0);
+            let mut rng = Rng::new(3);
+            let decision = step(&params, &mut state, &bounds(), &input, &mut rng);
+            assert_eq!(decision.state, expected);
+            assert!(decision.waypoint.is_some());
+        }
     }
 
     #[test]
@@ -727,77 +655,22 @@ mod tests {
         assert_eq!(gate(&p, &GateInput { panicking: true, mode: Some(3), ..ok_gate() }), Gate::Stock);
     }
 
-    #[test]
-    fn band_defaults_follow_the_data() {
-        let p = on();
-        let (i, c, o) = band(Some(1500.0), None, &p); // Intrepid / Lightning
-        assert!((c - 480.0).abs() < 1.0 && (i - 380.0).abs() < 1.0 && (o - 580.0).abs() < 1.0);
-        let (i, c, o) = band(Some(800.0), None, &p); // Navarin: min clamp
-        assert_eq!((i, c, o), (200.0, 300.0, 400.0));
-        let (_, c, _) = band(Some(3000.0), None, &p);
-        assert_eq!(c, 550.0, "max clamp");
-        let (_, c, _) = band(None, None, &p);
-        assert_eq!(c, 300.0, "fallback reach 800");
-        let (_, c, _) = band(Some(f32::NAN), None, &p);
-        assert_eq!(c, 300.0);
-        let (_, c, _) = band(Some(1500.0), Some(3000.0), &p);
-        assert!((c - 630.0).abs() < 1.0, "target outranges us: farther out");
-        let (_, c, _) = band(Some(1500.0), Some(1500.0), &p);
-        assert!((c - 480.0).abs() < 1.0, "equal reach: no extra");
-    }
 
     #[test]
-    fn ap_reach_latch_keeps_the_band() {
-        let mut rng = Rng::new(1);
-        let p = on();
-        let mut st = ShipState::new(0.0, &mut rng, &p);
-        st.latch_reach(Some(1500.0), 7, Some(800.0));
-        st.latch_reach(Some(500.0), 7, Some(500.0)); // AP loaded
-        let (rs, rt) = st.reaches();
-        assert_eq!((rs, rt), (Some(1500.0), Some(800.0)));
-        st.latch_reach(Some(500.0), 9, None); // new target
-        assert_eq!(st.reaches().1, None);
+    fn ap_reach_latch_preserves_early_fire_range() {
+        let mut state = ShipState::new(0.0);
+        assert_eq!(state.reach(), None);
+        state.latch_reach(Some(1500.0));
+        state.latch_reach(Some(500.0));
+        state.latch_reach(None);
+        assert_eq!(state.reach(), Some(1500.0));
+        assert!(early_fire_in_range(2000.0, state.reach(), &Params::default()));
         assert_eq!(best_reach(0.0, 1500.0), Some(1500.0));
         assert_eq!(best_reach(f32::NAN, -1.0), None);
     }
 
-    #[test]
-    fn classification_with_hysteresis() {
-        let (i, o) = (380.0, 580.0);
-        assert_eq!(classify(700.0, State::Far, i, o), State::Far);
-        assert_eq!(classify(590.0, State::Far, i, o), State::Far);
-        assert_eq!(classify(590.0, State::Band, i, o), State::Band);
-        assert_eq!(classify(630.0, State::Band, i, o), State::Far);
-        assert_eq!(classify(500.0, State::Far, i, o), State::Band);
-        assert_eq!(classify(300.0, State::Band, i, o), State::Close);
-        assert_eq!(classify(390.0, State::Close, i, o), State::Close);
-        assert_eq!(classify(390.0, State::Band, i, o), State::Band);
-        assert_eq!(classify(f32::NAN, State::Band, i, o), State::Far);
-    }
 
-    #[test]
-    fn strafe_is_perpendicular_and_side_flips_it() {
-        let a = tactic_dir(State::Band, (1.0, 0.0), 1.0, 0.7).unwrap();
-        let b = tactic_dir(State::Band, (1.0, 0.0), -1.0, 0.7).unwrap();
-        assert!(a.0.abs() < 1e-6 && (a.1 - 1.0).abs() < 1e-6);
-        assert!((b.1 + 1.0).abs() < 1e-6);
-        // target at 45 degrees
-        let t = (0.70710678, 0.70710678);
-        let d = tactic_dir(State::Band, t, 1.0, 0.7).unwrap();
-        assert!((d.0 * t.0 + d.1 * t.1).abs() < 1e-5);
-    }
 
-    #[test]
-    fn retreat_is_diagonal_and_away() {
-        let t = (1.0, 0.0);
-        let d = tactic_dir(State::Close, t, 1.0, 0.7).unwrap();
-        assert!(d.0 < -0.5, "away from the target");
-        assert!(d.1.abs() > 0.3, "not straight back");
-        assert!((d.0 * d.0 + d.1 * d.1 - 1.0).abs() < 1e-5);
-        let s = tactic_dir(State::Close, t, 1.0, 0.0).unwrap();
-        assert_eq!(s.1, 0.0 * s.1);
-        assert!(tactic_dir(State::Far, t, 1.0, 0.7).is_none());
-    }
 
     #[test]
     fn compose_length_is_exactly_200() {
@@ -925,34 +798,6 @@ mod tests {
         assert!(Bounds::from_raw([200.0, 400.0, -200.0, -2000.0]).is_none(), "too narrow");
     }
 
-    #[test]
-    fn reversal_timer_is_deterministic_and_in_range() {
-        let p = on();
-        let run = |seed| {
-            let mut rng = Rng::new(seed);
-            let mut st = ShipState::new(0.0, &mut rng, &p);
-            let mut flips = Vec::new();
-            let mut last = st.side;
-            let mut t = 0.0;
-            while t < 120.0 {
-                st.update_side(t, &mut rng, &p);
-                if st.side != last {
-                    flips.push(t);
-                    last = st.side;
-                }
-                t += 0.1;
-            }
-            flips
-        };
-        let a = run(42);
-        assert_eq!(a, run(42), "same seed, same flips");
-        assert_ne!(a, run(43));
-        assert!(a.len() > 120 / 5 - 3 && a.len() < 120 / 2 + 3, "{}", a.len());
-        for w in a.windows(2) {
-            let gap = w[1] - w[0];
-            assert!(gap >= 2.0 - 1e-6 && gap <= 5.0 + 0.11, "gap {gap}");
-        }
-    }
 
     #[test]
     fn rng_never_sticks_at_zero() {
@@ -977,51 +822,11 @@ mod tests {
         assert!(!clock_reset(100.0, 104.9));
     }
 
-    #[test]
-    fn strafing_and_retreat_remain_available_without_acceleration_gate() {
-        let p = on();
-        let b = bounds();
-        let mut rng = Rng::new(3);
-        let mut st = ShipState::new(0.0, &mut rng, &p);
-        st.latch_reach(Some(1500.0), 1, Some(1500.0));
-        let ship = (0.0, -1000.0);
-        let wanted = (200.0, -1000.0); // stock heads at the target on +x
-        let mk = |d: f32, now: f64| StepInput { now, aim: None, ship, wanted, target: (d, -1000.0) };
-        let far = step(&p, &mut st, &b, &mk(900.0, 0.1), &mut rng);
-        assert_eq!((far.state, far.waypoint), (State::Far, None));
-        let band = step(&p, &mut st, &b, &mk(480.0, 0.2), &mut rng);
-        assert_eq!(band.state, State::Band);
-        let w = band.waypoint.unwrap();
-        assert!(w.1 != ship.1, "tangential part makes it leave the line");
-        assert!((len(w, ship) - 200.0).abs() < 1e-3);
-        // blended with stock (+x): result has +x and a y part, 45 degrees at weight 1
-        assert!(w.0 > ship.0 + 100.0);
-        let close = step(&p, &mut st, &b, &mk(250.0, 0.3), &mut rng);
-        assert_eq!(close.state, State::Close);
-        let w = close.waypoint.unwrap();
-        assert!((len(w, ship) - 200.0).abs() < 1e-3);
-        assert_eq!(st.last_seen, 0.3);
-    }
+
 
     #[test]
-    fn step_close_retreat_beats_stock_charge_only_partly() {
-        // stock charges (+x), retreat is -x + tangent: they nearly cancel in x, the tangent remains
-        let p = on();
-        let b = bounds();
-        let mut rng = Rng::new(9);
-        let mut st = ShipState::new(0.0, &mut rng, &p);
-        let ship = (0.0, -1000.0);
-        let r = step(&p, &mut st, &b, &StepInput { now: 0.1, aim: None, ship, wanted: (200.0, -1000.0), target: (150.0, -1000.0) }, &mut rng);
-        assert_eq!(r.state, State::Close);
-        if let Some(w) = r.waypoint {
-            assert!((len(w, ship) - 200.0).abs() < 1e-3);
-        }
-    }
-
-    #[test]
-    fn orbiting_stock_vs_strafe_side_weight_matters() {
-        // stock already orbits (perpendicular to the line to the target, which is +x); ship at y = -1000 (far from
-        // the ground). Stock tangent = +y (down). Tactic side +1 tangent = +y, side -1 = -y.
+    fn opposing_dodge_direction_respects_its_own_blend_weight() {
+        // A dodge can follow or oppose the stock course; its own weight determines the blend.
         let p = on();
         let b = bounds();
         let ship = (0.0, -1000.0);
@@ -1030,7 +835,7 @@ mod tests {
         assert!((same.1 - ship.1 - 200.0).abs() < 1e-3, "same side: stock unchanged");
         // opposite side at w = 1 cancels the stock: falls back to stock (None), the reversal is invisible
         assert!(compose(ship, stock, (0.0, -1.0), 1.0, &b, &p).is_none());
-        // at w = 2 the tactic wins: the final tangential sign follows the strafe side
+        // At weight 2 the dodge wins and reverses the stock course.
         let flipped = compose(ship, stock, (0.0, -1.0), 2.0, &b, &p).unwrap();
         assert!(flipped.1 < ship.1 - 100.0);
         // slightly radial stock + w = 1: the opposite side still comes out tangential only partly
@@ -1042,7 +847,6 @@ mod tests {
     fn dive_params() -> Params {
         Params {
             enabled: true,
-            strafe_enabled: false,
             dive_under_dwell_s: 1.0,
             dive_under_chance: 0.8,
             dive_level_weight: 0.0,
@@ -1073,7 +877,7 @@ mod tests {
         let p = Params { dive_chance: 1.0, dive_under_chance: 1.0, ..dive_params() };
         let b = bounds();
         let mut rng = Rng::new(7);
-        let mut st = ShipState::new(0.0, &mut rng, &p);
+        let mut st = ShipState::new(0.0);
         let tgt = (0.0, -700.0); // 300 u straight below the ship (ship y -1000, y points down)
         assert_eq!(step(&p, &mut st, &b, &dive_input(0.0, tgt), &mut rng).state, State::Stock);
         assert_eq!(step(&p, &mut st, &b, &dive_input(0.5, tgt), &mut rng).state, State::Stock);
@@ -1098,7 +902,7 @@ mod tests {
         let p = Params { dive_chance: 1.0, dive_under_chance: 1.0, ..dive_params() };
         let b = bounds();
         let mut rng = Rng::new(3);
-        let mut st = ShipState::new(0.0, &mut rng, &p);
+        let mut st = ShipState::new(0.0);
         step(&p, &mut st, &b, &dive_input(0.0, (0.0, -700.0)), &mut rng);
         step(&p, &mut st, &b, &dive_input(0.8, (500.0, -1000.0)), &mut rng); // level: out
         assert_eq!(step(&p, &mut st, &b, &dive_input(1.2, (0.0, -700.0)), &mut rng).state, State::Stock);
@@ -1112,7 +916,7 @@ mod tests {
         let mut rng = Rng::new(99);
         let (mut dives, mut skips) = (0u32, 0u32);
         for _ in 0..2000 {
-            let mut st = ShipState::new(0.0, &mut rng, &p);
+            let mut st = ShipState::new(0.0);
             let tgt = (0.0, -700.0);
             step(&p, &mut st, &b, &dive_input(0.0, tgt), &mut rng);
             let first = step(&p, &mut st, &b, &dive_input(1.0, tgt), &mut rng).state;
@@ -1138,7 +942,7 @@ mod tests {
         let p = Params { dive_chance: 1.0, dive_under_chance: 1.0, ..dive_params() };
         let b = bounds();
         let mut rng = Rng::new(5);
-        let mut st = ShipState::new(0.0, &mut rng, &p);
+        let mut st = ShipState::new(0.0);
         let input = |now: f64| dive_input(now, (0.0, -700.0));
         step(&p, &mut st, &b, &input(0.0), &mut rng);
         let dodge = step(&p, &mut st, &b, &input(1.5), &mut rng);
@@ -1174,8 +978,7 @@ mod tests {
 
     #[test]
     fn target_velocity_is_estimated_and_reset_after_a_gap() {
-        let mut rng = Rng::new(2);
-        let mut st = ShipState::new(0.0, &mut rng, &Params::default());
+        let mut st = ShipState::new(0.0);
         for k in 0..10 {
             track_target(&mut st, 0.1 * k as f64, (80.0 * 0.1 * k as f32, 0.0));
         }
@@ -1187,10 +990,10 @@ mod tests {
     #[test]
     fn under_has_its_own_dwell_chance_and_a_level_pull() {
         // defaults: under = 0.5 s dwell, 100%; over = 1.0 s, 80%
-        let p = Params { enabled: true, strafe_enabled: false, ..Params::default() };
+        let p = Params { enabled: true, ..Params::default() };
         let b = bounds();
         let mut rng = Rng::new(11);
-        let mut st = ShipState::new(0.0, &mut rng, &p);
+        let mut st = ShipState::new(0.0);
         let below = (0.0, -700.0); // ship y -1000, target 300 u lower
         assert_eq!(step(&p, &mut st, &b, &dive_input(0.0, below), &mut rng).state, State::Stock);
         let r = step(&p, &mut st, &b, &dive_input(0.5, below), &mut rng);
@@ -1199,7 +1002,7 @@ mod tests {
         let (wx, wy) = r.waypoint.unwrap();
         assert!(wx.abs() > 100.0 && wy > -1000.0, "{wx} {wy}");
         // a target above: climbs (negative y) and needs the longer over dwell
-        let mut st2 = ShipState::new(0.0, &mut rng, &p);
+        let mut st2 = ShipState::new(0.0);
         let above = (0.0, -1300.0);
         step(&p, &mut st2, &b, &dive_input(0.0, above), &mut rng);
         assert_eq!(step(&p, &mut st2, &b, &dive_input(0.5, above), &mut rng).state, State::Stock);
@@ -1227,7 +1030,7 @@ mod tests {
 
     // ---- aim awareness ----
     fn aim_params() -> Params {
-        Params { enabled: true, strafe_enabled: false, dive_enabled: false, aim_enabled: true, ..Params::default() }
+        Params { enabled: true, dive_enabled: false, aim_enabled: true, ..Params::default() }
     }
 
     #[test]
@@ -1283,7 +1086,7 @@ mod tests {
         let p = aim_params();
         let b = bounds();
         let mut rng = Rng::new(3);
-        let mut st = ShipState::new(0.0, &mut rng, &p);
+        let mut st = ShipState::new(0.0);
         let aim = Some(AimInput { player: (-1000.0, -1000.0), dir: (1.0, 0.0) });
         let inp = StepInput { now: 1.0, aim, ship: (0.0, -950.0), wanted: (200.0, -950.0), target: (-1000.0, -1000.0) };
         let r = step(&p, &mut st, &b, &inp, &mut rng);

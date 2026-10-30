@@ -53,7 +53,6 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Barrel rolls | `ai_flares.barrel_roll_probability: 0.0` | Plain and boosted panic evasion remain. |
 | Boosted/full-steering panic evasion | `ai_flares.panic_evasion_probability: 0.0` | Plain evasion and barrel rolls remain. |
 | Panic/roll engine boost | `ai_flares.panic_boost: 1.0` | Steering and roll angles remain. For guaranteed no panic engine rewrites, also set both panic-evasion and barrel-roll probabilities to `0.0`. |
-| Strafing/band positioning and close retreat | `tactics.strafe_enabled: false` | Dive, aim awareness and early fire remain. Use this switch rather than `blend_weight: 0.0` for a true off. |
 | Both dive directions | `tactics.dive_enabled: false` | Strafe, aim awareness and early fire remain. |
 | Dive-under only | `tactics.dive_under: false` | Dive-over remains. |
 | Dive-over only | `tactics.dive_over: false` | Dive-under remains. |
@@ -128,26 +127,16 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | `stray_missile_eta_s` | `3.0` | If the subsystem and stray checks are enabled, they look 3 seconds ahead. | ...and it would arrive within this many seconds. |
 | `stray_missile_range` | `1200.0` | If the subsystem and stray checks are enabled, they use maximum range 1200. | ...and it is closer than this distance (units). |
 
-## `tactics` (dodging, aim awareness, strafing)
+## `tactics` (aim dodging and dive avoidance)
 | Key | Default | If key omitted | What it does |
 |---|---|---|---|
 | `enabled` | `false` | All tactical steering and early fire are off. | Master switch (A/B tests). |
 | `allies` | `false` | If tactics are enabled, allied AI ships are excluded. | Also steer AI ships of the player's side (allies). The ship you fly is never touched. |
-| `k_center` | `0.32` | If tactics/strafe are enabled, the band centre factor is 0.32. | Band centre = `k_center` x own gun reach, limited to `band_min..band_max`. |
-| `band_min` | `300.0` | If tactics/strafe are enabled, the minimum band centre is 300. | Lowest centre of the strafing distance band (units). |
-| `band_max` | `550.0` | If tactics/strafe are enabled, the maximum band centre is 550. | Highest centre of the strafing distance band (units). |
-| `half_width` | `100.0` | If tactics/strafe are enabled, the band half-width is 100. | Half the band width: strafe between centre - half_width and centre + half_width. |
-| `outrange_extra` | `150.0` | If tactics/strafe are enabled, the outrange addition is 150. | Extra distance when the target's gun reach is longer than ours. |
-| `blend_weight` | `1.0` | If tactics/strafe are enabled, blend weight is 1.0. | Weight of the tactic direction against the unit stock direction (0 = stock). |
-| `strafe_min_s` | `2.0` | If tactics/strafe are enabled, minimum side-hold time is 2 seconds. | The strafe side reverses after a random time in this range. |
-| `strafe_max_s` | `5.0` | If tactics/strafe are enabled, maximum side-hold time is 5 seconds. | Longest time before the strafing direction flips (min is `strafe_min_s`). |
-| `retreat_tangent` | `0.7` | If tactics/strafe are enabled, close-retreat tangent is 0.7. | Tangential share in the too-close retreat (0 = straight back). |
 | `ground_y` | `200.0` | If tactics are enabled, ground reference Y is 200. | Ground reference y (y grows downward) and the clearance above it where no downward component is added. |
 | `ground_clearance` | `450.0` | If tactics are enabled, ground clearance is 450. | Height above the ground (units) that strafing/dodging keeps. |
 | `ground_hard_y` | `120.0` | If tactics are enabled, the hard no-downward Y threshold is 120. | Below this y no tactic steers downward at all (the ground is about +250; y grows downward). |
 | `edge_margin` | `300.0` | If tactics are enabled, arena edge margin is 300. | No outward component within this distance of an arena edge. |
-| `strafe_enabled` | `true` | Strafing is enabled inside the tactics block, but the tactics master remains off unless set. | "Strafe in the band" on/off (`enabled` stays the master switch). |
-| `dive_enabled` | `true` | Dive dodging is enabled inside the tactics block, but the tactics master remains off unless set. | "Deny the dive": sidestep when the target hangs straight below / above. Own switch, works with the strafe off. |
+| `dive_enabled` | `true` | Dive dodging is enabled inside the tactics block, but the tactics master remains off unless set. | "Deny the dive": sidestep when the target hangs straight below / above. Independent of aim dodging; stock positioning is retained between dodges. |
 | `dive_chance` | `0.8` | If dive-over is active, its trigger chance is 0.8. | Chance (0..1) that the sidestep starts; rolled once each time the target enters the cone. |
 | `dive_cone_deg` | `45.0` | If diving is active, the cone half-angle is 45 degrees. | Half-angle in degrees around straight down / up. |
 | `dive_range` | `600.0` | If diving is active, its range is 600. | Targets above/below count only within this distance (units). |
@@ -178,16 +167,16 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 
 ## Deprecated settings
 
-These keys were retired in v0.10.4. Old JSON files still load: the keys are ignored,
+The acceleration keys below were retired in v0.10.4. Old JSON files still load: the keys are ignored,
 never converted to hidden thresholds, and omitted from newly generated configs.
 Remove them from existing configs and use the top-level `twr_cutoff` instead.
 
 | Former key | Former default | Current effect | Replacement |
 |---|---|---|---|
-| `tactics.min_accel` | `35.0` | None. No separate thrust/mass requirement for strafing or retreat. | `twr_cutoff` |
+| `tactics.min_accel` | `35.0` | None. No acceleration gate; optional positioning was removed in v0.10.6. | `twr_cutoff` |
 | `tactics.dive_min_accel` | `30.0` | None. No separate thrust/mass requirement for dive avoidance or aim dodging. | `twr_cutoff` |
 
-Retiring these keys does not disable the tactics. At or above `twr_cutoff` (or
+Retiring the acceleration keys does not disable aim dodging or dive avoidance. At or above `twr_cutoff` (or
 with `0.0`, for every ship), their individual switches and normal target, timing,
 ground and arena checks determine whether they act. Low or unavailable thrust/mass
 readings no longer prevent a decision.
@@ -200,3 +189,24 @@ readings no longer prevent a decision.
 
 `ai_flares.allies` and `tactics.allies` remain independent switches for their
 respective subsystems. Renaming does not change which ships qualify.
+
+### Removed positioning settings (v0.10.6)
+
+The entire optional circling / preferred-distance / close-retreat routine was
+removed. There is no replacement positioning switch: stock AI owns positioning.
+Aim dodging, dive avoidance, missile evasion, flare-curtain retreat/shelter,
+early fire and their shared safety checks remain. Legacy keys are ignored and
+never written to generated configs.
+
+| Former key | Former default | Current effect |
+|---|---|---|
+| `tactics.k_center` | `0.32` | None; positioning routine removed. |
+| `tactics.band_min` | `300.0` | None; positioning routine removed. |
+| `tactics.band_max` | `550.0` | None; positioning routine removed. |
+| `tactics.half_width` | `100.0` | None; positioning routine removed. |
+| `tactics.outrange_extra` | `150.0` | None; positioning routine removed. |
+| `tactics.blend_weight` | `1.0` | None; positioning routine removed. |
+| `tactics.strafe_min_s` | `2.0` | None; positioning routine removed. |
+| `tactics.strafe_max_s` | `5.0` | None; positioning routine removed. |
+| `tactics.retreat_tangent` | `0.7` | None; positioning routine removed. |
+| `tactics.strafe_enabled` | `true` | None; positioning routine removed. |

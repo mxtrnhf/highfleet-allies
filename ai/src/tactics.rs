@@ -1,6 +1,6 @@
-//! The `tactics` stage ("strafe in the band"): game-memory glue around the pure `tactics_math`. Runs for every AI
+//! Aim-dodge and dive-avoidance game-memory glue around the pure `tactics_math`. Runs for every AI
 //! ship on every AI tick, so the default-off path is one atomic load, and everything read from the game is
-//! page-checked (`crate::rd`). Per-ship numbers that need several reads (thrust, mass, reach) are refreshed once a second.
+//! page-checked (`crate::rd`). Own gun reach for early fire is refreshed once a second.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -105,15 +105,7 @@ pub fn init(config: &TacticsConfig) {
     AIM_BOOST.store((if params.aim_enabled { params.aim_boost } else { 1.0 }).to_bits(), Ordering::Relaxed);
     if params.enabled {
         log::info!(
-            "hf_ai: tactics ON (strafe {}, band k {} in {}..{} +-{}, blend {}, strafe {}..{} s, allies {}; dive {} chance {} cone {} deg range {} dwell {} s boost {})",
-            params.strafe_enabled,
-            params.k_center,
-            params.band_min,
-            params.band_max,
-            params.half_width,
-            params.blend_weight,
-            params.strafe_min_s,
-            params.strafe_max_s,
+            "hf_ai: tactics ON (allies {}; dive {} chance {} cone {} deg range {} dwell {} s boost {})",
             params.apply_to_allies,
             params.dive_enabled,
             params.dive_chance,
@@ -265,8 +257,8 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
             .unwrap_or(1)
             ^ (ctx.creature as u64).rotate_left(17)
             ^ now.to_bits();
-        let mut rng = Rng::new(seed);
-        let st = ShipState::new(now, &mut rng, p);
+        let rng = Rng::new(seed);
+        let st = ShipState::new(now);
         world.ships.insert(ctx.creature, Entry { st, rng, next_refresh: f64::NEG_INFINITY, boosting: false, fire_rolled: 0, fire_until: 0.0, fire_set: false });
     }
     // Aim awareness: one shared window clock; only ships that target the player see the aim.
@@ -300,14 +292,12 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
         let first = entry.next_refresh == f64::NEG_INFINITY;
         entry.next_refresh = now + REFRESH_S;
         let own = read_reach(ctx.creature);
-        let theirs = read_reach(target_creature);
-        entry.st.latch_reach(own, target_creature, theirs);
+        entry.st.latch_reach(own);
         if first && GATE_LOGS.fetch_add(1, Ordering::Relaxed) < MAX_GATE_LOGS {
             log::info!(
-                "hf_ai: tactics ship {:#x}: reach {:?}, target reach {:?}",
+                "hf_ai: tactics ship {:#x}: gun reach {:?}",
                 ctx.creature,
-                own,
-                theirs
+                own
             );
         }
     }
@@ -332,7 +322,7 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
         if step.state == State::Aim && entry.fire_rolled != aim_window {
             entry.fire_rolled = aim_window;
             let dist = (target.0 - ctx.ship.0).hypot(target.1 - ctx.ship.1);
-            if tm::early_fire_in_range(dist, entry.st.reaches().0, p) && entry.rng.unit() < p.aim_fire_probability {
+            if tm::early_fire_in_range(dist, entry.st.reach(), p) && entry.rng.unit() < p.aim_fire_probability {
                 entry.fire_until = now + f64::from(p.aim_fire_s);
             }
         }

@@ -17,10 +17,10 @@ Status: **v0.10.2** (stray/lost-lock missiles evade without an initial flare bur
 
 ## Stages in the steering hook (`0x140064a8d`, every AI tick of every ship)
 1. the stock AI's waypoint (200 units from the ship along the wanted direction);
-2. `tactics::decide(ctx)`: the tactics stage ("strafe in the band", v0.3.0, off by default, see below);
+2. `tactics::decide(ctx)`: the aim-dodge and dive-avoidance stage (off by default);
 3. the ported missile panic (`ai_flares::steer`): while a ship is evading it replaces the waypoint, so **panic overrides tactics**;
 4. the CSV row (`Modloader/logs/hf_ai_steer_<unix>.csv`, `log_steering`, `log_hz`); `chosen_x/y` is the final waypoint,
-   `panic` = 1 when stage 3 chose it, `cptr` = creature pointer, `state` (last column) = stock / far / band / close / panic; `dist` is the range to the target;
+   `panic` = 1 when stage 3 chose it, `cptr` = creature pointer, `state` (last column) = stock / aim / dive / dive_skip / panic; `dist` is the range to the target;
 5. the waypoint goes back to the tick.
 
 ## `ai_flares` (ported from the qol fork, behaviour-identical)
@@ -69,37 +69,36 @@ Not implemented; v0.2.0 only reproduces qol.
 boost hooks together or none; game-memory reads are page-checked (`VirtualQuery`, region-cached in the body scan); body
 and launcher loops are capped; the three hooks run inside `catch_unwind`; the ship table lock recovers from poisoning.
 
-## `tactics`: strafe in the band (v0.3.0, off by default)
-Code: `tactics_math.rs` (pure, host-testable: `rustc --edition 2021 --test src/tactics_math.rs`), `tactics.rs` (game reads,
-per-ship table), `tactics_config.rs` (the `tactics` block). Spec: `hf_notes/docs/findings/ai-hf-ai-design.md`.
+## `tactics`: aim dodging and dive avoidance
 
-**Gates (any failure = stock, nothing changes):** `tactics.enabled`; AI-flown (`+0xbd4 != 0`); enemy side (`+0xad4 < 0`; allies
-only with `tactics.allies`); airborne combat mode (`+0xb48 == 1`; landed 3 and takeoff 0 stay stock; this is the telemetry
-`mode` column, NOT `+0xd70` which is the role); a living target ship; the top-level `twr_cutoff` gate;
-not in a missile panic; arena bounds readable and sane.
-**Band:** centre = `k_center` x own reach (max of `+0x1838/+0x183c`, the largest value seen per ship, because AP shells
-drop it to 500), limited to `band_min..band_max`; +`outrange_extra` if the target's reach is longer. Band = centre +- `half_width`.
-**States by range d:** far (d > outer) = stock; band = tangential strafe (side reverses after a random `strafe_min_s..strafe_max_s`);
-close (d < inner) = retreat on a diagonal (away + `retreat_tangent` x tangent). 40 u hysteresis on both edges.
-**Output:** `ship + 200 * normalize(unit(stock) + blend_weight * tactic_dir)`, length 200 like stock. Safety limits are applied to
-that final direction: near the ground (`ship.y > ground_y - ground_clearance`; y points DOWN) never more downward than
-`max(stock.y, 0)`; within `edge_margin` of an arena edge never more outward than the stock direction; stock and tactic nearly
-cancelling (blend shorter than 0.2) or an unmeetable limit = stock. Arena bounds are read live from `0x1403c2bc0..` (x max, y max, x min, y min).
-Panic overrides tactics (stage 3). Per-ship state is cleared when the game clock goes backwards or jumps more than 5 s, entries
-not seen for 2 s are dropped. No hot reload: edit the config and restart the game.
+Code: `tactics_math.rs` (host-testable decisions and shared safety clamps),
+`tactics.rs` (game reads and per-ship state), and `tactics_config.rs` (JSON).
+Enable `tactics.enabled` for these two reactive maneuvers. Allied tactical
+steering is controlled by `tactics.allies` (the ship you fly is excluded).
+
+The ship must pass the top-level `twr_cutoff`, be AI-flown and airborne, have a
+living target, and have readable arena bounds. Missile panic takes priority;
+otherwise aim dodge wins over dive avoidance. When neither acts, the stock
+waypoint is retained at every distance. There is no custom preferred-distance
+band, circling, periodic strafe reversal, or close-range positioning retreat.
+
+Aim and dive use their own `aim_weight` and `dive_weight` to blend with stock
+steering. Shared ground, ceiling, and arena-edge safety clamps remain. Gun range
+is still tracked for early fire; it no longer selects a positioning band.
 
 ```json
 "tactics": {
-  "enabled": false, "allies": false,
-  "k_center": 0.32, "band_min": 300.0, "band_max": 550.0, "half_width": 100.0, "outrange_extra": 150.0,
-  "blend_weight": 1.0, "strafe_min_s": 2.0, "strafe_max_s": 5.0, "retreat_tangent": 0.7,
-  "ground_y": 200.0, "ground_clearance": 450.0, "edge_margin": 300.0,
-  "strafe_enabled": true,
-  "dive_enabled": true, "dive_chance": 0.8, "dive_cone_deg": 45.0, "dive_range": 600.0, "dive_dwell_s": 1.0,
-  "dive_min_s": 1.5, "dive_max_s": 3.0, "dive_cooldown_s": 2.0, "dive_weight": 4.0,
-  "dive_under": true, "dive_over": true, "dive_boost": 2.0, "dive_wrongfoot_speed": 40.0
+  "enabled": false,
+  "allies": false,
+  "dive_enabled": true,
+  "aim_enabled": false,
+  "dive_weight": 8.0,
+  "aim_weight": 12.0
 }
 ```
+
+The optional positioning routine was removed in v0.10.6. Its former keys are
+listed in the deprecated settings table below and are ignored in old configs.
 
 ### Flare curtain (v0.5.0, `ai_flares` block, off by default)
 When the player's side launches a missile, each enemy ship rolls `launch_flares_probability` ONCE per launch; on a hit it drops flares
@@ -153,10 +152,9 @@ v0.5.1: the dodge side is chosen AGAINST the target's sideways motion (`dive_wro
 If the target hangs within `dive_cone_deg` of straight below (`dive_under`) or above (`dive_over`) the ship, within
 `dive_range`, for `dive_dwell_s`, the ship rolls once (`dive_chance`, default 80%) per time the target enters the cone. On a hit it
 sidesteps horizontally for a random `dive_min_s..dive_max_s` (away from a near arena wall, else a random side; same safety limits
-as the strafe: ground, arena edges), blended with the stock direction at `dive_weight`. Then a `dive_cooldown_s` pause. On a miss it
+shared with aim dodging: ground, arena edges), blended with the stock direction at `dive_weight`. Then a `dive_cooldown_s` pause. On a miss it
 stays stock until the target leaves the cone. Panic overrides it. CSV `state` column: `dive`, `dive_skip` (declined by the roll).
-`dive_enabled` and `strafe_enabled` are separate switches (`enabled` is the master): dive-only = `strafe_enabled:false`; strafe-only =
-`dive_enabled:false`. All tactics share the top-level `twr_cutoff`; there are no separate strafe/dive acceleration thresholds. Known limits: only `ctx.target` counts
+`dive_enabled` controls dive avoidance independently of `aim_enabled`. Both share the top-level `twr_cutoff`. Known limits: only `ctx.target` counts
 (an enemy aiming at an ally ignores you under it); hull rotation is not controlled (waypoint only).
 A v0.2.0 `hf_ai.json` without a `tactics` block loads with tactics off. The log (`Modloader/Modloader.log`) gets one line with the
 arena bounds per battle and gun reach for the first 24 ships. The configured TWR cutoff is logged at startup.
@@ -164,13 +162,9 @@ arena bounds per battle and gun reach for the first 24 ships. The configured TWR
 **Install checklist:** back up `hf_ai.json`; qol `ai_flares.enabled=false` and hf_ai `ai_flares.enabled=true` in the same step
 (only if flares are wanted); `tactics.enabled=true` only for the test; qol `enable_flare_crash_fix` stays on.
 **First in-game check (blocks all tuning):** `decide()` returning a waypoint has never run. Fly one fight with tactics on and
-confirm in the `hf_ai_steer_*.csv` (rows with `state` band/close and `chosen_x/y` set) and the `hf_ally` telemetry (`rp_*`
+confirm in the `hf_ai_steer_*.csv` (rows with `state` aim/dive and `chosen_x/y` set) and the `hf_ally` telemetry (`rp_*`
 velocity) that the ship's velocity follows `chosen` within about 1 s; check the configured `twr_cutoff` and the bounds line.
 Then A/B tactics on/off against the same enemy.
-
-**Known tuning risk:** the stock AI often already orbits the target in the band (stand-off 0.35 x reach, orbit weight
-1 - |radial|). With `blend_weight` 1.0 a strafe side opposite to the stock orbit cancels it (blend < 0.2 = stock, no override),
-so the reversal may barely show. First A/B knob: `blend_weight` 2.0. Test `orbiting_stock_vs_strafe_side_weight_matters`.
 
 ## Battle TWR cutoff
 
@@ -214,11 +208,11 @@ Group size is clamped to 1..64; `1` preserves stock cadence and installs no grou
 hooks. Delay is clamped to 0.05..60 seconds so launches cannot be instantaneous;
 non-finite delays use 0.5. Defaults apply when the keys are omitted.
 
-## Deprecated settings (v0.10.4)
+## Deprecated settings
 
 | Former JSON key | Current behavior | Replacement |
 |---|---|---|
-| `tactics.min_accel` | Ignored if present; omitted from generated configs. Strafing and retreat remain available. | Top-level `twr_cutoff`. |
+| `tactics.min_accel` | Ignored since v0.10.4; positioning was subsequently removed in v0.10.6. | Top-level `twr_cutoff`. |
 | `tactics.dive_min_accel` | Ignored if present; omitted from generated configs. Dive avoidance and aim dodging remain available. | Top-level `twr_cutoff`. |
 
 No acceleration reading is required for these tactics. `twr_cutoff: 0.0` allows
@@ -233,3 +227,23 @@ Use `tactics.allies` for allied tactical steering, matching the spelling of
 existing values (`tactics.allies` false, `ai_flares.allies` true). The former
 `tactics.apply_to_allies` spelling remains a compatibility alias. Use only one
 spelling in a config; newly generated configs write `allies`.
+
+### Removed positioning settings (v0.10.6)
+
+The optional circling / close-range retreat routine and its settings have been
+removed. Old keys are ignored and omitted from generated configs. Stock AI owns
+positioning; aim dodging, dive avoidance, missile evasion, flare-curtain movement,
+early fire and shared safety checks remain.
+
+| Former JSON key | Status |
+|---|---|
+| `tactics.k_center` | Removed; no effect. |
+| `tactics.band_min` | Removed; no effect. |
+| `tactics.band_max` | Removed; no effect. |
+| `tactics.half_width` | Removed; no effect. |
+| `tactics.outrange_extra` | Removed; no effect. |
+| `tactics.blend_weight` | Removed; no effect. |
+| `tactics.strafe_min_s` | Removed; no effect. |
+| `tactics.strafe_max_s` | Removed; no effect. |
+| `tactics.retreat_tangent` | Removed; no effect. |
+| `tactics.strafe_enabled` | Removed; no effect. |

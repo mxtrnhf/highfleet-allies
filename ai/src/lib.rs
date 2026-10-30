@@ -4,7 +4,7 @@
 //! this mod overrides its OUTPUTS (the steering waypoint at `+0xbf0/+0xbf4`, engine command strength, fire bytes,
 //! launch gating) from a small set of tactics. Tactic logic is code; the numbers it uses live in `ai.json`.
 //!
-//! v0.4.0 adds "deny the dive" to the tactics. v0.3.0 added the `tactics` stage (`tactics.rs` glue, `tactics_math.rs` pure math): strafe in the band, off by default.
+//! The tactics stage retains aim dodging and dive avoidance. Optional strafe/band positioning was retired in v0.10.6.
 //!
 //! v0.2.0 adds the port of qol's `ai_flares` (`ai_flares.rs`, config block `ai_flares`, off by default): after
 //! [`decide`] has had its say about the waypoint, the missile-panic stage may override it (panic beats tactics), and
@@ -261,7 +261,7 @@ fn log_row(ctx: &Ctx, chosen: Option<(f32, f32)>, panic: bool, state: tactics_ma
         if let Ok(mut file) = opened {
             let _ = writeln!(
                 file,
-                "# hf_ai v{}: the stock AI's wanted waypoint per ship. wang = direction of the wanted waypoint from the ship (deg),                  tbear = bearing to the target (deg), rel = wang - tbear wrapped to -180..180 (0 = heading straight at the target,                  +-90 = circling). chosen_x/y empty = hf_ai left the waypoint alone, panic = 1 when the ported ai_flares evasion chose it, cptr = creature pointer (joins with hf_ai_panic_*.log), state = stock (a gate failed) / far / band / close (tactics, chosen_x/y set when it overrode) / panic. dist is the range to the target.",
+                "# hf_ai v{}: the stock AI's wanted waypoint per ship. wang = direction of the wanted waypoint from the ship (deg),                  tbear = bearing to the target (deg), rel = wang - tbear wrapped to -180..180 (0 = heading straight at the target,                  +-90 = circling). chosen_x/y empty = hf_ai left the waypoint alone, panic = 1 when the ported ai_flares evasion chose it, cptr = creature pointer (joins with hf_ai_panic_*.log), state = stock / aim / dive / dive_skip / panic. dist is the range to the target.",
                 env!("CARGO_PKG_VERSION")
             );
             let _ = writeln!(file, "t,ship,side,x,y,wx,wy,wlen,wang,tx,ty,dist,tbear,rel,chosen_x,chosen_y,panic,cptr,state");
@@ -382,7 +382,7 @@ struct Config {
     /// The ported qol `ai_flares` (flares burst, sidestep, panic evasion, barrel roll, allies). Off by default:
     /// enable it only with qol's `ai_flares.enabled` (and `evade`) turned off.
     ai_flares: AiFlaresConfig,
-    /// "Strafe in the band" enemy positioning (v0.3.0). Off by default.
+    /// Aim dodging and dive avoidance. Off by default.
     tactics: TacticsConfig,
     /// Chance (0..1) that an enemy ship keeps launching Zenith missiles right after a launch (a burst that empties the
     /// rack) instead of waiting for the game's 2 s cooldown. 0 = vanilla. Was `ai_missile_dump_chance` in qol.json.
