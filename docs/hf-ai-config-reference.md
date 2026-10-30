@@ -2,6 +2,72 @@
 
 All keys are in the release pack's `hf_ai.json`. The plain-language explanation of how the AI works and what to turn for which effect is in [hf-ai-tuning-guide.md](hf-ai-tuning-guide.md); this file is the complete key list with the code defaults. Edit while the game is closed; `"enabled": false` turns hf_ai off.
 
+## Missing keys and how to revert to vanilla
+
+**You do not have to list every key.** Every top-level key, nested block and key inside a block may be omitted; hf_ai supplies the code default shown below. For example, `{ "tactics": { "enabled": true } }` enables tactics with default tuning and leaves everything else at its default. An empty `{}` is also valid. If the file is absent, hf_ai tries to create it with the full defaults; if the JSON is invalid, it logs an error and uses the defaults.
+
+**Default does not always mean vanilla.** The release pack enables features that are off in the code defaults, and some defaults only tune an already-enabled feature. Use the explicit values below when you want stock behaviour. There is no general `-1` disable convention.
+
+For the most complete revert, use only:
+
+```json
+{ "enabled": false }
+```
+
+To keep hf_ai loaded but restore stock gameplay and disable its optional data files, use:
+
+```json
+{
+  "enabled": true,
+  "log_steering": false,
+  "log_scan": false,
+  "log_scan_bodies": false,
+  "ai_missile_dump_chance": 0.0,
+  "ai_flares": { "enabled": false, "log_panic": false },
+  "tactics": { "enabled": false }
+}
+```
+
+This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avoids that too. QoL has independent flare and missile-dump settings, so revert those separately if they are enabled.
+
+### Feature-by-feature vanilla settings
+
+| Feature | Setting that disables or neutralizes it | What remains / important dependency |
+|---|---|---|
+| Entire mod | `"enabled": false` | No hf_ai gameplay hooks are installed. |
+| All flare, panic and curtain behaviour | `ai_flares.enabled: false` | Tactics and missile dump remain; tactics engine boosts lose the shared hook they need. |
+| All threat-triggered panics, locked and stray | `ai_flares.reaction_probability: 0.0` | No new threat panic, flare burst, roll or panic evasion. Preventive curtains are separate and remain if enabled. |
+| Locked-missile flare bursts only, while keeping locked evasion | **No independent off switch** | `burst_seconds: 0.0` is clamped to `0.05`, not off. Use `reaction_probability: 0.0` to stop all threat panics, or disable the whole flare subsystem. |
+| All flare-related manoeuvres | `ai_flares.evade: false` | Locked-missile flare bursts and curtain drops can still run; plain/panic evasion, rolls and curtain retreat stop. |
+| Plain evasion steering only | `ai_flares.evasion_strength: 0.0` | Neutralizes its steering contribution, but the panic state, boosted panic evasion and rolls remain possible. |
+| Stray/lost-lock missile evasion | `ai_flares.stray_missiles: false` | Locked-missile behaviour remains. |
+| Allied flares, panic, curtains and shared engine boosts | `ai_flares.allies: false` | Enemy behaviour remains. The player-flown ship is always excluded. |
+| Allied tactical steering | `tactics.apply_to_allies: false` | Independent of `ai_flares.allies`; set both to false to exclude allies from everything. |
+| Preventive flare curtains, including target ships | `ai_flares.launch_flares_probability: 0.0` | Disables the whole curtain even when `launch_flares_target_probability` is nonzero: drops, retreat and shelter. |
+| Curtain for the target ship only | `ai_flares.launch_flares_target_probability: 0.0` | Neighbouring ships can still start curtains using `launch_flares_probability`. |
+| Curtain drops only, while preserving retreat | **No independent drop-free-retreat switch** | `launch_flares_max_drops: 0` ends drop-capable curtains instead. Disable the whole curtain with `launch_flares_probability: 0.0`. |
+| Curtain retreat steering | `ai_flares.launch_flares_evade: 0.0` | Curtain drops remain. |
+| Curtain sheltering behind another ship | `ai_flares.launch_flares_shelter: false` | Ships use ordinary away-from-missile retreat instead. |
+| Curtain engine boost | `ai_flares.launch_flares_boost: 1.0` | Curtain drops and retreat remain. |
+| Barrel rolls | `ai_flares.barrel_roll_probability: 0.0` | Plain and boosted panic evasion remain. |
+| Boosted/full-steering panic evasion | `ai_flares.panic_evasion_probability: 0.0` | Plain evasion and barrel rolls remain. |
+| Panic/roll engine boost | `ai_flares.panic_boost: 1.0` | Steering and roll angles remain. For guaranteed no panic engine rewrites, also set both panic-evasion and barrel-roll probabilities to `0.0`. |
+| Strafing/band positioning and close retreat | `tactics.strafe_enabled: false` | Dive, aim awareness and early fire remain. Use this switch rather than `blend_weight: 0.0` for a true off. |
+| Both dive directions | `tactics.dive_enabled: false` | Strafe, aim awareness and early fire remain. |
+| Dive-under only | `tactics.dive_under: false` | Dive-over remains. |
+| Dive-over only | `tactics.dive_over: false` | Dive-under remains. |
+| Dive wrong-foot direction choice | `tactics.dive_wrongfoot_speed: 0.0` | Direction becomes random except near arena walls; diving remains. |
+| Dive vertical level pull | `tactics.dive_level_weight: 0.0` | Dive becomes purely sideways; it is not disabled. |
+| Dive engine boost | `tactics.dive_boost: 1.0` | Dive steering remains. Boosts require `ai_flares.enabled: true`. |
+| Aim awareness and its steering | `tactics.aim_enabled: false` | Also prevents early fire, which is rolled from the aim state. |
+| Aim engine boost | `tactics.aim_boost: 1.0` | Aim steering and early fire remain. Boosts require `ai_flares.enabled: true`. |
+| Early fire | `tactics.aim_fire_probability: 0.0` | Aim-awareness steering remains. |
+| Zenith/missile dumping | `ai_missile_dump_chance: 0.0` | Restores vanilla launch timing. Delay values do not disable dumping. |
+| Steering CSV | `log_steering: false` | `log_hz: 0.0` does not disable it; the rate is clamped. |
+| Scan/obstacle CSVs | `log_scan: false` | Also disables `log_scan_bodies` output. |
+| Considered-body rows in scan logs | `log_scan_bodies: false` | Other scan-log rows remain while `log_scan` is on. |
+| Panic/curtain trace | `ai_flares.log_panic: false` | General startup and diagnostic messages in `Modloader.log` are separate. |
+
 ## Top level
 | Key | Default | What it does |
 |---|---|---|

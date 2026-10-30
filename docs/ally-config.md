@@ -1,8 +1,62 @@
 # hf_ally settings (`Modloader/config/ally.json`)
 
-Every key below is already in the `ally.json` of the release pack, so you do not have to search for flags. A missing key takes the default shown . Edit the file while the game is closed. `"enabled": false` turns the whole mod off.
+Every key below is already in the `ally.json` of the release pack, so you do not have to search for flags. A missing key takes the default shown. Edit the file while the game is closed. `"enabled": false` turns the whole mod off.
 
 Pack values that differ from the code defaults: `max_enemy_ships` 8 (code 5), `plane_k13` true (code false), `ally_fuel_retreat_percent` 30 (code 0), `probe_lines` false, `log_precombat` false, `plane_aa_delay` 1.0 (code 3.0), `plane_attack_delay` 1.0 (code 6.0).
+
+## Missing keys and how to revert to vanilla
+
+**You do not have to list every key.** Any key may be omitted and hf_ally supplies the code default shown below. A short file containing only the settings you want to change is valid; an empty `{}` is valid too. If the file is absent, hf_ally tries to create it with the full defaults; if the JSON is invalid, it logs an error and uses the defaults.
+
+**Default does not always mean vanilla.** Several defaults enable mod features or change plane tuning, and the release pack changes some of those defaults. Use the explicit values below for stock behaviour. There is no general `-1` disable convention.
+
+For the most complete revert, use only:
+
+```json
+{ "enabled": false }
+```
+
+For individual features, use this table. Settings for an already-disabled parent feature can be omitted.
+
+| Feature | Setting that disables it or restores vanilla | What remains / important dependency |
+|---|---|---|
+| Entire mod | `"enabled": false` | Closest complete config revert; startup/crash-reporting infrastructure can still load with the DLL. |
+| Ally deployment | `spawn_ally: false` | No mod-deployed wingmen. Independent enemy, plane, damage-colour, intercept and crash-fix features remain. |
+| Ally arrival delay only | `ally_delay_seconds: 0.0` | Allies still deploy immediately; use `spawn_ally: false` to deploy none. |
+| Number of allies | **No zero/disable value** | `max_allies: 0` is clamped to one. Use `spawn_ally: false` for none. |
+| Pre-combat ALLY buttons | `ally_toggle: false` | Hides the buttons but does **not** stop automatic deployment; also set `spawn_ally: false` for no allies. |
+| Automatic flagship-leaves retreat/handover | `auto_retreat: false` | `flagship_leaves` then has no effect. |
+| F8 ally retreat hotkey | `retreat_key: 0` | Automatic and fuel-triggered retreat remain independently configurable. |
+| Low-fuel ally retreat | `ally_fuel_retreat_percent: 0.0` | F8 and flagship-leaves behaviour remain. |
+| Ally radio sounds | `ally_sounds: false` | Ordinary log messages remain. |
+| Ally AP/proximity ammo doctrine | `ally_ai_ammo: false` | Mod-deployed allies use plain shells. |
+| Prize-ship sparing | `spare_prizes: false` | Restores unmodified ally target selection. |
+| Allied damage-number colour | `ally_damage_color: "#A8FC00"` | Restores the stock lime **appearance**. There is no separate off switch for the recolour hooks; use the master switch for original code paths. |
+| Total enemy-ship limit | `max_enemy_ships: 5` | Actual vanilla value; the patch is skipped. |
+| Ships per enemy wave / wave weight budget | `enemy_group_size: 3` | Actual vanilla value; also leaves the vanilla weight budget unchanged. |
+| Initial 30-second enemy-wave delay | `enemy_all_at_once: false` | Vanilla wave timing remains. |
+| Carrier loadout buttons, inventory charging and chosen-armament behaviour | `plane_loadouts: false` | Complete revert for the loadout bundle, including guns-only rewriting, rocket-draw suppression, Shipworks stock handling and mod-managed tactical K-13 behaviour. |
+| Mod-managed bomb/rocket tactical attacks | `plane_loadouts: false` | `plane_attack_delay: 0.0` removes only the added wait; it does not restore vanilla plane behaviour. |
+| Global bomber-routine patch | `plane_bombers: false` | For full plane reversion, keep this false as well as `plane_loadouts: false`. |
+| Extra 37 mm gunpod and post-payload strafing | `extra_gunpod: false` | Other chosen-loadout attack behaviour remains while `plane_loadouts` is on. |
+| K-13 loadout choice | `plane_k13: false` | Removes the offered choice. `plane_loadouts: false` additionally removes the mod-managed tactical interceptor hook. |
+| K-13 launch range | `plane_aa_range: 3750.0` | Actual vanilla range. |
+| K-13 alignment tolerance | `plane_aa_angle: 0.1745` | Actual vanilla value, in radians. |
+| K-13 speed multiplier | `plane_aa_speed: 1.0` | No speed modification. |
+| K-13 engagement delay only | `plane_aa_delay: 0.0` | Removes the added wait, not the mod-managed interceptor; use `plane_k13: false` or `plane_loadouts: false` for the feature. |
+| Strategic-launch interception ignore list | `intercept_ignore_oids: []` | Empty list skips the patch and is vanilla. |
+| Aircraft target-choice crash fix | `fix_plane_ai_crash: false` | Literal vanilla code, but **not recommended**; true retains a stock-game crash fix. |
+| Fleet-merge/empty-vector crash guards | `fix_merge_crash: false` | Literal vanilla code, but **not recommended**; true retains the guards. |
+| `PLAYER` pre-combat label | `marker_text: ""` | Plane-loadout labels are controlled by `plane_loadouts`, not this key. |
+| Marker seam / delay | `marker_delay_ms: 0` removes the extra delay | `marker_seam` has no off value. Disable the owning label/UI feature instead. |
+| Spawn/ADD log-line budget | `max_lines: 0` | Minimizes only those lines; it is not a general logging switch. |
+| Pre-combat GUI-list log | `log_precombat: false` | Other pre-combat/toggle messages can remain. |
+| Per-second ally/enemy probe logs | `probe_lines: false` | Other logs remain. |
+| Creature registry log | `log_creatures: false` | Other logs remain. |
+| GUI click/ammo-selector inspection | `gui_inspect: false` | Other logs remain. |
+| HUD colour-call logging | `log_colors: false` | Damage recolouring itself is independent. |
+| Debug megalog/watchdog/crash dump | `debug_log: false` | Special debug builds can force additional diagnostics. |
+| Battle telemetry CSVs and F9 markers | `telemetry: false` | Only present in telemetry-enabled builds. |
 
 | Key | Default | What it does |
 |---|---|---|
