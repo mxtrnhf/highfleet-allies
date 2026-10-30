@@ -74,6 +74,7 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Key | Default | If key omitted | What it does |
 |---|---|---|---|
 | `enabled` | `true` | hf_ai is enabled. | Master switch. |
+| `twr_cutoff` | `0.0` | No TWR restriction; existing feature switches and acceleration gates still apply. | Minimum live battle TWR for tactics, missile evasion, rolls/boosts, curtain retreat/shelter, and stray-missile reactions. Below the cutoff these are suppressed; at or above it their individual switches still apply. Locked-missile flare bursts and preventive flare drops remain available. Negative/non-finite cutoffs use 0.0. With a positive cutoff, missing/non-finite ship TWR fails the gate. Independent of carrier plane groups. Restart after editing. |
 | `plane_group_per_launch` | `3` | AI tactical carriers launch up to three ready planes per group. | Clamped to 1..64; `1` restores stock cadence. Enemy and allied AI, normal `Combat.seria` only. Stock deck/availability checks remain; blocked attempts cancel a partial group. Independent of TWR, tactics and flares. |
 | `plane_group_launch_delay_seconds` | `0.5` | Group members launch about 0.5 game seconds apart. | Clamped to 0.05..60 seconds; non-finite values use 0.5. Stock six-second cooldown returns after the last member. Restart to apply. |
 | `log_steering` | `true` | Steering CSV logging is on at the configured/default rate. | Write `Modloader/logs/hf_ai_steer_<unix>.csv`: the stock AI's wanted waypoint per ship. |

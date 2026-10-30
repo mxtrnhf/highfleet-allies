@@ -130,3 +130,16 @@ after the group. Set group size to 1 for stock one-at-a-time launches. Size is
 clamped to 1..64 and delay to 0.05..60 seconds. Stock deck-clearance and readiness
 checks remain; blocked attempts cancel a partial group. Strategic air strikes
 and manual launches keep their existing behavior. Restart after editing.
+
+## TWR cutoff for dodging and tactics
+
+Set `"twr_cutoff": 3.5` at the top level of `Modloader/config/hf_ai.json`,
+alongside `ai_flares` and `tactics`, then restart the game. The default `0.0`
+means no TWR restriction. A positive value suppresses tactics and missile
+maneuvers for ships below that battle TWR; a ship exactly at the cutoff remains
+eligible. Existing feature switches and tactics acceleration gates still apply.
+
+Below the cutoff, ships do not sidestep missiles, roll, boost for evasion, retreat
+or shelter during flare curtains, or react to stray missiles. They can still
+deploy flares against locked-on missiles and during preventive curtains. Carrier
+plane groups are independent of this setting.
