@@ -18,9 +18,6 @@ const OFF_FIRE0: usize = 0xbbc;
 const OFF_ACTIVE: usize = 0x48; // i32
 const OFF_STATE: usize = 0xbdc; // i32 driver state, 6 / 7 = dead or gone
 const OFF_CODE: usize = 0x28;
-const OFF_THRUST: usize = 0x1664; // f32 left bank, +0x1668 right bank (read as a pair)
-const OFF_MASS: usize = 0x15b8; // f32
-const OFF_TWR: usize = 0x1604; // f32 battle thrust/weight (log cross-check only)
 const OFF_REACH: usize = 0x1838; // f32 gun reach, +0x183c second fire group (read as a pair)
 /// Arena extents the stock AI's map-edge push and the deploy code use: x max, y max, x min, y min (f32 each).
 const BOUNDS_ADDRESS: usize = 0x1_403c_2bc0;
@@ -76,7 +73,6 @@ struct Entry {
     st: ShipState,
     rng: Rng,
     next_refresh: f64,
-    accel: Option<f32>,
     boosting: bool,
     /// Early fire: window number already rolled for, when the fire ends, and whether we set the fire byte.
     fire_rolled: u32,
@@ -109,8 +105,7 @@ pub fn init(config: &TacticsConfig) {
     AIM_BOOST.store((if params.aim_enabled { params.aim_boost } else { 1.0 }).to_bits(), Ordering::Relaxed);
     if params.enabled {
         log::info!(
-            "hf_ai: tactics ON (min_accel {}, strafe {}, band k {} in {}..{} +-{}, blend {}, strafe {}..{} s, allies {}; dive {} chance {} cone {} deg range {} dwell {} s boost {})",
-            params.min_accel,
+            "hf_ai: tactics ON (strafe {}, band k {} in {}..{} +-{}, blend {}, strafe {}..{} s, allies {}; dive {} chance {} cone {} deg range {} dwell {} s boost {})",
             params.strafe_enabled,
             params.k_center,
             params.band_min,
@@ -166,15 +161,6 @@ fn read_reach(creature: usize) -> Option<f32> {
     // SAFETY: page-checked read of two adjacent f32.
     let pair = unsafe { rd::<[f32; 2]>(creature + OFF_REACH) }?;
     tm::best_reach(pair[0], pair[1])
-}
-
-fn read_accel(creature: usize) -> Option<f32> {
-    // SAFETY: page-checked reads.
-    unsafe {
-        let banks = rd::<[f32; 2]>(creature + OFF_THRUST)?;
-        let mass = rd::<f32>(creature + OFF_MASS)?;
-        tm::accel_est(banks[0], banks[1], mass)
-    }
 }
 
 /// The tactics decision for one ship. Returns the waypoint (or `None` = leave the stock one) and the state for the log.
@@ -281,7 +267,7 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
             ^ now.to_bits();
         let mut rng = Rng::new(seed);
         let st = ShipState::new(now, &mut rng, p);
-        world.ships.insert(ctx.creature, Entry { st, rng, next_refresh: f64::NEG_INFINITY, accel: None, boosting: false, fire_rolled: 0, fire_until: 0.0, fire_set: false });
+        world.ships.insert(ctx.creature, Entry { st, rng, next_refresh: f64::NEG_INFINITY, boosting: false, fire_rolled: 0, fire_until: 0.0, fire_set: false });
     }
     // Aim awareness: one shared window clock; only ships that target the player see the aim.
     let mut aim = None;
@@ -313,18 +299,13 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
     if now >= entry.next_refresh {
         let first = entry.next_refresh == f64::NEG_INFINITY;
         entry.next_refresh = now + REFRESH_S;
-        entry.accel = read_accel(ctx.creature);
         let own = read_reach(ctx.creature);
         let theirs = read_reach(target_creature);
         entry.st.latch_reach(own, target_creature, theirs);
         if first && GATE_LOGS.fetch_add(1, Ordering::Relaxed) < MAX_GATE_LOGS {
-            // SAFETY: page-checked read.
-            let twr = unsafe { rd::<f32>(ctx.creature + OFF_TWR) };
             log::info!(
-                "hf_ai: tactics ship {:#x}: accel_est {:?} (twr*9.82 = {:?}), reach {:?}, target reach {:?}",
+                "hf_ai: tactics ship {:#x}: reach {:?}, target reach {:?}",
                 ctx.creature,
-                entry.accel,
-                twr.map(|t| t * 9.82),
                 own,
                 theirs
             );
@@ -332,7 +313,7 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
     }
     let gate = tm::gate(
         p,
-        &GateInput { ai_flag, side: ctx.side, mode, has_target: true, accel: entry.accel, panicking: false },
+        &GateInput { ai_flag, side: ctx.side, mode, has_target: true, panicking: false },
     );
     if gate != Gate::Pass {
         return (None, State::Stock);
@@ -341,7 +322,7 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
         p,
         &mut entry.st,
         &bounds,
-        &StepInput { now, aim, accel: entry.accel, ship: ctx.ship, wanted: ctx.wanted, target },
+        &StepInput { now, aim, ship: ctx.ship, wanted: ctx.wanted, target },
         &mut entry.rng,
     );
     // Early fire (aim awareness): one roll per awareness window for a ship that is on the aim line.

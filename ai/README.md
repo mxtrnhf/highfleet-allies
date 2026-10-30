@@ -75,7 +75,7 @@ per-ship table), `tactics_config.rs` (the `tactics` block). Spec: `hf_notes/docs
 
 **Gates (any failure = stock, nothing changes):** `tactics.enabled`; AI-flown (`+0xbd4 != 0`); enemy side (`+0xad4 < 0`; allies
 only with `apply_to_allies`); airborne combat mode (`+0xb48 == 1`; landed 3 and takeoff 0 stay stock; this is the telemetry
-`mode` column, NOT `+0xd70` which is the role); a living target ship; `accel_est = (+0x1664 + +0x1668) / +0x15b8 >= min_accel`;
+`mode` column, NOT `+0xd70` which is the role); a living target ship; the top-level `twr_cutoff` gate;
 not in a missile panic; arena bounds readable and sane.
 **Band:** centre = `k_center` x own reach (max of `+0x1838/+0x183c`, the largest value seen per ship, because AP shells
 drop it to 500), limited to `band_min..band_max`; +`outrange_extra` if the target's reach is longer. Band = centre +- `half_width`.
@@ -90,13 +90,13 @@ not seen for 2 s are dropped. No hot reload: edit the config and restart the gam
 
 ```json
 "tactics": {
-  "enabled": false, "apply_to_allies": false, "min_accel": 35.0,
+  "enabled": false, "apply_to_allies": false,
   "k_center": 0.32, "band_min": 300.0, "band_max": 550.0, "half_width": 100.0, "outrange_extra": 150.0,
   "blend_weight": 1.0, "strafe_min_s": 2.0, "strafe_max_s": 5.0, "retreat_tangent": 0.7,
   "ground_y": 200.0, "ground_clearance": 450.0, "edge_margin": 300.0,
   "strafe_enabled": true,
   "dive_enabled": true, "dive_chance": 0.8, "dive_cone_deg": 45.0, "dive_range": 600.0, "dive_dwell_s": 1.0,
-  "dive_min_s": 1.5, "dive_max_s": 3.0, "dive_cooldown_s": 2.0, "dive_weight": 4.0, "dive_min_accel": 30.0,
+  "dive_min_s": 1.5, "dive_max_s": 3.0, "dive_cooldown_s": 2.0, "dive_weight": 4.0,
   "dive_under": true, "dive_over": true, "dive_boost": 2.0, "dive_wrongfoot_speed": 40.0
 }
 ```
@@ -130,7 +130,7 @@ firing, 24 deg while not). A SHARED awareness window opens for `aim_window_s` (1
 (start to start, 2.5..3.5 s). During a window every enemy that targets the player and sits within `aim_tolerance` (200 u) of the aim ray, ahead of
 the player and within `aim_range` (1800 u), slips off the line (perpendicular to the aim, to the side it is already on) with
 `aim_weight` (8) and `aim_boost` (1.5). Ships off the line, behind the player, or not targeting the player are not affected (so
-aiming at ship A does not alarm ship B unless the line crosses B too). State `aim` in the steer CSV; gates and `dive_min_accel` as
+aiming at ship A does not alarm ship B unless the line crosses B too). State `aim` in the steer CSV; the same TWR and safety gates as
 the dive; panic wins; it takes priority over the dive. Not done: early fire (needs the AI weapon controller's fire gate, see notes).
 
 v0.6.1 early fire (`aim_fire_probability`, default 0 = off; `aim_fire_s` 1.0; `aim_fire_range` 1.6): once per awareness window, a ship on the aim line rolls the chance; on a hit it writes 1 into its group-0 fire byte (creature +0xbbc, the player's LMB; the AI weapon controller never uses it, CreatureUpdate then calls FireGuns for every gun of the group and each gun obeys its own reload) for `aim_fire_s`, only while the player is within `aim_fire_range` x its gun reach. The byte is cleared after the window whatever early return the decision took. Bypasses the vanilla range (1.0 x reach), 0.025 rad angle and friendly-fire tests (the guns track the target continuously, so the angle is usually right; allies near the line of fire can be hit). The telemetry column `f0` of the enemy rows shows the byte.
@@ -156,17 +156,16 @@ sidesteps horizontally for a random `dive_min_s..dive_max_s` (away from a near a
 as the strafe: ground, arena edges), blended with the stock direction at `dive_weight`. Then a `dive_cooldown_s` pause. On a miss it
 stays stock until the target leaves the cone. Panic overrides it. CSV `state` column: `dive`, `dive_skip` (declined by the roll).
 `dive_enabled` and `strafe_enabled` are separate switches (`enabled` is the master): dive-only = `strafe_enabled:false`; strafe-only =
-`dive_enabled:false`. The gate uses the lowest threshold of the enabled tactics, each tactic re-checks its own (`min_accel` 35 strafe,
-`dive_min_accel` 30 dive; 37 of 159 designs are below 35, heavies like Gryphon/Novorossiysk). Known limits: only `ctx.target` counts
+`dive_enabled:false`. All tactics share the top-level `twr_cutoff`; there are no separate strafe/dive acceleration thresholds. Known limits: only `ctx.target` counts
 (an enemy aiming at an ally ignores you under it); hull rotation is not controlled (waypoint only).
 A v0.2.0 `hf_ai.json` without a `tactics` block loads with tactics off. The log (`Modloader/Modloader.log`) gets one line with the
-arena bounds per battle and, for the first 24 ships, `accel_est` next to `twr*9.82` (they should match: Lightning ~128, Intrepid ~56).
+arena bounds per battle and gun reach for the first 24 ships. The configured TWR cutoff is logged at startup.
 
 **Install checklist:** back up `hf_ai.json`; qol `ai_flares.enabled=false` and hf_ai `ai_flares.enabled=true` in the same step
 (only if flares are wanted); `tactics.enabled=true` only for the test; qol `enable_flare_crash_fix` stays on.
 **First in-game check (blocks all tuning):** `decide()` returning a waypoint has never run. Fly one fight with tactics on and
 confirm in the `hf_ai_steer_*.csv` (rows with `state` band/close and `chosen_x/y` set) and the `hf_ally` telemetry (`rp_*`
-velocity) that the ship's velocity follows `chosen` within about 1 s; check the logged `accel_est` vs `twr*9.82` and the bounds line.
+velocity) that the ship's velocity follows `chosen` within about 1 s; check the configured `twr_cutoff` and the bounds line.
 Then A/B tactics on/off against the same enemy.
 
 **Known tuning risk:** the stock AI often already orbits the target in the band (stand-off 0.35 x reach, orbit weight
@@ -177,7 +176,7 @@ so the reversal may barely show. First A/B knob: `blend_weight` 2.0. Test `orbit
 
 Set top-level `"twr_cutoff": 3.5` in `Modloader/config/hf_ai.json`, alongside
 `"ai_flares": {...}` and `"tactics": {...}`. Restart the game after editing.
-The default `0.0` disables this gate and keeps existing behavior. Negative or
+The default `0.0` disables the capability restriction for every ship. Negative or
 non-finite cutoffs fall back to `0.0`.
 
 Ships with battle TWR **below** the cutoff use stock movement: tactics, missile
@@ -190,8 +189,7 @@ and preventive flare curtains remain available below the cutoff.
 TWR is read live from the Steam 1.163 battle stat at creature `+0x1604` (not map
 TWR); see `hf_notes/docs/findings/ship-profiles.md` and Ghidra
 `Creature_HasTWRStat` at `0x140073450`. With a positive cutoff, unreadable or
-non-finite TWR suppresses these capabilities too. Existing tactics acceleration
-gates remain additional requirements.
+non-finite TWR suppresses these capabilities too. TWR is the sole maneuver capability threshold; individual feature switches and normal tactical safety/target checks still apply.
 
 ## Tactical carrier launch groups (v0.10.3)
 
@@ -215,3 +213,15 @@ their existing behavior. This feature is independent of TWR, tactics, and flares
 Group size is clamped to 1..64; `1` preserves stock cadence and installs no group
 hooks. Delay is clamped to 0.05..60 seconds so launches cannot be instantaneous;
 non-finite delays use 0.5. Defaults apply when the keys are omitted.
+
+## Deprecated settings (v0.10.4)
+
+| Former JSON key | Current behavior | Replacement |
+|---|---|---|
+| `tactics.min_accel` | Ignored if present; omitted from generated configs. Strafing and retreat remain available. | Top-level `twr_cutoff`. |
+| `tactics.dive_min_accel` | Ignored if present; omitted from generated configs. Dive avoidance and aim dodging remain available. | Top-level `twr_cutoff`. |
+
+No acceleration reading is required for these tactics. `twr_cutoff: 0.0` allows
+all ships through the capability gate; a positive value admits ships at or above
+that battle TWR. Existing feature switches, target checks, timing and ground/arena
+safety limits still apply. Older JSON files load normally without migration.

@@ -74,7 +74,7 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Key | Default | If key omitted | What it does |
 |---|---|---|---|
 | `enabled` | `true` | hf_ai is enabled. | Master switch. |
-| `twr_cutoff` | `0.0` | No TWR restriction; existing feature switches and acceleration gates still apply. | Minimum live battle TWR for tactics, missile evasion, rolls/boosts, curtain retreat/shelter, and stray-missile reactions. Below the cutoff these are suppressed; at or above it their individual switches still apply. Locked-missile flare bursts and preventive flare drops remain available. Negative/non-finite cutoffs use 0.0. With a positive cutoff, missing/non-finite ship TWR fails the gate. Independent of carrier plane groups. Restart after editing. |
+| `twr_cutoff` | `0.0` | No TWR restriction; individual feature switches and normal safety/target checks still apply. | Minimum live battle TWR for tactics, missile evasion, rolls/boosts, curtain retreat/shelter, and stray-missile reactions. Below the cutoff these are suppressed; at or above it their individual switches still apply. Locked-missile flare bursts and preventive flare drops remain available. Negative/non-finite cutoffs use 0.0. With a positive cutoff, missing/non-finite ship TWR fails the gate. Independent of carrier plane groups. Restart after editing. |
 | `plane_group_per_launch` | `3` | AI tactical carriers launch up to three ready planes per group. | Clamped to 1..64; `1` restores stock cadence. Enemy and allied AI, normal `Combat.seria` only. Stock deck/availability checks remain; blocked attempts cancel a partial group. Independent of TWR, tactics and flares. |
 | `plane_group_launch_delay_seconds` | `0.5` | Group members launch about 0.5 game seconds apart. | Clamped to 0.05..60 seconds; non-finite values use 0.5. Stock six-second cooldown returns after the last member. Restart to apply. |
 | `log_steering` | `true` | Steering CSV logging is on at the configured/default rate. | Write `Modloader/logs/hf_ai_steer_<unix>.csv`: the stock AI's wanted waypoint per ship. |
@@ -133,7 +133,6 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 |---|---|---|---|
 | `enabled` | `false` | All tactical steering and early fire are off. | Master switch (A/B tests). |
 | `apply_to_allies` | `false` | If tactics are enabled, allied AI ships are excluded. | Also steer AI ships of the player's side (allies). The ship you fly is never touched. |
-| `min_accel` | `35.0` | If tactics are enabled, the strafe acceleration gate is 35. | Ships below this thrust/mass threshold do not strafe; dive and aim use `dive_min_accel`. |
 | `k_center` | `0.32` | If tactics/strafe are enabled, the band centre factor is 0.32. | Band centre = `k_center` x own gun reach, limited to `band_min..band_max`. |
 | `band_min` | `300.0` | If tactics/strafe are enabled, the minimum band centre is 300. | Lowest centre of the strafing distance band (units). |
 | `band_max` | `550.0` | If tactics/strafe are enabled, the maximum band centre is 550. | Highest centre of the strafing distance band (units). |
@@ -157,7 +156,6 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | `dive_max_s` | `3.0` | If diving is active, maximum sidestep duration is 3 seconds. | Longest sidestep (seconds). |
 | `dive_cooldown_s` | `2.0` | If diving is active, its cooldown is 2 seconds. | Pause after a sidestep before the next one (seconds). |
 | `dive_weight` | `8.0` | If diving is active, its steering weight is 8. | How strongly the sidestep replaces the stock waypoint. |
-| `dive_min_accel` | `30.0` | If diving/aiming is active, their acceleration gate is 30. | Ships below this thrust/mass never sidestep. |
 | `dive_under` | `true` | Dive-under is enabled inside the tactics block, subject to its master and dive switch. | React to a target below us. |
 | `dive_over` | `true` | Dive-over is enabled inside the tactics block, subject to its master and dive switch. | Dodge a target hanging ABOVE the ship (on/off). |
 | `dive_boost` | `2.5` | If diving is active and the flare engine hook is available, boost is 2.5. | Engine boost while dodging (1.0 = off, 2.0 = like Shift). Needs `ai_flares.enabled` (its engine hook carries it). |
@@ -177,3 +175,19 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | `aim_fire_probability` | `0.0` | Early fire is off. | Early fire (0 = off): chance, rolled once per awareness window for a ship on the aim line, that it opens fire with its main guns for `aim_fire_s` seconds while the player is within `aim_fire_range` x its gun reach. |
 | `aim_fire_s` | `1.0` | If early fire is enabled, each burst lasts 1 second. | How long an early-fire burst lasts (seconds). |
 | `aim_fire_range` | `1.6` | If early fire is enabled, its range multiplier is 1.6. | Early fire only if you are within this multiple of the ship's gun reach. |
+
+## Deprecated settings
+
+These keys were retired in v0.10.4. Old JSON files still load: the keys are ignored,
+never converted to hidden thresholds, and omitted from newly generated configs.
+Remove them from existing configs and use the top-level `twr_cutoff` instead.
+
+| Former key | Former default | Current effect | Replacement |
+|---|---|---|---|
+| `tactics.min_accel` | `35.0` | None. No separate thrust/mass requirement for strafing or retreat. | `twr_cutoff` |
+| `tactics.dive_min_accel` | `30.0` | None. No separate thrust/mass requirement for dive avoidance or aim dodging. | `twr_cutoff` |
+
+Retiring these keys does not disable the tactics. At or above `twr_cutoff` (or
+with `0.0`, for every ship), their individual switches and normal target, timing,
+ground and arena checks determine whether they act. Low or unavailable thrust/mass
+readings no longer prevent a decision.

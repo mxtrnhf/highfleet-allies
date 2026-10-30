@@ -58,7 +58,6 @@ impl State {
 pub struct Params {
     pub enabled: bool,
     pub apply_to_allies: bool,
-    pub min_accel: f32,
     pub k_center: f32,
     pub band_min: f32,
     pub band_max: f32,
@@ -97,8 +96,6 @@ pub struct Params {
     pub dive_cooldown_s: f32,
     /// Weight of the sidestep against the unit stock direction (a wider range than `blend_weight`).
     pub dive_weight: f32,
-    /// Own `dive_min_accel`: ships below this (heavies) never dodge.
-    pub dive_min_accel: f32,
     /// React to a target below us ("under") and / or above us ("over").
     pub dive_under: bool,
     pub dive_over: bool,
@@ -140,7 +137,6 @@ impl Default for Params {
         Self {
             enabled: false,
             apply_to_allies: false,
-            min_accel: 35.0,
             k_center: 0.32,
             band_min: 300.0,
             band_max: 550.0,
@@ -164,7 +160,6 @@ impl Default for Params {
             dive_max_s: 3.0,
             dive_cooldown_s: 2.0,
             dive_weight: 8.0,
-            dive_min_accel: 30.0,
             dive_under: true,
             dive_over: true,
             dive_boost: 2.5,
@@ -185,15 +180,6 @@ impl Default for Params {
             aim_fire_s: 1.0,
             aim_fire_range: 1.6,
         }
-    }
-}
-
-/// Lowest `accel` at which any enabled tactic may act (each tactic re-checks its own threshold).
-pub fn gate_min_accel(p: &Params) -> f32 {
-    match (p.strafe_enabled, p.dive_enabled || p.aim_enabled) {
-        (true, true) => p.min_accel.min(p.dive_min_accel),
-        (false, true) => p.dive_min_accel,
-        _ => p.min_accel,
     }
 }
 
@@ -261,7 +247,6 @@ pub struct GateInput {
     pub side: f32,
     pub mode: Option<i32>,
     pub has_target: bool,
-    pub accel: Option<f32>,
     pub panicking: bool,
 }
 
@@ -276,23 +261,10 @@ pub fn gate(p: &Params, g: &GateInput) -> Gate {
     if g.mode != Some(1) || !g.has_target {
         return Gate::Stock;
     }
-    match g.accel {
-        Some(a) if a.is_finite() && a >= gate_min_accel(p) => {}
-        _ => return Gate::Stock,
-    }
     if g.panicking {
         return Gate::Panic;
     }
     Gate::Pass
-}
-
-/// `(L + R) / mass`; `None` for a zero or non-finite mass or a negative / non-finite thrust.
-pub fn accel_est(left: f32, right: f32, mass: f32) -> Option<f32> {
-    if !(mass.is_finite() && mass > 1.0 && left.is_finite() && right.is_finite() && left >= 0.0 && right >= 0.0) {
-        return None;
-    }
-    let a = (left + right) / mass;
-    a.is_finite().then_some(a)
 }
 
 /// Larger of the two group reaches that is positive and finite.
@@ -664,7 +636,6 @@ pub fn aim_dodge_dir(aim: &AimInput, ship: (f32, f32), p: &Params, rng: &mut Rng
 pub struct StepInput {
     pub now: f64,
     pub aim: Option<AimInput>,
-    pub accel: Option<f32>,
     pub ship: (f32, f32),
     pub wanted: (f32, f32),
     pub target: (f32, f32),
@@ -681,16 +652,15 @@ pub fn step(p: &Params, st: &mut ShipState, bounds: &Bounds, inp: &StepInput, rn
     st.last_seen = inp.now;
     track_target(st, inp.now, inp.target);
     let to = (inp.target.0 - inp.ship.0, inp.target.1 - inp.ship.1);
-    let accel_ok = |min: f32| inp.accel.is_some_and(|a| a.is_finite() && a >= min);
     let stock_vec = (inp.wanted.0 - inp.ship.0, inp.wanted.1 - inp.ship.1);
     let mut skipped = false;
-    if let (true, Some(aim)) = (p.aim_enabled && accel_ok(p.dive_min_accel), inp.aim) {
+    if let (true, Some(aim)) = (p.aim_enabled, inp.aim) {
         if let Some(dir) = aim_dodge_dir(&aim, inp.ship, p, rng) {
             let waypoint = compose(inp.ship, stock_vec, dir, p.aim_weight, bounds, p);
             return Step { state: State::Aim, waypoint };
         }
     }
-    if p.dive_enabled && accel_ok(p.dive_min_accel) {
+    if p.dive_enabled {
         match dive_update(p, st, bounds, inp.now, inp.ship, to, rng) {
             Dive::Active(side) => {
                 // sideways, plus a pull onto the target's altitude (smooth: full strength from 150 u of height difference)
@@ -703,7 +673,7 @@ pub fn step(p: &Params, st: &mut ShipState, bounds: &Bounds, inp: &StepInput, rn
             Dive::Idle => {}
         }
     }
-    if !p.strafe_enabled || !accel_ok(p.min_accel) {
+    if !p.strafe_enabled {
         return Step { state: if skipped { State::DiveSkip } else { State::Stock }, waypoint: None };
     }
     st.update_side(inp.now, rng, p);
@@ -732,7 +702,7 @@ mod tests {
         Params { enabled: true, ..Params::default() }
     }
     fn ok_gate() -> GateInput {
-        GateInput { ai_flag: 1, side: -1.0, mode: Some(1), has_target: true, accel: Some(56.0), panicking: false }
+        GateInput { ai_flag: 1, side: -1.0, mode: Some(1), has_target: true, panicking: false }
     }
     fn len(a: (f32, f32), b: (f32, f32)) -> f32 {
         ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
@@ -753,21 +723,8 @@ mod tests {
         }
         assert_eq!(gate(&p, &GateInput { mode: None, ..ok_gate() }), Gate::Stock);
         assert_eq!(gate(&p, &GateInput { has_target: false, ..ok_gate() }), Gate::Stock);
-        assert_eq!(gate(&p, &GateInput { accel: Some(22.0), ..ok_gate() }), Gate::Stock, "Gryphon");
-        assert_eq!(gate(&p, &GateInput { accel: Some(35.0), ..ok_gate() }), Gate::Pass);
-        assert_eq!(gate(&p, &GateInput { accel: None, ..ok_gate() }), Gate::Stock);
-        assert_eq!(gate(&p, &GateInput { accel: Some(f32::NAN), ..ok_gate() }), Gate::Stock);
         assert_eq!(gate(&p, &GateInput { panicking: true, ..ok_gate() }), Gate::Panic);
         assert_eq!(gate(&p, &GateInput { panicking: true, mode: Some(3), ..ok_gate() }), Gate::Stock);
-    }
-
-    #[test]
-    fn accel_estimate() {
-        assert_eq!(accel_est(3000.0, 3000.0, 100.0), Some(60.0));
-        assert_eq!(accel_est(1.0, 1.0, 0.0), None);
-        assert_eq!(accel_est(1.0, 1.0, f32::NAN), None);
-        assert_eq!(accel_est(-1.0, 1.0, 10.0), None);
-        assert_eq!(accel_est(f32::INFINITY, 1.0, 10.0), None);
     }
 
     #[test]
@@ -1021,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn step_states_by_range() {
+    fn strafing_and_retreat_remain_available_without_acceleration_gate() {
         let p = on();
         let b = bounds();
         let mut rng = Rng::new(3);
@@ -1029,7 +986,7 @@ mod tests {
         st.latch_reach(Some(1500.0), 1, Some(1500.0));
         let ship = (0.0, -1000.0);
         let wanted = (200.0, -1000.0); // stock heads at the target on +x
-        let mk = |d: f32, now: f64| StepInput { now, aim: None, accel: Some(56.0), ship, wanted, target: (d, -1000.0) };
+        let mk = |d: f32, now: f64| StepInput { now, aim: None, ship, wanted, target: (d, -1000.0) };
         let far = step(&p, &mut st, &b, &mk(900.0, 0.1), &mut rng);
         assert_eq!((far.state, far.waypoint), (State::Far, None));
         let band = step(&p, &mut st, &b, &mk(480.0, 0.2), &mut rng);
@@ -1054,7 +1011,7 @@ mod tests {
         let mut rng = Rng::new(9);
         let mut st = ShipState::new(0.0, &mut rng, &p);
         let ship = (0.0, -1000.0);
-        let r = step(&p, &mut st, &b, &StepInput { now: 0.1, aim: None, accel: Some(56.0), ship, wanted: (200.0, -1000.0), target: (150.0, -1000.0) }, &mut rng);
+        let r = step(&p, &mut st, &b, &StepInput { now: 0.1, aim: None, ship, wanted: (200.0, -1000.0), target: (150.0, -1000.0) }, &mut rng);
         assert_eq!(r.state, State::Close);
         if let Some(w) = r.waypoint {
             assert!((len(w, ship) - 200.0).abs() < 1e-3);
@@ -1093,7 +1050,7 @@ mod tests {
         }
     }
     fn dive_input(now: f64, target: (f32, f32)) -> StepInput {
-        StepInput { now, aim: None, accel: Some(56.0), ship: (0.0, -1000.0), wanted: (target.0, target.1), target }
+        StepInput { now, aim: None, ship: (0.0, -1000.0), wanted: (target.0, target.1), target }
     }
 
     #[test]
@@ -1177,28 +1134,22 @@ mod tests {
     }
 
     #[test]
-    fn dive_respects_accel_and_the_wall() {
+    fn dive_remains_available_without_acceleration_gate_and_respects_the_wall() {
         let p = Params { dive_chance: 1.0, dive_under_chance: 1.0, ..dive_params() };
         let b = bounds();
         let mut rng = Rng::new(5);
         let mut st = ShipState::new(0.0, &mut rng, &p);
-        let slow = |now: f64| StepInput { accel: Some(20.0), ..dive_input(now, (0.0, -700.0)) };
-        step(&p, &mut st, &b, &slow(0.0), &mut rng);
-        assert_eq!(step(&p, &mut st, &b, &slow(1.5), &mut rng).state, State::Stock);
+        let input = |now: f64| dive_input(now, (0.0, -700.0));
+        step(&p, &mut st, &b, &input(0.0), &mut rng);
+        let dodge = step(&p, &mut st, &b, &input(1.5), &mut rng);
+        assert_eq!(dodge.state, State::Dive);
+        assert!(dodge.waypoint.is_some());
         // near the right wall the sidestep goes left
         for seed in 0..20 {
             let mut r = Rng::new(seed);
             assert_eq!(dive_side(1400.0, &b, &p, &mut r, 0.0), -1.0);
             assert_eq!(dive_side(-1400.0, &b, &p, &mut r, 0.0), 1.0);
         }
-    }
-
-    #[test]
-    fn gate_threshold_follows_the_enabled_tactics() {
-        let both = Params { enabled: true, ..Params::default() };
-        assert_eq!(gate_min_accel(&both), 30.0);
-        assert_eq!(gate_min_accel(&Params { dive_enabled: false, ..both }), 35.0);
-        assert_eq!(gate_min_accel(&Params { strafe_enabled: false, ..both }), 30.0);
     }
 
     #[test]
@@ -1334,15 +1285,13 @@ mod tests {
         let mut rng = Rng::new(3);
         let mut st = ShipState::new(0.0, &mut rng, &p);
         let aim = Some(AimInput { player: (-1000.0, -1000.0), dir: (1.0, 0.0) });
-        let inp = StepInput { now: 1.0, aim, accel: Some(56.0), ship: (0.0, -950.0), wanted: (200.0, -950.0), target: (-1000.0, -1000.0) };
+        let inp = StepInput { now: 1.0, aim, ship: (0.0, -950.0), wanted: (200.0, -950.0), target: (-1000.0, -1000.0) };
         let r = step(&p, &mut st, &b, &inp, &mut rng);
         assert_eq!(r.state, State::Aim);
         let (wx, wy) = r.waypoint.unwrap();
         assert!(wy > -950.0 + 100.0, "slips to the +y side (down): {wx} {wy}");
         let off = Params { aim_enabled: false, ..p };
         assert_eq!(step(&off, &mut st, &b, &inp, &mut rng).state, State::Stock);
-        let slow = StepInput { accel: Some(10.0), ..inp };
-        assert_eq!(step(&p, &mut st, &b, &slow, &mut rng).state, State::Stock);
     }
 
     #[test]

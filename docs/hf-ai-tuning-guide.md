@@ -13,7 +13,7 @@ Yes, with two corrections.
 ## 2. What happens every tick
 
 1. **Gates** (cheap checks first). hf_ai stays out (`stock`) unless: the ship is AI-flown (never the ship you fly), it is airborne (mode 1), it has a living target that is not itself, the arena bounds are readable, and the ship is on a side that is allowed (enemy always; your allies only with `apply_to_allies`).
-2. **Thrust gate.** The ship's acceleration (thrust / mass, in m/s^2; Lightning ~128, Intrepid ~56, heavies like Gryphon ~22) must reach the tactic's minimum: `dive_min_accel` 30 for dive and aim, `min_accel` 35 for strafe. Heavy ships simply keep stock behaviour. If a big ship "never does anything", this is why.
+2. **TWR gate.** The top-level `twr_cutoff` is the sole capability threshold. `0.0` admits every ship; a positive value admits battle TWR at or above that value. Individual tactic switches and safety checks still apply. The former strafe/dive acceleration settings are deprecated and ignored.
 3. **Priority order** (first match wins): **panic** > **aim** > **dive** > **strafe (far / band / close)** > stock.
 4. The winning state produces a direction. It is mixed with the game's own direction as `stock_direction + weight * tactic_direction` and re-normalised, so a large weight means "mostly my direction", weight 0 means stock. Ground, arena edges and "never steer down when low" limits are applied after.
 5. Some states ask for an engine boost (like holding Shift). **The boost is applied by the `ai_flares` engine hook, so `dive_boost` / `aim_boost` do nothing unless `ai_flares.enabled` is true.**
@@ -100,7 +100,7 @@ All keys live in `Modloader/config/hf_ai.json`. Keep a `.bak`, change one line, 
 | The AI is too easy to hit with missiles | The opposite: raise `reaction_probability`, `trigger_range` (400) and `stray_missile_*` radius. |
 | Ships keep shooting at me from below | Section 3.3: lower `dive_under_dwell_s`, raise `dive_weight` / `dive_boost`. |
 | Enemies hit me too early or from far away | `aim_fire_probability` to `0` turns off early fire. |
-| Heavy ships never dodge | Not a bug: below `dive_min_accel` (30) thrust-to-mass they keep stock behaviour. Lowering it makes slow ships twitch. |
+| Heavy ships never dodge | Check `twr_cutoff` and the individual tactic switches. Since v0.10.4 there is no separate acceleration gate; `0.0` removes the TWR restriction. |
 
 ## 8. Why flares start at "wrong" times (what the code does)
 
@@ -137,9 +137,16 @@ Set `"twr_cutoff": 3.5` at the top level of `Modloader/config/hf_ai.json`,
 alongside `ai_flares` and `tactics`, then restart the game. The default `0.0`
 means no TWR restriction. A positive value suppresses tactics and missile
 maneuvers for ships below that battle TWR; a ship exactly at the cutoff remains
-eligible. Existing feature switches and tactics acceleration gates still apply.
+eligible. Individual feature switches and normal target, timing and safety checks still apply; there are no separate acceleration gates.
 
 Below the cutoff, ships do not sidestep missiles, roll, boost for evasion, retreat
 or shelter during flare curtains, or react to stray missiles. They can still
 deploy flares against locked-on missiles and during preventive curtains. Carrier
 plane groups are independent of this setting.
+
+## Deprecated settings
+
+| Former key | Status since v0.10.4 | Use instead |
+|---|---|---|
+| `tactics.min_accel` | Ignored; remove from your JSON. Strafing and retreat remain available. | Top-level `twr_cutoff`. |
+| `tactics.dive_min_accel` | Ignored; remove from your JSON. Dive avoidance and aim dodging remain available. | Top-level `twr_cutoff`. |

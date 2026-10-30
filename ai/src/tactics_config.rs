@@ -11,8 +11,6 @@ pub struct TacticsConfig {
     pub enabled: bool,
     /// Also steer AI ships of the player's side (allies). The ship you fly is never touched.
     pub apply_to_allies: bool,
-    /// Ships with `(left + right engine thrust) / mass` below this stay stock (Gryphon 22 .. Lightning 128).
-    pub min_accel: f32,
     /// Band centre = `k_center` x own gun reach, limited to `band_min..band_max`.
     pub k_center: f32,
     pub band_min: f32,
@@ -50,8 +48,6 @@ pub struct TacticsConfig {
     pub dive_max_s: f32,
     pub dive_cooldown_s: f32,
     pub dive_weight: f32,
-    /// Ships below this thrust/mass never sidestep.
-    pub dive_min_accel: f32,
     /// React to a target below us and / or above us.
     pub dive_under: bool,
     pub dive_over: bool,
@@ -90,7 +86,6 @@ impl Default for TacticsConfig {
         Self {
             enabled: false,
             apply_to_allies: p.apply_to_allies,
-            min_accel: p.min_accel,
             k_center: p.k_center,
             band_min: p.band_min,
             band_max: p.band_max,
@@ -114,7 +109,6 @@ impl Default for TacticsConfig {
             dive_max_s: p.dive_max_s,
             dive_cooldown_s: p.dive_cooldown_s,
             dive_weight: p.dive_weight,
-            dive_min_accel: p.dive_min_accel,
             dive_under: p.dive_under,
             dive_over: p.dive_over,
             dive_boost: p.dive_boost,
@@ -151,7 +145,6 @@ impl TacticsConfig {
         Self {
             enabled: self.enabled,
             apply_to_allies: self.apply_to_allies,
-            min_accel: pick(self.min_accel, d.min_accel, 0.0, 1000.0),
             k_center: pick(self.k_center, d.k_center, 0.05, 1.0),
             band_min,
             band_max: pick(self.band_max, d.band_max, band_min, 4000.0),
@@ -175,7 +168,6 @@ impl TacticsConfig {
             dive_max_s: pick(self.dive_max_s, d.dive_max_s, dive_min_s, 60.0),
             dive_cooldown_s: pick(self.dive_cooldown_s, d.dive_cooldown_s, 0.0, 120.0),
             dive_weight: pick(self.dive_weight, d.dive_weight, 0.0, 20.0),
-            dive_min_accel: pick(self.dive_min_accel, d.dive_min_accel, 0.0, 1000.0),
             dive_under: self.dive_under,
             dive_over: self.dive_over,
             dive_boost: pick(self.dive_boost, d.dive_boost, 1.0, 4.0),
@@ -203,7 +195,6 @@ impl TacticsConfig {
         Params {
             enabled: s.enabled,
             apply_to_allies: s.apply_to_allies,
-            min_accel: s.min_accel,
             k_center: s.k_center,
             band_min: s.band_min,
             band_max: s.band_max,
@@ -227,7 +218,6 @@ impl TacticsConfig {
             dive_max_s: s.dive_max_s,
             dive_cooldown_s: s.dive_cooldown_s,
             dive_weight: s.dive_weight,
-            dive_min_accel: s.dive_min_accel,
             dive_under: s.dive_under,
             dive_over: s.dive_over,
             dive_boost: s.dive_boost,
@@ -259,12 +249,53 @@ mod tests {
     fn defaults_are_off_and_match_the_math_defaults() {
         let c: TacticsConfig = serde_json::from_str("{}").unwrap();
         assert!(!c.enabled && !c.apply_to_allies);
-        assert_eq!(c.min_accel, 35.0);
         assert_eq!(c.k_center, 0.32);
         let p = c.params();
         assert_eq!((p.band_min, p.band_max, p.half_width), (300.0, 550.0, 100.0));
         let partial: TacticsConfig = serde_json::from_str(r#"{"enabled": true, "half_width": 80}"#).unwrap();
         assert!(partial.enabled && partial.half_width == 80.0 && partial.strafe_max_s == 5.0);
+    }
+
+    #[test]
+    fn retired_acceleration_keys_are_ignored_and_not_serialized() {
+        let config: TacticsConfig = serde_json::from_str(
+            r#"{"enabled":true,"aim_enabled":true,"min_accel":999999,"dive_min_accel":999999}"#,
+        ).unwrap();
+        let params = config.params();
+        assert!(params.enabled && params.strafe_enabled && params.dive_enabled && params.aim_enabled);
+        let json = serde_json::to_value(&config.sanitized()).unwrap();
+        assert!(json.get("min_accel").is_none());
+        assert!(json.get("dive_min_accel").is_none());
+    }
+
+    #[test]
+    fn legacy_acceleration_limits_do_not_disable_any_maneuver() {
+        use crate::tactics_math::{self as tm, AimInput, Bounds, Rng, ShipState, State, StepInput};
+
+        let config: TacticsConfig = serde_json::from_str(
+            r#"{"enabled":true,"min_accel":999999,"dive_min_accel":999999,
+                "aim_enabled":true,"dive_under_dwell_s":0.0,"dive_under_chance":1.0}"#,
+        ).unwrap();
+        let params = config.params();
+        assert!(crate::twr_math::allows(Some(2.0), 2.0));
+        assert!(!crate::twr_math::allows(Some(1.99), 2.0));
+        let bounds = Bounds { xmin: -1500.0, xmax: 1500.0, ymin: -2000.0 };
+        let scenarios = [
+            (State::Band, (0.0, -1000.0), (480.0, -1000.0), None),
+            (State::Close, (0.0, -1000.0), (250.0, -1000.0), None),
+            (State::Dive, (0.0, -1000.0), (0.0, -700.0), None),
+            (State::Aim, (0.0, -950.0), (-1000.0, -1000.0),
+                Some(AimInput { player: (-1000.0, -1000.0), dir: (1.0, 0.0) })),
+        ];
+        for (expected, ship, target, aim) in scenarios {
+            let mut rng = Rng::new(3);
+            let mut state = ShipState::new(0.0, &mut rng, &params);
+            state.latch_reach(Some(1500.0), 1, Some(1500.0));
+            let input = StepInput { now: 1.0, ship, target, aim, wanted: (ship.0 + 200.0, ship.1) };
+            let decision = tm::step(&params, &mut state, &bounds, &input, &mut rng);
+            assert_eq!(decision.state, expected);
+            assert!(decision.waypoint.is_some(), "{expected:?} must still steer");
+        }
     }
 
     #[test]
@@ -278,7 +309,6 @@ mod tests {
             blend_weight: 1.0e9,
             strafe_min_s: 0.0,
             strafe_max_s: -1.0,
-            min_accel: f32::INFINITY,
             ..TacticsConfig::default()
         }
         .sanitized();
@@ -289,7 +319,6 @@ mod tests {
         assert_eq!(c.blend_weight, 4.0);
         assert_eq!(c.strafe_min_s, 0.3);
         assert!(c.strafe_max_s >= c.strafe_min_s);
-        assert_eq!(c.min_accel, 35.0);
     }
 
     #[test]
