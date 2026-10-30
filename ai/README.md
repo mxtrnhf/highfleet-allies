@@ -192,3 +192,26 @@ TWR); see `hf_notes/docs/findings/ship-profiles.md` and Ghidra
 `Creature_HasTWRStat` at `0x140073450`. With a positive cutoff, unreadable or
 non-finite TWR suppresses these capabilities too. Existing tactics acceleration
 gates remain additional requirements.
+
+## Tactical carrier launch groups (v0.10.3)
+
+Top-level `hf_ai.json` settings (restart the game after editing):
+
+```json
+"plane_group_per_launch": 3,
+"plane_group_launch_delay_seconds": 0.5
+```
+
+AI carriers, including allied AI, launch up to three ready planes per group,
+one every 0.5 game seconds, then resume the stock six-second cooldown. Stock
+launch eligibility, deck-clearance checks, plane selection, arming, and takeoff
+states still apply; blocked checks or too few ready planes can shorten a group.
+A group does not wait for landed planes to rearm. Long interruptions cancel it.
+
+Only normal tactical combat (`Combat.seria`) is eligible. Strategic air strikes,
+scripted bomber scenes, and manual launches from the player-controlled ship keep
+their existing behavior. This feature is independent of TWR, tactics, and flares.
+
+Group size is clamped to 1..64; `1` preserves stock cadence and installs no group
+hooks. Delay is clamped to 0.05..60 seconds so launches cannot be instantaneous;
+non-finite delays use 0.5. Defaults apply when the keys are omitted.

@@ -38,6 +38,8 @@ mod curtain_math;
 mod flares_config;
 mod missile_dump;
 mod panic_math;
+mod plane_group;
+mod plane_group_math;
 mod rng;
 mod scan_log;
 mod tactics;
@@ -362,6 +364,10 @@ unsafe fn prepare_steering_hook(session: &mut PatchSession, module: ProcessModul
 struct Config {
     /// Master switch.
     enabled: bool,
+    /// Planes per tactical AI carrier launch group (1 = stock; limited to 1..64).
+    plane_group_per_launch: i32,
+    /// Seconds between group members (limited to 0.05..60; default 0.5).
+    plane_group_launch_delay_seconds: f32,
     /// Minimum battle TWR for evasion, stray-missile reactions and tactics; 0 disables the gate.
     twr_cutoff: f32,
     /// Write `Modloader/logs/hf_ai_steer_<unix>.csv`: the stock AI's wanted waypoint per ship.
@@ -388,7 +394,7 @@ struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { enabled: true, twr_cutoff: 0.0, log_steering: true, log_hz: 10.0, log_scan: false, log_scan_bodies: false, ai_flares: AiFlaresConfig::default(), tactics: TacticsConfig::default(), ai_missile_dump_chance: 0.0, ai_missile_dump_min_delay: missile_dump::DEFAULT_MIN_DELAY, ai_missile_dump_max_delay: missile_dump::DEFAULT_MAX_DELAY }
+        Self { enabled: true, plane_group_per_launch: plane_group_math::DEFAULT_GROUP_SIZE, plane_group_launch_delay_seconds: plane_group_math::DEFAULT_DELAY, twr_cutoff: 0.0, log_steering: true, log_hz: 10.0, log_scan: false, log_scan_bodies: false, ai_flares: AiFlaresConfig::default(), tactics: TacticsConfig::default(), ai_missile_dump_chance: 0.0, ai_missile_dump_min_delay: missile_dump::DEFAULT_MIN_DELAY, ai_missile_dump_max_delay: missile_dump::DEFAULT_MAX_DELAY }
     }
 }
 
@@ -502,6 +508,10 @@ unsafe extern "C" fn init() -> bool {
             )
             .map_err(|e| e.to_string())?;
         }
+        plane_group::prepare(
+            &mut session, module, config.plane_group_per_launch,
+            config.plane_group_launch_delay_seconds,
+        )?;
         if with_flares {
             ai_flares::patch_ai_flares(&mut session, &config.ai_flares, steering_ok).map_err(|e| e.to_string())?;
         }
@@ -544,6 +554,24 @@ unsafe extern "C" fn init() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plane_group_settings_default_and_accept_overrides() {
+        let defaults: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.plane_group_per_launch, 3);
+        assert_eq!(defaults.plane_group_launch_delay_seconds, 0.5);
+        let config: Config = serde_json::from_str(
+            r#"{"plane_group_per_launch":-1,"plane_group_launch_delay_seconds":1.25}"#,
+        ).unwrap();
+        let effective = plane_group_math::Config::sanitized(
+            config.plane_group_per_launch, config.plane_group_launch_delay_seconds,
+        );
+        assert_eq!(effective.size, 1);
+        assert_eq!(effective.delay, 1.25);
+        let json = serde_json::to_value(defaults).unwrap();
+        assert_eq!(json["plane_group_per_launch"], 3);
+        assert_eq!(json["plane_group_launch_delay_seconds"], 0.5);
+    }
 
     #[test]
     fn twr_cutoff_is_optional_and_configurable() {

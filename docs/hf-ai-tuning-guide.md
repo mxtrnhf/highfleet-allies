@@ -120,3 +120,13 @@ All keys live in `Modloader/config/hf_ai.json`. Keep a `.bak`, change one line, 
 
 ## Missile dump (v0.10.0)
 Enemy ships normally launch one Zenith, then wait 2 s. With `ai_missile_dump_chance` above 0 an enemy that just launched keeps launching with that chance, so a rack empties in a burst; `ai_missile_dump_min_delay` / `ai_missile_dump_max_delay` (seconds) are the random wait between launches (a delay of 0.6 to 1.5 stops missiles blowing up their neighbours at the rack). `0` is vanilla. This used to be a setting of the QoL fork (`qol.json`); keep that one at 0.
+
+## Tactical carrier groups
+
+`plane_group_per_launch` (default 3) groups AI carrier launches in normal tactical
+combat, including allied AI. `plane_group_launch_delay_seconds` (default 0.5)
+spaces the ready planes in game time. The stock six-second cooldown returns
+after the group. Set group size to 1 for stock one-at-a-time launches. Size is
+clamped to 1..64 and delay to 0.05..60 seconds. Stock deck-clearance and readiness
+checks remain; blocked attempts cancel a partial group. Strategic air strikes
+and manual launches keep their existing behavior. Restart after editing.

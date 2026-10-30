@@ -22,6 +22,7 @@ To keep hf_ai loaded but restore stock gameplay and disable its optional data fi
   "log_steering": false,
   "log_scan": false,
   "log_scan_bodies": false,
+  "plane_group_per_launch": 1,
   "ai_missile_dump_chance": 0.0,
   "ai_flares": { "enabled": false, "log_panic": false },
   "tactics": { "enabled": false }
@@ -62,6 +63,7 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Aim awareness and its steering | `tactics.aim_enabled: false` | Also prevents early fire, which is rolled from the aim state. |
 | Aim engine boost | `tactics.aim_boost: 1.0` | Aim steering and early fire remain. Boosts require `ai_flares.enabled: true`. |
 | Early fire | `tactics.aim_fire_probability: 0.0` | Aim-awareness steering remains. |
+| Tactical carrier plane groups | `plane_group_per_launch: 1` | Restores stock one-at-a-time cadence; strategic and manual launch paths are unchanged. |
 | Zenith/missile dumping | `ai_missile_dump_chance: 0.0` | Restores vanilla launch timing. Delay values do not disable dumping. |
 | Steering CSV | `log_steering: false` | `log_hz: 0.0` does not disable it; the rate is clamped. |
 | Scan/obstacle CSVs | `log_scan: false` | Also disables `log_scan_bodies` output. |
@@ -72,6 +74,8 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Key | Default | If key omitted | What it does |
 |---|---|---|---|
 | `enabled` | `true` | hf_ai is enabled. | Master switch. |
+| `plane_group_per_launch` | `3` | AI tactical carriers launch up to three ready planes per group. | Clamped to 1..64; `1` restores stock cadence. Enemy and allied AI, normal `Combat.seria` only. Stock deck/availability checks remain; blocked attempts cancel a partial group. Independent of TWR, tactics and flares. |
+| `plane_group_launch_delay_seconds` | `0.5` | Group members launch about 0.5 game seconds apart. | Clamped to 0.05..60 seconds; non-finite values use 0.5. Stock six-second cooldown returns after the last member. Restart to apply. |
 | `log_steering` | `true` | Steering CSV logging is on at the configured/default rate. | Write `Modloader/logs/hf_ai_steer_<unix>.csv`: the stock AI's wanted waypoint per ship. |
 | `log_hz` | `10.0` | If steering CSV logging is enabled, it uses 10 rows/s per ship. | Rows per second per ship in that file. |
 | `log_scan` | `false` | Scan/obstacle CSV logging is off. | Write `hf_ai_scan_<id>.csv` / `hf_ai_obst_<id>.csv`: every AI scan call with the obstacle nodes and the steering numbers the game computed (50 Hz per ship). Off by default; see `scan_log.rs`. |
