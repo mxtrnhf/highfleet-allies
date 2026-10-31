@@ -583,6 +583,12 @@ unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
         ALLY_DONE.store(false, Ordering::Relaxed);
         PLAYER_SEEN.store(0, Ordering::Relaxed);
         TRACK_ALLY.store(0, Ordering::Relaxed);
+        // Probe pointers belong to one battle only. A restart can reuse a freed ship's
+        // address for a GUI object whose active field also happens to be nonzero.
+        if let (Ok(mut ally_probe), Ok(mut enemy_probe)) = (PROBE_ALLY.lock(), PROBE_ENEMY.lock()) {
+            *ally_probe = Probe::default();
+            *enemy_probe = Probe::default();
+        }
         SPAWN_LINES.store(0, Ordering::Relaxed);
         PRIZE_LINES.store(0, Ordering::Relaxed);
         let armed = PRECOMBAT_SEEN.swap(false, Ordering::Relaxed) || !HAVE_PRECOMBAT_HOOK.load(Ordering::Relaxed);
@@ -776,7 +782,9 @@ impl Probe {
         self.last_pos = pos;
         self.last_t = now;
         let target: usize = read(ship + OFF_TARGET);
-        let target_dist = if target != 0 {
+        // A target link alone does not establish a live creature. Non-creature or
+        // stale targets have an unknown distance; never follow them for logging.
+        let target_dist = if probe_ship_in_battle(target) {
             ((pos.0 - read::<f32>(target + OFF_POS_X)).powi(2) + (pos.1 - read::<f32>(target + OFF_POS_Y)).powi(2)).sqrt()
         } else {
             -1.0
@@ -802,14 +810,55 @@ impl Probe {
     }
 }
 
+/// Validates a cached diagnostic pointer against the current creature list before
+/// inspecting the object. Readable memory or a nonzero active field is not identity.
+///
+/// # Safety
+/// Call only from the battle hook on the game thread, while the native creature
+/// list and its objects cannot be removed concurrently. No native ownership is taken.
+unsafe fn probe_ship_in_battle(ship: usize) -> bool {
+    if !plausible(ship) {
+        return false;
+    }
+    let (Some(begin), Some(end)) = (diag::rd::<usize>(CREATURES_BEGIN), diag::rd::<usize>(CREATURES_END)) else {
+        return false;
+    };
+    if begin < 0x10000 || end < begin || (end - begin) % 0x18 != 0 || (end - begin) / 0x18 > 4096 {
+        return false;
+    }
+    for entry in (begin..end).step_by(0x18) {
+        let Some(current) = diag::rd::<usize>(entry + 8) else { return false };
+        if current != ship {
+            continue;
+        }
+        // SAFETY: current list membership is established above, on the game thread.
+        // Only borrowed scalar fields are read, using the existing guarded reader.
+        return diag::rd::<u8>(ship + OFF_CODE).is_some_and(|class| class & 0x2f == 0x2f)
+            && diag::rd::<i32>(ship + OFF_ACTIVE).is_some_and(|active| active != 0)
+            && diag::rd::<i32>(ship + OFF_STATE).is_some_and(|state| !matches!(state, 6 | 7));
+    }
+    false
+}
+
 /// The enemy nearest to `from`: side below zero, in the level.
+///
+/// # Safety
+/// `from` must be a current creature validated on the game thread by the caller.
 unsafe fn nearest_enemy(from: usize) -> usize {
     let (cb, ce): (usize, usize) = (read(CREATURES_BEGIN), read(CREATURES_END));
+    if cb < 0x10000 || ce < cb || (ce - cb) % 0x18 != 0 || (ce - cb) / 0x18 > 4096 {
+        return 0;
+    }
     let (fx, fy) = (read::<f32>(from + OFF_POS_X), read::<f32>(from + OFF_POS_Y));
     let mut best = (usize::MAX as f32, 0usize);
     for a in (cb..ce).step_by(0x18) {
-        let p: usize = read(a + 8);
-        if p == 0 || read::<i32>(p + OFF_ACTIVE) == 0 || read::<f32>(p + OFF_SIDE) >= 0.0 {
+        let Some(p) = diag::rd::<usize>(a + 8) else { return 0 };
+        if !plausible(p)
+            || !diag::rd::<u8>(p + OFF_CODE).is_some_and(|class| class & 0x2f == 0x2f)
+            || !diag::rd::<i32>(p + OFF_ACTIVE).is_some_and(|active| active != 0)
+            || !diag::rd::<i32>(p + OFF_STATE).is_some_and(|state| !matches!(state, 6 | 7))
+            || !diag::rd::<f32>(p + OFF_SIDE).is_some_and(|side| side < 0.0)
+        {
             continue;
         }
         let d = (read::<f32>(p + OFF_POS_X) - fx).powi(2) + (read::<f32>(p + OFF_POS_Y) - fy).powi(2);
@@ -834,11 +883,17 @@ unsafe fn track_ally(ships: &[usize]) {
         return;
     }
     // every frame: count launches and shots of the ally and of its nearest enemy
+    if !probe_ship_in_battle(ally) {
+        return;
+    }
     if let (Ok(mut a), Ok(mut e)) = (PROBE_ALLY.lock(), PROBE_ENEMY.lock()) {
         if a.who != ally {
             a.reset(ally, now);
+            e.reset(0, now);
         }
-        if e.who == 0 || read::<i32>(e.who + OFF_ACTIVE) == 0 {
+        // Check membership first: never read an old enemy's fields to decide
+        // whether that pointer still belongs to an enemy ship.
+        if !probe_ship_in_battle(e.who) || !diag::rd::<f32>(e.who + OFF_SIDE).is_some_and(|side| side < 0.0) {
             let enemy = nearest_enemy(ally);
             e.reset(enemy, now);
         }
