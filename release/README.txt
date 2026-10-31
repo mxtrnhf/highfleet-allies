@@ -38,7 +38,7 @@ Modloader/config/ally.json and hf_ai.json are exact captured player presets.
 They also define the compiled missing-key defaults; use enabled=false to turn
 an entire mod off. See docs/player-defaults.md and the complete config guides.
 
-Allies: max_allies=2, max_enemy_ships=8, plane_loadouts/plane_k13 on,
+Allies: max_allies=2, ally_bombers=off, max_enemy_ships=8, plane_loadouts/plane_k13 on,
 plane_attack_delay=1.0, plane_aa_delay=1.0, ally_fuel_retreat_percent=30.0.
 Runtime logging.debug_log=true is retained from the player's config. This enables
 the megalog, watchdog and crash dumps; set it false for quieter play. Logging

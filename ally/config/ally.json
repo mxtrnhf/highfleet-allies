@@ -18,6 +18,7 @@
   "ally_toggle": true,
   "max_allies": 2,
   "spare_prizes": true,
+  "ally_bombers": false,
   "intercept_ignore_oids": [
     "MDL_MISSILE_03"
   ],

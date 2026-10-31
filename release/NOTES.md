@@ -4,6 +4,7 @@ For **HighFleet Steam 1.163**.
 
 ## Changes
 
+- Added **ally_bombers** to ally (default **off**): bomb-carrying wingmen now perform a player-like bombing run against landed, non-prize enemies. The dive is governed so the ship can pull out, aiming uses the game's own ballistic prediction, the whole payload is released at 0.05 s intervals below 1000 units with real downward speed, flares fire every 0.5 s while armed, ship-missile launches are suppressed during the run, and the ship climbs away afterwards. See docs/ship-bombers.md.
 - Adjusted default `launch_flares_evade_range` to **700.0** to stop AI from overusing the afterburner.
 - Fixed a crash in diagnostic logging after restarting a battle. Cached ally/enemy probes are reset and validated before reading ship data.
 - Moved the stock aircraft AI crash fix and null-fleet/vector crash guards from ally into bundled QoL. Both remain enabled by default, now controlled by **fix_plane_ai_crash** and **fix_merge_crash** in **qol.json**. The fleet guards are defensive, not a confirmed fix for every merge crash. Update both DLLs together; stock upstream QoL does not include these additions.

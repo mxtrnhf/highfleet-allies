@@ -16,7 +16,7 @@ REPO = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-pc-windows-msvc"
 GUIDES = (
     "ally-config.md", "hf-ai-config-reference.md", "hf-ai-tuning-guide.md",
-    "qol-guide.md", "player-defaults.md",
+    "qol-guide.md", "player-defaults.md", "ship-bombers.md",
 )
 
 

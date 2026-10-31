@@ -32,6 +32,8 @@ macro_rules! crumb {
 
 mod ally_ammo;
 mod ally_hud;
+mod bomber;
+mod bomber_math;
 mod color_probe;
 mod diag;
 mod intercept;
@@ -210,6 +212,8 @@ struct Config {
     /// Allies never keep a prize ship (the ships the player may capture and sell after the battle: the game flags
     /// them at creature +0xc19) as a target: they pick another enemy, or hold fire when only prizes are left.
     spare_prizes: bool,
+    /// Governed dive, native-aimed whole-payload release and pull-out for bomb-carrying allies.
+    ally_bombers: bool,
     /// SIDE PATCH (not in master). `m_oid`s the AI never treats as a strategic launch to intercept in the missile-vs-ship
     /// arcade scene, e.g. `["MDL_MISSILE_03"]` (the R-9 Sprint) for a Sprint modded to be strat-launchable (its category has bit 0x8000000, so
     /// the CIWS and anti-air launchers of both sides would shoot at it). Copy the names from `m_oid=` in OL.seria. Empty = vanilla.
@@ -266,6 +270,7 @@ impl Default for Config {
             retreat_key: 0x77,
             ally_toggle: true,
             spare_prizes: true,
+            ally_bombers: false,
             intercept_ignore_oids: vec!["MDL_MISSILE_03".to_string()],
             logging: LoggingConfig::default(),
             plane_bombers: false,
@@ -609,6 +614,7 @@ unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
         ALLY_DONE.store(false, Ordering::Relaxed);
         PLAYER_SEEN.store(0, Ordering::Relaxed);
         TRACK_ALLY.store(0, Ordering::Relaxed);
+        bomber::reset();
         // Probe pointers belong to one battle only. A restart can reuse a freed ship's
         // address for a GUI object whose active field also happens to be nonzero.
         if let (Ok(mut ally_probe), Ok(mut enemy_probe)) = (PROBE_ALLY.lock(), PROBE_ENEMY.lock()) {
@@ -2951,6 +2957,9 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             log::warn!("hf_ally: the AI target choice or its call sites differ, prize ships are not spared");
             SPARE_PRIZES.store(false, Ordering::Relaxed);
         }
+    }
+    if config.ally_bombers && config.spawn_ally {
+        bomber::install(&mut session)?;
     }
     // independent of spawn_ally: the filter applies to every AI ship, the enemy's included
     if let Err(error) = intercept::install(&mut session, &config.intercept_ignore_oids) {

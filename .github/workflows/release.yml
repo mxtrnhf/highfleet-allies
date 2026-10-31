@@ -83,5 +83,5 @@ jobs:
           gh release create "v$PACK_VERSION" \
             "release-artifacts/hf_release_pack_v$PACK_VERSION.zip" \
             "release-artifacts/hf_release_pack_v$PACK_VERSION.zip.sha256" \
-            --target "$GITHUB_SHA" --title "v$PACK_VERSION: logging cleanup and elevation rules" \
+            --target "$GITHUB_SHA" --title "v$PACK_VERSION: ally ship bombers" \
             --notes-file release-notes.md --latest
