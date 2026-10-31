@@ -1,7 +1,7 @@
-# Player defaults — release pack v0.14.2
+# Player defaults — release pack v0.14.4
 
 The player's installed configs were captured on 2026-10-30 as the reference
-profile for hf_ally 0.14.2 and hf_ai 0.10.7:
+profile for hf_ally 0.14.4 and hf_ai 0.10.8:
 
 - [ally/config/ally.json](../ally/config/ally.json)
 - [ai/config/hf_ai.json](../ai/config/hf_ai.json)
@@ -16,8 +16,8 @@ guides to disable specific behavior.
 ## Profile highlights
 
 Allies: two wingmen, 1.5 s arrival delay, eight enemies, vanilla three-ship waves,
-K-13/loadout buttons on, bomb/rocket and AA attack delays of 1 s, and fuel retreat
-at 30%. The Sprint exception is `MDL_MISSILE_03`. Runtime `logging.debug_log` is **true**, as
+K-13/loadout buttons on, ally ship panels and ally target boxes on, bomb/rocket and
+AA attack delays of 1 s, and fuel retreat at 30%. The Sprint exception is `MDL_MISSILE_03`. Runtime `logging.debug_log` is **true**, as
 in the captured player config. That enables detailed logs, the watchdog and crash
 dumps, and can force diagnostic probe/pre-combat output despite their individual
 keys being false. Set it false for quieter play. Ship/battle CSV capture is removed;

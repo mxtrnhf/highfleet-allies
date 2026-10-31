@@ -4,6 +4,10 @@ Source: https://github.com/mxtrnhf/highfleet-allies
 Research notes: https://github.com/mxtrnhf/hf_notes
 
 WHAT CHANGED SINCE PACK v0.14.2
+- Added ally ship panels: a half-size battle ship panel beside your own panel for
+  each ally (name, speed, counters and live module schematic). Config ally_panels.
+- Added ally target boxes: the native target square around each ally's current
+  target, drawn in the ally colour. Config ally_reticles.
 - Adjusted default launch_flares_evade_range to 700.0 to stop AI from overusing
   the afterburner.
 - Fixed stale diagnostic probes after restarting a battle.
@@ -38,7 +42,7 @@ Modloader/config/ally.json and hf_ai.json are exact captured player presets.
 They also define the compiled missing-key defaults; use enabled=false to turn
 an entire mod off. See docs/player-defaults.md and the complete config guides.
 
-Allies: max_allies=2, ally_bombers=off, max_enemy_ships=8, plane_loadouts/plane_k13 on,
+Allies: max_allies=2, ally_bombers=off, ally_panels/ally_reticles on, max_enemy_ships=8, plane_loadouts/plane_k13 on,
 plane_attack_delay=1.0, plane_aa_delay=1.0, ally_fuel_retreat_percent=30.0.
 Runtime logging.debug_log=true is retained from the player's config. This enables
 the megalog, watchdog and crash dumps; set it false for quieter play. Logging

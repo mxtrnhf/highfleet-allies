@@ -32,6 +32,8 @@ macro_rules! crumb {
 
 mod ally_ammo;
 mod ally_hud;
+mod ally_panels;
+mod ally_reticles;
 mod bomber;
 mod bomber_math;
 mod color_probe;
@@ -209,6 +211,10 @@ struct Config {
     /// How many AI allies may fight at the same time. Ships switched on beyond that wait in the reserve and
     /// step in, in ship-number order, when an ally is destroyed or has left.
     max_allies: u32,
+    /// Draw a half-size ship panel for each ally beside the player's own panel while the ally is in the battle.
+    ally_panels: bool,
+    /// Draw an ally-coloured target box around the enemy each ally is currently shooting at.
+    ally_reticles: bool,
     /// Allies never keep a prize ship (the ships the player may capture and sell after the battle: the game flags
     /// them at creature +0xc19) as a target: they pick another enemy, or hold fire when only prizes are left.
     spare_prizes: bool,
@@ -288,6 +294,8 @@ impl Default for Config {
             plane_loadouts: true,
             ally_damage_color: "#00E4FF".to_string(),
             max_allies: 2,
+            ally_panels: true,
+            ally_reticles: true,
             ally_sounds: true,
             ally_fuel_retreat_percent: 30.0,
             marker_text: "PLAYER".to_string(),
@@ -2993,6 +3001,12 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         }
     };
     ally_hud::install(&mut session, ally_damage_color);
+    if config.spawn_ally && config.ally_panels {
+        ally_panels::install(&mut session);
+    }
+    if config.spawn_ally && config.ally_reticles {
+        ally_reticles::install(&mut session, ally_damage_color);
+    }
     if config.logging.log_colors {
         color_probe::install(&mut session);
         LOG_COLORS.store(true, Ordering::Relaxed);

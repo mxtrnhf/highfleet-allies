@@ -36,6 +36,8 @@
   "enemy_all_at_once": false,
   "plane_loadouts": true,
   "ally_damage_color": 58623,
+  "ally_panels": true,
+  "ally_reticles": true,
   "ally_sounds": true,
   "ally_fuel_retreat_percent": 30.0,
   "marker_text": "PLAYER",

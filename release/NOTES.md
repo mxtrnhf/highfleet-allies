@@ -4,6 +4,8 @@ For **HighFleet Steam 1.163**.
 
 ## Changes
 
+- Added **ally_panels** to ally (default **on**): draws a half-size copy of the battle ship panel for each ally beside your own bottom-left panel, showing that ally's name, speed, counters and live module schematic. Two fit in the column; they appear only while an ally is in the battle.
+- Added **ally_reticles** to ally (default **on**): draws the game's native target box around the enemy each ally is currently targeting, in the ally colour (`ally_damage_color`). Your own lime target box is unchanged.
 - Added **ally_bombers** to ally (default **off**): bomb-carrying wingmen now perform a player-like bombing run against landed, non-prize enemies. The dive is governed so the ship can pull out, aiming uses the game's own ballistic prediction, the whole payload is released at 0.05 s intervals below 1000 units with real downward speed, flares fire every 0.5 s while armed, ship-missile launches are suppressed during the run, and the ship climbs away afterwards. See docs/ship-bombers.md.
 - Adjusted default `launch_flares_evade_range` to **700.0** to stop AI from overusing the afterburner.
 - Fixed a crash in diagnostic logging after restarting a battle. Cached ally/enemy probes are reset and validated before reading ship data.
