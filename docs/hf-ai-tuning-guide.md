@@ -35,7 +35,7 @@ When the **other camp** launches a missile, an AI ship rolls once whether to sta
 * `launch_flares_probability` (release: 0.6) for ships near the target; `launch_flares_target_probability` (1.0) for the ship the missile is aimed at. `launch_flares_targeted_only` true: only the targeted ship and ships within `launch_flares_neighbor_range` (600) join; false: every ship rolls.
 * **Timing.** Flares live exactly 5 s. The first drop is timed from the missile's ETA (distance / `launch_flares_missile_speed` 230) minus `launch_flares_eta_lead` (4 s), clamped to `launch_flares_delay_min` (1) .. `launch_flares_eta_max_wait` (8). If the cloud is dropped too early it is gone when the missile arrives (this was the main v0.7.0 defect: 48 percent of drops were wasted). Keep the lead near 4.
 * **Budget.** `launch_flares_max_drops` (6) per curtain, `launch_flares_interval_min/max` (0.5..1.0) between drops, `launch_flares_min_rack` (0.5): the ship stops dropping when the racks are below that share, so some flares stay for a real panic. `launch_flares_cooldown` (6) between curtains.
-* **Movement.** While the curtain runs the ship moves away from the missile (`launch_flares_evade` 0.9, `launch_flares_boost` 2.0, within `launch_flares_evade_range` 3000). A ship with no flare launcher shelters 250 u *behind* a dropping friend (`launch_flares_shelter`, range 1200).
+* **Movement.** While the curtain runs the ship moves away from the missile (`launch_flares_evade` 0.9, `launch_flares_boost` 2.0, within `launch_flares_evade_range` 700). A ship with no flare launcher shelters 250 u *behind* a dropping friend (`launch_flares_shelter`, range 1200).
 
 *Tuning feel:* to make missiles more dangerous, lower the probabilities or raise `launch_flares_eta_lead` away from 4 (mis-timed flares). To make the AI feel smart, raise `launch_flares_target_probability` and keep `shelter` on.
 
@@ -105,7 +105,7 @@ All keys live in `Modloader/config/hf_ai.json`. Keep a `.bak`, change one line, 
 | Enemies dump flares every time I (or my allies) fire anything | They react to any missile launched by your side. Lower `launch_flares_probability`, or set `launch_flares_targeted_only` true (it is the default) so only the target reacts. |
 | Flares are gone before the missile arrives | `launch_flares_eta_lead` is the head start in seconds (4). Flares last 5 s, so keep it near 4. |
 | My allies dump flares too often | `ai_flares.allies` false turns allies' flares off completely. Otherwise lower `launch_flares_probability` (it applies to everyone). |
-| Ships with no flare launchers just sit there when a Zenith comes | Shelter and running away already exist (section 3.2). Make them braver or more nervous with `launch_flares_evade` (0.9), `launch_flares_boost` (2.0) and `launch_flares_evade_range` (3000). `launch_flares_shelter` must stay true. |
+| Ships with no flare launchers just sit there when a Zenith comes | Shelter and running away already exist (section 3.2). Make them braver or more nervous with `launch_flares_evade` (0.9), `launch_flares_boost` (2.0) and `launch_flares_evade_range` (700). `launch_flares_shelter` must stay true. |
 | The AI is too good at dodging missiles | Lower `reaction_probability` (0.6) and `panic_evasion_probability` (0.3); raise `min_interval_seconds`. |
 | The AI is too easy to hit with missiles | The opposite: raise `reaction_probability`, `trigger_range` (400) and `stray_missile_*` radius. |
 | Ships keep shooting at me from below | Section 3.3: lower `dive_under_dwell_s`, raise `dive_weight` / `dive_boost`. |

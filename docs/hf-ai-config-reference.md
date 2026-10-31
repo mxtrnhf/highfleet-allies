@@ -107,7 +107,7 @@ removed; old `log_steering`, `log_hz`, `log_scan` and `log_scan_bodies` keys do 
 | `launch_flares_max_drops` | `6` | Uses player default `6`. | Most drops of one curtain, so the racks are not empty when the real panic needs them. |
 | `launch_flares_cooldown` | `6.0` | Uses player default `6.0`. | Quiet time after a curtain before the next one may start. |
 | `launch_flares_evade` | `0.9` | Uses player default `0.9`. | While a curtain runs the ship moves away from the launched missile: `0.0` none, `1.0` all of its course. |
-| `launch_flares_evade_range` | `3000.0` | Uses player default `3000.0`. | Only missiles closer than this (game units) count for that retreat. |
+| `launch_flares_evade_range` | `700.0` | Uses player default `700.0`. | Only missiles closer than this (game units) count for that retreat. Reduced to limit afterburner overuse. |
 | `launch_flares_boost` | `2.0` | Uses player default `2.0`. | Engine boost while that retreat runs (`1.0` = none, `2.0` = like the player's Shift).  Limited to `1.0` through `4.0`. |
 | `launch_flares_min_rack` | `0.5` | Uses player default `0.5`. | Whether a ship can drop flares is checked when a curtain starts: its racks must hold at least this share of the most flares seen in them. Below it, or with no launcher, the curtain only retreats. `0.0` = always drop-capable. Limited to `0.0` through `1.0`. |
 | `launch_flares_targeted_only` | `true` | Uses player default `true`. | Preventive defence only: a curtain starts only for the ship the launched missile is aimed at, or a ship within `launch_flares_neighbor_range` of it. `false` = every enemy ship rolls (the v0.5.0 behaviour). |

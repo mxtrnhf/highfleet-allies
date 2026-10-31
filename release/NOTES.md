@@ -4,6 +4,7 @@ For **HighFleet Steam 1.163**.
 
 ## Changes
 
+- Adjusted default `launch_flares_evade_range` to **700.0** to stop AI from overusing the afterburner.
 - Fixed a crash in diagnostic logging after restarting a battle. Cached ally/enemy probes are reset and validated before reading ship data.
 - Moved the stock aircraft AI crash fix and null-fleet/vector crash guards from ally into bundled QoL. Both remain enabled by default, now controlled by **fix_plane_ai_crash** and **fix_merge_crash** in **qol.json**. The fleet guards are defensive, not a confirmed fix for every merge crash. Update both DLLs together; stock upstream QoL does not include these additions.
 - Removed ship/battle CSV recording, steering/obstacle CSV capture, capture markers and replay-analysis tools.
@@ -21,7 +22,3 @@ For **HighFleet Steam 1.163**.
 Back up your saves and configs. Extract the pack into the folder containing Highfleet.exe, keeping only one ally DLL and one AI DLL. The bundled ally/AI configs replace existing files if extracted over them; merge your custom values instead if needed.
 
 The QoL build is optional. Keep its flare crash fix enabled. Its full JSON file is a reference, not an active config.
-
-## Validation
-
-Windows cross-builds passed for ally, AI and QoL. This update has not been validated in-game; the classic/KAZ options still need gameplay testing.

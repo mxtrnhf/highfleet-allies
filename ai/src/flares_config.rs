@@ -178,7 +178,7 @@ impl Default for AiFlaresConfig {
             launch_flares_max_drops: 6,
             launch_flares_cooldown: 6.0,
             launch_flares_evade: 0.9,
-            launch_flares_evade_range: 3000.0,
+            launch_flares_evade_range: 700.0,
             launch_flares_boost: 2.0,
             launch_flares_min_rack: 0.5,
             launch_flares_targeted_only: true,

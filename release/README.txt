@@ -4,6 +4,8 @@ Source: https://github.com/mxtrnhf/highfleet-allies
 Research notes: https://github.com/mxtrnhf/hf_notes
 
 WHAT CHANGED SINCE PACK v0.14.2
+- Adjusted default launch_flares_evade_range to 700.0 to stop AI from overusing
+  the afterburner.
 - Fixed stale diagnostic probes after restarting a battle.
 - Moved the stock aircraft AI fix and null-fleet/vector crash guards into bundled
   QoL. fix_plane_ai_crash and fix_merge_crash now belong in qol.json (default true).
