@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build native Windows release without telemetry or megalog features
+      - name: Build native Windows release without forced megalog feature
         working-directory: ${{ matrix.crate }}
         run: cargo build --release --locked --no-default-features --target x86_64-pc-windows-msvc
       - uses: actions/upload-artifact@v4

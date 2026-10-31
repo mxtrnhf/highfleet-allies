@@ -39,8 +39,7 @@ mod intercept;
 mod max_enemy;
 mod native_layout;
 mod plane_loadouts;
-#[cfg(feature = "telemetry")]
-mod telemetry;
+mod dead_node;
 
 use std::{
     ffi::{c_char, CStr},
@@ -191,8 +190,6 @@ const OFF_TARGET: usize = 0xb00; // pointer: current target (link)
 struct Config {
     /// Master switch.
     enabled: bool,
-    /// At most this many `ALLY` lines are written per level / per session for spawns.
-    max_lines: u32,
     /// Bring the next ship of the fleet into the battle as an AI wingman.
     spawn_ally: bool,
     /// Game seconds the player's ship must have been in the battle before the ally arrives.
@@ -208,10 +205,6 @@ struct Config {
     retreat_key: u32,
     /// Add the "ALLY" on/off button to the pre-combat screen (needs `spawn_ally`; click it to bring or skip the ally).
     ally_toggle: bool,
-    /// Log the GUI elements of the pre-combat screen each time it is built (step 1 of the "ally yes/no" button).
-    log_precombat: bool,
-    /// Per-second ally/enemy probe and track lines (very chatty; for AI analysis, off for ordinary play).
-    probe_lines: bool,
     /// How many AI allies may fight at the same time. Ships switched on beyond that wait in the reserve and
     /// step in, in ship-number order, when an ally is destroyed or has left.
     max_allies: u32,
@@ -222,9 +215,6 @@ struct Config {
     /// arcade scene, e.g. `["MDL_MISSILE_03"]` (the R-9 Sprint) for a Sprint modded to be strat-launchable (its category has bit 0x8000000, so
     /// the CIWS and anti-air launchers of both sides would shoot at it). Copy the names from `m_oid=` in OL.seria. Empty = vanilla.
     intercept_ignore_oids: Vec<String>,
-    /// Debug mode for bug reports: writes `Modloader/logs/hf_ally_megalog_<time>.log` (large, 2-5 MB/hour), a watchdog and a
-    /// crash minidump `hf_ally_crash_<time>.dmp` (may hold paths and campaign data: delete it after sending). Enabled in the player default preset.
-    debug_log: bool,
     /// Stock-game crash fixes (aircraft target choice, fleet-merge null fleet). Default on.
     fix_plane_ai_crash: bool,
     plane_bombers: bool,
@@ -251,18 +241,11 @@ struct Config {
     enemy_all_at_once: bool,
     /// Pre-combat button that picks the armament of a carrier's planes (charged to the inventory). Default on.
     plane_loadouts: bool,
-    log_colors: bool,
     /// Damage popups of allied ships are drawn in this colour, as HEX: `"#00E4FF"` (`"00E4FF"` and `"0x00E4FF"` work
     /// too). A plain number is still accepted so configs from before v0.14.0 keep working (read as 0xRRGGBB).
     #[serde(deserialize_with = "deserialize_hex_color")]
     ally_damage_color: String,
-    /// Log the whole GUI element list (names, positions, sizes) on every click and when the native ammo selector
-    /// is rebuilt: to learn how the game lays out its own selectors (ammo icons, role icons).
-    gui_inspect: bool,
-    /// Log every creature registry pass (very noisy: every creature, every frame).
-    log_creatures: bool,
-    /// Battle telemetry for AI research (only in builds made with the cargo feature `telemetry`; ignored otherwise).
-    telemetry: bool,
+    logging: LoggingConfig,
     /// Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed.
     ally_sounds: bool,
     /// An ally leaves the battle (same order as the retreat key) when its COMBAT fuel (the ship's own tank, the
@@ -280,18 +263,15 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: true,
-            max_lines: 600,
             spawn_ally: true,
             ally_delay_seconds: 1.5,
             auto_retreat: true,
             flagship_leaves: "handover".to_string(),
             retreat_key: 0x77,
             ally_toggle: true,
-            probe_lines: false,
-            gui_inspect: false,
             spare_prizes: true,
             intercept_ignore_oids: vec!["MDL_MISSILE_03".to_string()],
-            debug_log: true,
+            logging: LoggingConfig::default(),
             fix_plane_ai_crash: true,
             plane_bombers: false,
             extra_gunpod: true,
@@ -307,12 +287,8 @@ impl Default for Config {
             enemy_group_size: 3,
             enemy_all_at_once: false,
             plane_loadouts: true,
-            log_colors: false,
             ally_damage_color: "#00E4FF".to_string(),
             max_allies: 2,
-            log_precombat: false,
-            log_creatures: false,
-            telemetry: false,
             ally_sounds: true,
             ally_fuel_retreat_percent: 30.0,
             marker_text: "PLAYER".to_string(),
@@ -320,6 +296,62 @@ impl Default for Config {
             marker_delay_ms: 0,
         }
     }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+struct LoggingConfig {
+    /// Megalog, watchdog and crash minidump for bug reports.
+    debug_log: bool,
+    /// Spawn-line budget per level/session (lifted by debug mode).
+    max_lines: u32,
+    log_precombat: bool,
+    probe_lines: bool,
+    log_colors: bool,
+    gui_inspect: bool,
+    log_creatures: bool,
+    /// Read-only hooks that report the native dead-node assertion to a text log.
+    dead_node: bool,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            debug_log: true,
+            max_lines: 600,
+            log_precombat: false,
+            probe_lines: false,
+            log_colors: false,
+            gui_inspect: false,
+            log_creatures: false,
+            dead_node: false,
+        }
+    }
+}
+
+/// Accept old flat logging keys; explicit nested settings take precedence.
+fn parse_config(text: &str) -> Result<Config, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(text)?;
+    if let Some(root) = value.as_object_mut() {
+        let mut legacy = serde_json::Map::new();
+        for key in [
+            "debug_log", "max_lines", "log_precombat", "probe_lines",
+            "log_colors", "gui_inspect", "log_creatures",
+        ] {
+            if let Some(setting) = root.remove(key) {
+                legacy.insert(key.to_string(), setting);
+            }
+        }
+        let logging = root
+            .entry("logging")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let Some(logging) = logging.as_object_mut() {
+            for (key, setting) in legacy {
+                logging.entry(key).or_insert(setting);
+            }
+        }
+    }
+    serde_json::from_value(value)
 }
 
 /// Read `ally_damage_color` from the config: a HEX string (`"#00E4FF"`, `"00E4FF"` or `"0x00E4FF"`), or a plain
@@ -2453,8 +2485,6 @@ unsafe extern "C" fn on_battle_tick() {
     plane_loadouts::tick();
     let _hook = diag::scope("on_battle_tick");
     precombat_tick(1);
-    #[cfg(feature = "telemetry")]
-    telemetry::tick();
     if !SPAWN_ALLY.load(Ordering::Relaxed) {
         return;
     }
@@ -2671,7 +2701,7 @@ unsafe extern "C" fn init() -> bool {
 
     let path = "Modloader/config/ally.json";
     let config: Config = match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|error| {
+        Ok(text) => parse_config(&text).unwrap_or_else(|error| {
             log::error!("hf_ally: bad {path}: {error}; using defaults");
             Config::default()
         }),
@@ -2687,12 +2717,12 @@ unsafe extern "C" fn init() -> bool {
         log::info!("hf_ally: disabled in {path}");
         return true;
     }
-    if config.debug_log && !diag::debug() {
+    if config.logging.debug_log && !diag::debug() {
         diag::enable_debug();
         log::info!("hf_ally: debug_log on: megalog, watchdog and crash dump (large files, see ally.json)");
     }
     // the debug build lifts the line budgets (a session never gets them back: the level name is always "?")
-    let max_lines = if diag::debug() { config.max_lines.max(1_000_000) } else { config.max_lines };
+    let max_lines = if diag::debug() { config.logging.max_lines.max(1_000_000) } else { config.logging.max_lines };
     MAX_LINES.store(max_lines, Ordering::Relaxed);
     SPAWN_ALLY.store(config.spawn_ally, Ordering::Relaxed);
     MARKER_SEAM_SEL.store(select_marker_seam(config.marker_seam), Ordering::Relaxed);
@@ -2701,9 +2731,7 @@ unsafe extern "C" fn init() -> bool {
         // ASCII only; '@' is a line break for the game's text code
         *text = config.marker_text.bytes().filter(|b| (0x20..0x7f).contains(b) && *b != b'@').chain([0]).collect();
     }
-    PROBE_LINES.store(config.probe_lines || diag::debug(), Ordering::Relaxed);
-    #[cfg(feature = "telemetry")]
-    telemetry::ENABLED.store(config.telemetry, Ordering::Relaxed);
+    PROBE_LINES.store(config.logging.probe_lines || diag::debug(), Ordering::Relaxed);
     MAX_ALLIES.store(config.max_allies.max(1), Ordering::Relaxed);
     AMMO_ON.store(config.ally_ai_ammo, Ordering::Relaxed);
     log::info!(
@@ -2719,7 +2747,7 @@ unsafe extern "C" fn init() -> bool {
 
     match prepare(&config) {
         Ok(()) => {
-            log::info!("hf_ally v{}: hooks installed (spawn log, creature log {}, ally {})", env!("CARGO_PKG_VERSION"), config.log_creatures, config.spawn_ally);
+            log::info!("hf_ally v{}: hooks installed (spawn log, creature log {}, ally {})", env!("CARGO_PKG_VERSION"), config.logging.log_creatures, config.spawn_ally);
             true
         }
         Err(error) => {
@@ -2733,7 +2761,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     let module = ProcessModule::main().map_err(|e| e.to_string())?;
     let address = module.resolve_rva(ADD_RVA).map_err(|e| e.to_string())?;
     let found = std::slice::from_raw_parts(address as *const u8, ADD_PROLOGUE.len());
-    if config.log_creatures && found != ADD_PROLOGUE {
+    if config.logging.log_creatures && found != ADD_PROLOGUE {
         return Err(format!(
             "bytes at {address:#x} are {found:02x?}, expected {ADD_PROLOGUE:02x?} (another mod owns this site, or a different build)"
         ));
@@ -2773,7 +2801,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     session
         .detour_trampoline(spawn, SPAWN_PROLOGUE.len(), trampoline)
         .map_err(|e| e.to_string())?;
-    if config.log_creatures {
+    if config.logging.log_creatures {
         session
             .patch_call(
                 address,
@@ -2784,7 +2812,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             )
             .map_err(|e| e.to_string())?;
     }
-    if config.log_precombat || config.ally_toggle || diag::debug() {
+    if config.logging.log_precombat || config.ally_toggle || diag::debug() {
         HAVE_PRECOMBAT_HOOK.store(true, Ordering::Relaxed);
         let sites: [(usize, [u8; 5], *const ()); 3] = [
             (PRECOMBAT_SEAM, PRECOMBAT_SEAM_BYTES, on_precombat as *const ()),
@@ -2818,7 +2846,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             }
         }
     }
-    if (config.ally_toggle && config.spawn_ally) || config.gui_inspect {
+    if (config.ally_toggle && config.spawn_ally) || config.logging.gui_inspect {
         let found = std::slice::from_raw_parts(CLICK_ENTRY as *const u8, CLICK_STOLEN.len());
         if found != CLICK_STOLEN {
             log::warn!("hf_ally: ClickFunc entry is already hooked by another mod (hf_probe hook_clicks?): no toggle, no GUI inspector");
@@ -2875,8 +2903,8 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             log::warn!("hf_ally: SomethingInputTask entry differs (another mod hooked it?): no per-frame card check from it");
         }
     }
-    GUI_INSPECT.store(config.gui_inspect, Ordering::Relaxed);
-    if config.gui_inspect {
+    GUI_INSPECT.store(config.logging.gui_inspect, Ordering::Relaxed);
+    if config.logging.gui_inspect {
         // ammoSelectButtonPress? (the native ammo selector rebuild): log-only entry hook, 10 stolen rsp-relative stores
         let found = std::slice::from_raw_parts(AMMO_PRESS as *const u8, AMMO_PRESS_STOLEN.len());
         if found == AMMO_PRESS_STOLEN {
@@ -2910,7 +2938,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             AMMO_ON.store(false, Ordering::Relaxed);
         }
     }
-    LOG_PRECOMBAT.store(config.log_precombat || diag::debug(), Ordering::Relaxed);
+    LOG_PRECOMBAT.store(config.logging.log_precombat || diag::debug(), Ordering::Relaxed);
     SPARE_PRIZES.store(config.spare_prizes && config.spawn_ally, Ordering::Relaxed);
     if config.spare_prizes && config.spawn_ally {
         let target_ok = std::slice::from_raw_parts(TARGET_FN as *const u8, 3) == [0x48, 0x8b, 0xc4];
@@ -2962,7 +2990,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         }
     };
     ally_hud::install(&mut session, ally_damage_color);
-    if config.log_colors {
+    if config.logging.log_colors {
         color_probe::install(&mut session);
         LOG_COLORS.store(true, Ordering::Relaxed);
     }
@@ -2986,8 +3014,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             }
         }
     }
-    // the battle manager hook also carries the telemetry, so it is installed when either is on
-    if config.spawn_ally || (cfg!(feature = "telemetry") && config.telemetry) {
+    if config.spawn_ally {
         let battle = module.resolve_rva(BATTLE_RVA).map_err(|e| e.to_string())?;
         let found = std::slice::from_raw_parts(battle as *const u8, BATTLE_PROLOGUE.len());
         if found != BATTLE_PROLOGUE {
@@ -3003,9 +3030,8 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             )
             .map_err(|e| e.to_string())?;
     }
-    #[cfg(feature = "telemetry")]
-    if config.telemetry {
-        telemetry::install_dead_node_hooks(&mut session)?;
+    if config.logging.dead_node {
+        dead_node::install_dead_node_hooks(&mut session)?;
     }
     session.install_permanently().map_err(|e| e.to_string())
 }

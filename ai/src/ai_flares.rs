@@ -512,8 +512,7 @@ static TRACE: Mutex<Option<File>> = Mutex::new(None);
 static TRACE_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// Writes one event line to `Modloader/logs/hf_ai_panic_<unix>.log` (when `log_panic` is on). Never blocks and never
-/// panics; called with no other lock held. `t` is the game clock and `ship` the creature pointer, the same values as
-/// `t` and `cptr` in `hf_ai_steer_*.csv`, so lines can be joined with the telemetry.
+/// panics; called with no other lock held. `t` is the game clock and `ship` the creature pointer.
 fn trace(runtime: &Runtime, now: f64, creature: usize, event: &str, detail: std::fmt::Arguments) {
     if !runtime.config.log_panic || TRACE_FAILED.load(Ordering::Relaxed) {
         return;
@@ -530,7 +529,7 @@ fn trace(runtime: &Runtime, now: f64, creature: usize, event: &str, detail: std:
             Ok(mut file) => {
                 let _ = writeln!(
                     file,
-                    "# hf_ai v{} ai_flares trace. t = game clock (as in hf_ai_steer_*.csv), ship = creature pointer (cptr there). \
+                    "# hf_ai v{} ai_flares trace. t = game clock, ship = creature pointer. \
                      START = a panic began (mode flares/evade/panic/roll, side = +1/-1 of the missile's line of approach, boost = engine factor), \
                      EXTEND = a locked-on missile still inside the range, IGNORED = reaction roll failed, END = panic over, \
                      FLIGHT = panic evasion committed to a direction, STEER = waypoint replaced (stock -> new), BOOST/SPIN = engine commands changed, CURTAIN_START/DROP/EXTEND/END = the pre-emptive flare curtain.",

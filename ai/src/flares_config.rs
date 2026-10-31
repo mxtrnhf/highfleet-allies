@@ -85,6 +85,7 @@ pub struct AiFlaresConfig {
     /// Writes `Modloader/logs/hf_ai_panic_<unix>.log`: one line per panic event (start, extension, end, ignored
     /// reaction roll, first panic-evasion direction, spin/boost) with the game time and the ship pointer.
     /// Disabled by default.
+    #[serde(skip)]
     pub log_panic: bool,
     /// "Flare curtain": chance, rolled once per enemy ship each time the player's side launches a missile, that the
     /// ship starts dropping flares at random intervals BEFORE any lock-on (like a helicopter flooding the area with

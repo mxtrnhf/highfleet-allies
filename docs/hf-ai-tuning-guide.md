@@ -6,7 +6,7 @@ Written 2026-10-24 for the person who tunes the AI, not for the person who reads
 
 Yes, with two corrections.
 
-* **Each AI ship has its own small state machine.** At any moment it is in exactly one state (`stock`, `dive`, `dive_skip`, `aim`, `panic`; the names are the `state` column of `hf_ai_steer_*.csv`). It moves between states on conditions (target in the dive cone for long enough, an aim window opens, a missile locks on) and on timers (dwell, cooldown, duration).
+* **Each AI ship has its own small state machine.** At any moment it is in exactly one state (`stock`, `dive`, `dive_skip`, `aim`, `panic`). It moves between states on conditions (target in the dive cone for long enough, an aim window opens, a missile locks on) and on timers (dwell, cooldown, duration).
 * **It is not the game's AI.** The game's own AI runs every tick and computes a *waypoint* (where to fly next). hf_ai sits on that one point: it reads the waypoint the game wanted and either leaves it (`stock`) or replaces it. It never touches guns, targets or missiles, except the optional early fire. So "the state machine" is a steering override on top of vanilla, not a replacement brain.
 * **There are really two machines.** (a) The *steering* machine above (file `tactics_math.rs`, `tactics.rs`). (b) The *flare curtain* machine (`curtain_math.rs`, `ai_flares.rs`): wait, drop, cooldown, driven by missile launches. They share the ship and the panic, but have separate settings (`tactics` block vs `ai_flares` block).
 
@@ -78,8 +78,8 @@ Unconfirmed in play: whether allies really dodge as intended. The ally curtain a
 ## 5. How to tune without guessing
 
 1. **Change one thing at a time**, keep a `.bak` of `hf_ai.json`, and change `enabled` (master) or one block's `enabled` to A/B. A fight against the same enemy design (say Intrepid) is the comparison unit.
-2. **Turn logging on for the test only:** `"log_steering": true` (steer CSV, 10 Hz, the `state` column shows where each ship was), `"log_scan": true` (obstacle scan, bigger), `ai_flares.log_panic` true (panic and curtain events with timestamps). They are only written while hf_ally's battle session is open.
-3. **Look at the replay**, not only the CSV: `build_viz.py` builds an HTML replay from the telemetry (`tuning_telemetry/visualizer/` in the workspace).
+2. **Turn text logging on for the test only:** set `"logging": { "log_panic": true }` in `hf_ai.json` for panic and curtain events with timestamps. This does not require hf_ally.
+3. **Observe the fight directly.** Ship/battle CSV capture and telemetry replay support have been removed.
 4. **Measure, then judge.** Useful numbers: share of enemy missiles that hit; share of curtain drops still in the air when the missile arrives (target: most); how often each `state` appears; time under your keel before the ship moves (dive); damage taken per minute. Do not judge from one fight: dice are rolled per ship.
 5. **Safe order for a "harder" AI:** raise `reaction_probability`, then the dive weights, then the aim window frequency, last the early fire. For an "easier" one reverse it. Early fire is the one that makes the AI visibly dangerous, so move it in steps of 0.1.
 6. **Pitfalls.** (a) Boosts need `ai_flares.enabled` true. (b) Qol's own `ai_flares` must be false while hf_ai's is true: both patch the same sites. (c) A ship under 30 thrust/mass never does anything, so heavies feel "stock". (d) Settings are read at game start (no hot reload that I know of; restart the game after editing). (e) Wrong key names are silently ignored (every key is optional), so check the `hf_ai: tactics ON (...)` log line shows your numbers.
@@ -123,7 +123,7 @@ All keys live in `Modloader/config/hf_ai.json`. Keep a `.bak`, change one line, 
 
 ## 9. A one-battle test routine
 
-1. Set `"log_panic": true` inside `ai_flares`.
+1. Set `"log_panic": true` inside `logging`.
 2. Fight, then open the newest `Modloader/logs/hf_ai_panic_*.log`. `CURTAIN_START` is a preventive dump (the line says which launch triggered it), `START` is a panic, `CURTAIN_DROP` is each flare drop.
 3. Count: how many `CURTAIN_START` lines happened without you or an ally launching anything? If zero, nothing is "wrong", you are seeing the design. If not zero, send the log.
 4. Change one value from section 7 and repeat.

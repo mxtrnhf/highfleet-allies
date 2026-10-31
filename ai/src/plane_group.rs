@@ -34,7 +34,6 @@ static GROUPS: Mutex<Option<HashMap<Key, Entry>>> = Mutex::new(None);
 struct Key {
     carrier: usize,
     node_id: u32,
-    battle: u64,
 }
 
 #[derive(Default)]
@@ -55,13 +54,10 @@ fn context(carrier: usize) -> Option<(Key, f64)> {
             return None;
         }
         let now = crate::rd::<f64>(crate::CLOCK).filter(|t| t.is_finite())?;
-        // Battle id is an additional identity guard, never a telemetry-enabled gate.
-        let (battle, _) = crate::battle_state();
         Some((
             Key {
                 carrier,
                 node_id: crate::rd(carrier + 0x18)?,
-                battle,
             },
             now,
         ))
@@ -85,11 +81,7 @@ fn armed(carrier: usize, plane: usize) {
     }
     let mut guard = GROUPS.lock().unwrap_or_else(|e| e.into_inner());
     let groups = guard.get_or_insert_with(HashMap::new);
-    groups.retain(|old, entry| {
-        old.battle == key.battle
-            && now >= entry.last_seen
-            && now - entry.last_seen <= f64::from(config.delay) + 1.0
-    });
+    groups.retain(|_, entry| now >= entry.last_seen && now - entry.last_seen <= f64::from(config.delay) + 1.0);
     if !groups.contains_key(&key) && groups.len() >= MAX_CARRIERS {
         return;
     }

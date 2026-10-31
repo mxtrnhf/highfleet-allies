@@ -43,9 +43,8 @@ bomber scenes = 2/3; aircraft-vs-* = 0/1. See
 `hf_notes/docs/findings/plane-combat-modes-and-gunpods.md`.
 Player-controlled manual launch `PlayerLaunchPlane` (`0x14007a4c0`) is untouched.
 
-Group state is separate per carrier pointer, node id (`+0x18`), and available
-hf_ally battle id. It never retains dereferenceable game pointers for callbacks.
-The battle id is only an extra identity guard, not a telemetry-enabled gate.
+Group state is separate per carrier pointer and node id (`+0x18`). It never retains
+dereferenceable game pointers for callbacks and does not read capture-session files.
 Clock reversal, stale entries, failed stock attempts, and changed identities
 end the partial group. The table is capped at 256 entries. The ordinary stock
 six-second pause returns after the configured number of successful launches.

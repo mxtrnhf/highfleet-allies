@@ -30,18 +30,6 @@ pub enum State {
     Aim,
 }
 
-impl State {
-    pub fn name(self) -> &'static str {
-        match self {
-            State::Stock => "stock",
-            State::Panic => "panic",
-            State::Dive => "dive",
-            State::DiveSkip => "dive_skip",
-            State::Aim => "aim",
-        }
-    }
-}
-
 /// Sanitized config values the tactics use.
 #[derive(Clone, Copy, Debug)]
 pub struct Params {

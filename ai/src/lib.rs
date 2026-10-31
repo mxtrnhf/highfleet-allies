@@ -10,23 +10,14 @@
 //! [`decide`] has had its say about the waypoint, the missile-panic stage may override it (panic beats tactics), and
 //! the flare-burst and engine-boost sites are hooked. See README.md.
 //!
-//! v0.1.0: the steering hook is in, **log-only**. Where the stock tick stores the waypoint it wants (`0x140064a8d`),
-//! this mod sees the ship, the waypoint and the target, writes a CSV row per ship at `log_hz` and hands the waypoint
-//! to [`decide`], which returns `None` (no change) until a tactic is written. Nothing in the game changes.
-//!
 //! The hook site is the same one qol's `ai_flares` uses for its evasion. Only one of the two can own it: the mod that
 //! loads first wins (`hf_ai` sorts before `highfleet_qol`) and the other finds different bytes and skips its hook, with a
-//! log line. With hf_ai installed this hook is ALWAYS installed (log-only unless `ai_flares` is on), so qol's
+//! log line. With hf_ai installed this hook is ALWAYS installed, so qol's
 //! `ai_flares.evade` must be off even when hf_ai's `ai_flares` is off, and exactly one of the two `ai_flares` may be enabled.
 
-use std::collections::HashMap;
 use std::ffi::{c_char, CStr};
-use std::fmt::Write as _;
-use std::fs::File;
-use std::io::Write as _;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
 
 use patchy::{PatchSession, ProcessModule, ReturnType, Trampoline};
 use serde::{Deserialize, Serialize};
@@ -41,7 +32,6 @@ mod panic_math;
 mod plane_group;
 mod plane_group_math;
 mod rng;
-mod scan_log;
 mod tactics;
 mod tactics_config;
 mod tactics_math;
@@ -76,23 +66,6 @@ const OFF_CODE: usize = 0x28;
 
 /// Scratch space shared with the steering trampoline: waypoint x, y and ship x, y.
 static STEER_BUFFER: [AtomicU32; 4] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
-static LOG_HZ: AtomicU32 = AtomicU32::new(0x4120_0000); // 10.0f32
-static LOG_STEERING: AtomicBool = AtomicBool::new(true);
-
-struct Logger {
-    file: Option<File>,
-    /// battle id (hf_ally's session id from `Modloader/current_battle.txt`) the open file belongs to
-    battle: u64,
-    /// false while hf_ally's session for `battle` is closed or packed: no rows, no file
-    active: bool,
-    /// game time of the next look at `current_battle.txt`
-    next_battle_check: f64,
-    last_clock: f64,
-    /// ship pointer -> (small id, game time of its last row)
-    ships: HashMap<usize, (u32, f64)>,
-}
-
-static LOGGER: Mutex<Option<Logger>> = Mutex::new(None);
 
 /// What the tactic layer gets to look at when the stock AI has picked a waypoint.
 #[allow(dead_code)]
@@ -107,18 +80,6 @@ struct Ctx {
     target: Option<(f32, f32)>,
     /// The creature behind that target node.
     target_creature: Option<usize>,
-}
-
-/// The battle hf_ally is recording (`Modloader/current_battle.txt`) and whether it is being recorded now. hf_ally writes
-/// the session id when it arms a battle and `0` when the session closes (before the packer runs), so `0` means "no
-/// session": hf_ai logs nothing then, and nothing for an id whose `hf_ally_telemetry_<id>.csv` has left `logs/`
-/// (the packer moved it). Without the file at all (no hf_ally installed) hf_ai logs, naming files by its own stamp (id 0).
-pub(crate) fn battle_state() -> (u64, bool) {
-    let Some(id) = std::fs::read_to_string("Modloader/current_battle.txt").ok().and_then(|text| text.trim().parse::<u64>().ok()) else {
-        return (0, true);
-    };
-    let active = id != 0 && std::path::Path::new(&format!("Modloader/logs/hf_ally_telemetry_{id}.csv")).exists();
-    (id, active)
 }
 
 /// Page-checked read (same test as `hf_ally`'s `diag::rd`): `None` when the memory is not mapped and readable.
@@ -162,7 +123,7 @@ unsafe fn target_info(node: usize) -> Option<(usize, (f32, f32))> {
 
 /// Called from the AI tick right before it stores the waypoint it wants for `creature`.
 /// Stages: the stock waypoint -> [`decide`] (tactics) -> the ported missile panic (`ai_flares::steer`, which overrides
-/// tactics while a ship is evading) -> the CSV row -> the waypoint goes back to the tick.
+/// tactics while a ship is evading) -> the waypoint goes back to the tick.
 unsafe extern "C" fn on_steering(creature: usize) {
     // A Rust panic must never unwind into the game.
     if catch_unwind(AssertUnwindSafe(|| steering(creature))).is_err() && !LOGGED_STEER_PANIC.swap(true, Ordering::Relaxed) {
@@ -206,7 +167,7 @@ unsafe fn steering(creature: usize) {
         target: info.map(|(_, position)| position),
         target_creature: info.map(|(creature, _)| creature),
     };
-    let (tactic, tactic_state) = tactics::decide(&ctx, || ai_flares::panicking(creature, now));
+    let (tactic, _) = tactics::decide(&ctx, || ai_flares::panicking(creature, now));
     // The panic stage sees the waypoint the tick will store (the tactic's, if it chose one) and overrides it.
     let tactic_waypoint = match tactic {
         Some((x, y)) if x.is_finite() && y.is_finite() => (x, y),
@@ -215,88 +176,11 @@ unsafe fn steering(creature: usize) {
     // (returns None at once when ai_flares is off: its runtime is never created then)
     let panic = ai_flares::steer(creature, now, tactic_waypoint, ship).filter(|(x, y)| x.is_finite() && y.is_finite());
     let chosen = panic.or(tactic);
-    if LOG_STEERING.load(Ordering::Relaxed) {
-        let state = if panic.is_some() { tactics_math::State::Panic } else { tactic_state };
-        log_row(&ctx, chosen, panic.is_some(), state);
-    }
     if let Some((x, y)) = chosen {
         if x.is_finite() && y.is_finite() {
             STEER_BUFFER[0].store(x.to_bits(), Ordering::Relaxed);
             STEER_BUFFER[1].store(y.to_bits(), Ordering::Relaxed);
         }
-    }
-}
-
-fn log_row(ctx: &Ctx, chosen: Option<(f32, f32)>, panic: bool, state: tactics_math::State) {
-    let Ok(mut guard) = LOGGER.try_lock() else { return };
-    let log = guard.get_or_insert_with(|| Logger { file: None, battle: 0, active: true, next_battle_check: 0.0, last_clock: 0.0, ships: HashMap::new() });
-    if ctx.now < log.last_clock {
-        log.ships.clear(); // the clock went back (it normally runs on across battles)
-    }
-    log.last_clock = ctx.now;
-    // One file per battle, named with hf_ally's session id so the .hftm packer finds it. The game clock does not
-    // restart between battles, so the battle is told by `current_battle.txt` (looked at twice a second of game time).
-    if ctx.now >= log.next_battle_check || ctx.now < log.next_battle_check - 5.0 {
-        log.next_battle_check = ctx.now + 0.5;
-        let (battle, active) = battle_state();
-        if battle != log.battle || active != log.active {
-            log.battle = battle;
-            log.active = active;
-            log.file = None; // closed; the next row opens the new battle's file
-            log.ships.clear();
-        }
-    }
-    if !log.active {
-        return;
-    }
-    let period = 1.0 / f64::from(f32::from_bits(LOG_HZ.load(Ordering::Relaxed)).max(0.1));
-    let next_id = log.ships.len() as u32 + 1;
-    let entry = log.ships.entry(ctx.creature).or_insert((next_id, f64::NEG_INFINITY));
-    if ctx.now - entry.1 < period {
-        return;
-    }
-    entry.1 = ctx.now;
-    let id = entry.0;
-    if log.file.is_none() {
-        let stamp = if log.battle != 0 {
-            log.battle
-        } else {
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-        };
-        let opened = std::fs::OpenOptions::new().create(true).append(true).open(format!("Modloader/logs/hf_ai_steer_{stamp}.csv"));
-        if let Ok(mut file) = opened {
-            let _ = writeln!(
-                file,
-                "# hf_ai v{}: the stock AI's wanted waypoint per ship. wang = direction of the wanted waypoint from the ship (deg),                  tbear = bearing to the target (deg), rel = wang - tbear wrapped to -180..180 (0 = heading straight at the target,                  +-90 = circling). chosen_x/y empty = hf_ai left the waypoint alone, panic = 1 when the ported ai_flares evasion chose it, cptr = creature pointer (joins with hf_ai_panic_*.log), state = stock / aim / dive / dive_skip / panic. dist is the range to the target.",
-                env!("CARGO_PKG_VERSION")
-            );
-            let _ = writeln!(file, "t,ship,side,x,y,wx,wy,wlen,wang,tx,ty,dist,tbear,rel,chosen_x,chosen_y,panic,cptr,state");
-            log.file = Some(file);
-        }
-    }
-    let wang = (ctx.wanted.1 - ctx.ship.1).atan2(ctx.wanted.0 - ctx.ship.0).to_degrees();
-    let wlen = ((ctx.wanted.0 - ctx.ship.0).powi(2) + (ctx.wanted.1 - ctx.ship.1).powi(2)).sqrt();
-    let mut row = String::new();
-    let _ = write!(row, "{:.3},{id},{:.0},{:.1},{:.1},{:.1},{:.1},{wlen:.0},{wang:.1},", ctx.now, ctx.side, ctx.ship.0, ctx.ship.1, ctx.wanted.0, ctx.wanted.1);
-    match ctx.target {
-        Some((tx, ty)) => {
-            let dist = ((tx - ctx.ship.0).powi(2) + (ty - ctx.ship.1).powi(2)).sqrt();
-            let tbear = (ty - ctx.ship.1).atan2(tx - ctx.ship.0).to_degrees();
-            let rel = (wang - tbear + 540.0).rem_euclid(360.0) - 180.0;
-            let _ = write!(row, "{tx:.1},{ty:.1},{dist:.0},{tbear:.1},{rel:.1},");
-        }
-        None => row.push_str(",,,,,"),
-    }
-    match chosen {
-        Some((x, y)) => {
-            let _ = write!(row, "{x:.1},{y:.1}");
-        }
-        None => row.push(','),
-    }
-    let _ = write!(row, ",{},0x{:x},{}", u8::from(panic), ctx.creature, state.name());
-    row.push('\n');
-    if let Some(file) = log.file.as_mut() {
-        let _ = file.write_all(row.as_bytes());
     }
 }
 
@@ -365,6 +249,35 @@ unsafe fn prepare_steering_hook(session: &mut PatchSession, module: ProcessModul
         .map_err(|e| e.to_string())
 }
 
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct LoggingConfig {
+    /// Text event trace for flare/panic decisions (not battle capture).
+    log_panic: bool,
+}
+
+/// Accept the old ai_flares.log_panic key; the logging section takes precedence.
+fn parse_config(text: &str) -> Result<Config, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(text)?;
+    if let Some(root) = value.as_object_mut() {
+        let legacy = root
+            .get_mut("ai_flares")
+            .and_then(|flares| flares.as_object_mut())
+            .and_then(|flares| flares.remove("log_panic"));
+        if let Some(setting) = legacy {
+            let logging = root
+                .entry("logging")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let Some(logging) = logging.as_object_mut() {
+                logging.entry("log_panic").or_insert(setting);
+            }
+        }
+    }
+    let mut config: Config = serde_json::from_value(value)?;
+    config.ai_flares.log_panic = config.logging.log_panic;
+    Ok(config)
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Config {
@@ -376,15 +289,7 @@ struct Config {
     plane_group_launch_delay_seconds: f32,
     /// Minimum strategic/Shipworks TWR for maneuvers; 0 disables the gate.
     twr_cutoff: f32,
-    /// Write `Modloader/logs/hf_ai_steer_<unix>.csv`: the stock AI's wanted waypoint per ship.
-    log_steering: bool,
-    /// Rows per second per ship in that file.
-    log_hz: f32,
-    /// Write `hf_ai_scan_<id>.csv` / `hf_ai_obst_<id>.csv`: every AI scan call with the obstacle nodes and the steering
-    /// numbers the game computed (50 Hz per ship). Off by default; see `scan_log.rs`.
-    log_scan: bool,
-    /// With `log_scan`: also list every body the scan considered (only on ticks with a kept node).
-    log_scan_bodies: bool,
+    logging: LoggingConfig,
     /// The ported qol `ai_flares` (flares burst, sidestep, panic evasion, barrel roll, allies). Enabled by player default:
     /// use it only with qol's `ai_flares.enabled` (and `evade`) turned off.
     ai_flares: AiFlaresConfig,
@@ -405,10 +310,7 @@ impl Default for Config {
             plane_group_per_launch: plane_group_math::DEFAULT_GROUP_SIZE,
             plane_group_launch_delay_seconds: plane_group_math::DEFAULT_DELAY,
             twr_cutoff: 2.0,
-            log_steering: false,
-            log_hz: 10.0,
-            log_scan: false,
-            log_scan_bodies: false,
+            logging: LoggingConfig::default(),
             ai_flares: AiFlaresConfig::default(),
             tactics: TacticsConfig::default(),
             ai_missile_dump_chance: 0.4,
@@ -467,7 +369,7 @@ unsafe extern "C" fn init() -> bool {
         return false;
     }
     let config: Config = match std::fs::read_to_string(CONFIG_PATH) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|error| {
+        Ok(text) => parse_config(&text).unwrap_or_else(|error| {
             log::error!("hf_ai: bad {CONFIG_PATH}: {error}; using defaults");
             Config::default()
         }),
@@ -488,9 +390,6 @@ unsafe extern "C" fn init() -> bool {
     TWR_CUTOFF.store(cutoff.to_bits(), Ordering::Relaxed);
     log::info!("hf_ai: maneuver strategic/Shipworks TWR cutoff {cutoff}");
     tactics::init(&config.tactics);
-    LOG_STEERING.store(config.log_steering, Ordering::Relaxed);
-    scan_log::LOG_BODIES.store(config.log_scan_bodies, Ordering::Relaxed);
-    LOG_HZ.store(config.log_hz.clamp(0.5, 60.0).to_bits(), Ordering::Relaxed);
     let module = match ProcessModule::main() {
         Ok(module) => module,
         Err(error) => {
@@ -507,17 +406,10 @@ unsafe extern "C" fn init() -> bool {
     };
     // One session for every site, so nothing is half installed. Preparing the ai_flares sites may fail (a code
     // mismatch is not an error, it just leaves ai_flares off); then the steering hook is prepared alone.
-    let prepare = |with_flares: bool, with_flares_or_scan: bool| -> Result<PatchSession, String> {
+    let prepare = |with_flares: bool| -> Result<PatchSession, String> {
         let mut session = PatchSession::new();
         if steering_ok {
             prepare_steering_hook(&mut session, module)?;
-        }
-        if config.log_scan && steering_ok && with_flares_or_scan {
-            match scan_log::prepare(&mut session, module) {
-                Ok(true) => log::info!("hf_ai: scan log hooks prepared"),
-                Ok(false) => {}
-                Err(error) => return Err(error),
-            }
         }
         {
             missile_dump::patch_ai_missile_dump(
@@ -537,7 +429,7 @@ unsafe extern "C" fn init() -> bool {
         }
         Ok(session)
     };
-    let session = match prepare(config.ai_flares.enabled, true) {
+    let session = match prepare(config.ai_flares.enabled) {
         Ok(session) => session,
         Err(error) => {
             log::error!("hf_ai: preparing the hooks failed: {error}");
@@ -545,7 +437,7 @@ unsafe extern "C" fn init() -> bool {
                 return false;
             }
             log::error!("hf_ai: retrying with the steering hook only (ai_flares off)");
-            match prepare(false, false) {
+            match prepare(false) {
                 Ok(session) => session,
                 Err(error) => {
                     log::error!("hf_ai: preparing the steering hook failed: {error}");

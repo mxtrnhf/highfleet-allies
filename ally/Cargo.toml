@@ -7,8 +7,6 @@ description = "Prototype: a player-side, AI-run ship in battle. v0.2 can spawn a
 [features]
 # Debug build: a megalog beside the normal log, heartbeat, every click, game-state changes, crash minidump.
 megalog = []
-# Research telemetry (CSV files of every ship, part damage and missile). NOT in tester builds: build it only for yourself.
-telemetry = []
 
 [lib]
 name = "hf_ally"

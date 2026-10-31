@@ -17,17 +17,17 @@ guides to disable specific behavior.
 
 Allies: two wingmen, 1.5 s arrival delay, eight enemies, vanilla three-ship waves,
 K-13/loadout buttons on, bomb/rocket and AA attack delays of 1 s, and fuel retreat
-at 30%. The Sprint exception is `MDL_MISSILE_03`. Runtime `debug_log` is **true**, as
+at 30%. The Sprint exception is `MDL_MISSILE_03`. Runtime `logging.debug_log` is **true**, as
 in the captured player config. That enables detailed logs, the watchdog and crash
 dumps, and can force diagnostic probe/pre-combat output despite their individual
-keys being false. Set it false for quieter play. Telemetry is false, and player
-release DLLs are compiled without the telemetry or megalog features.
+keys being false. Set it false for quieter play. Ship/battle CSV capture is removed;
+player release DLLs are compiled without the forced megalog feature.
 
 AI: flares, allied reactions, aim and dive dodges are on; the top-level TWR cutoff
 is 2.0. Carrier groups launch up to three planes at 0.5 s intervals. Missile-dump
 chance is 0.4 with 0.6..1.5 s spacing. Plain evasion strength is 0.5, roll chance
 0.001, panic-evasion chance 0.1 and panic duration 5 s. Early-fire chance is 0.5.
-Steering, scan and panic logs are off. Optional band/circling/close-retreat
+Steering/scan CSV capture is removed; `logging.log_panic` is off. Optional band/circling/close-retreat
 positioning and its settings remain removed.
 
 The ally preset retains the player's numeric colour `58623`, equivalent to
@@ -57,7 +57,7 @@ Old local snapshots under the workspace's `config_references/` remain untouched.
 
 Use the **Build and publish release** workflow (`.github/workflows/release.yml`)
 with the pack version. GitHub Windows runners build all three DLLs with locked
-dependencies and no telemetry/megalog features; Ubuntu runs the host checks and
+dependencies and no forced megalog feature; Ubuntu
 assembles the ZIP. Only artifacts from those Windows jobs are used in the public
 release. `manifest.json` records the source commit and GitHub Actions run URL.
 No game or mod DLL is executed by the workflow.

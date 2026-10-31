@@ -19,12 +19,10 @@ To keep hf_ai loaded but restore stock gameplay and disable its optional data fi
 ```json
 {
   "enabled": true,
-  "log_steering": false,
-  "log_scan": false,
-  "log_scan_bodies": false,
+  "logging": { "log_panic": false },
   "plane_group_per_launch": 1,
   "ai_missile_dump_chance": 0.0,
-  "ai_flares": { "enabled": false, "log_panic": false },
+  "ai_flares": { "enabled": false },
   "tactics": { "enabled": false }
 }
 ```
@@ -64,10 +62,15 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Early fire | `tactics.aim_fire_probability: 0.0` | Aim-awareness steering remains. |
 | Tactical carrier plane groups | `plane_group_per_launch: 1` | Restores stock one-at-a-time cadence; strategic and manual launch paths are unchanged. |
 | Zenith/missile dumping | `ai_missile_dump_chance: 0.0` | Restores vanilla launch timing. Delay values do not disable dumping. |
-| Steering CSV | `log_steering: false` | `log_hz: 0.0` does not disable it; the rate is clamped. |
-| Scan/obstacle CSVs | `log_scan: false` | Also disables `log_scan_bodies` output. |
-| Considered-body rows in scan logs | `log_scan_bodies: false` | Other scan-log rows remain while `log_scan` is on. |
-| Panic/curtain trace | `ai_flares.log_panic: false` | General startup and diagnostic messages in `Modloader.log` are separate. |
+| Panic/curtain trace | `logging.log_panic: false` | General startup and diagnostic messages in `Modloader.log` are separate. |
+
+## Logging
+
+All logging options live in `"logging"`. `log_panic` defaults to false and writes
+`Modloader/logs/hf_ai_panic_<unix>.log`: text panic/curtain events with game time
+and ship pointer. The old `ai_flares.log_panic` location remains readable; an
+explicit `logging.log_panic` wins. Ship/steering/obstacle CSV capture has been
+removed; old `log_steering`, `log_hz`, `log_scan` and `log_scan_bodies` keys do nothing.
 
 ## Top level
 | Key | Default | If key omitted | What it does |
@@ -76,10 +79,6 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | `twr_cutoff` | `2.0` | Uses player default `2.0`. | Minimum live strategic/Shipworks TWR (before UI rounding, since v0.10.8) for tactics, missile evasion, rolls/boosts, curtain retreat/shelter, and stray-missile reactions. Below the cutoff these are suppressed; at or above it their individual switches still apply. Locked-missile flare bursts and preventive flare drops remain available. Negative/non-finite cutoffs use 0.0. With a positive cutoff, missing/non-finite ship TWR fails the gate. Independent of carrier plane groups. Restart after editing. |
 | `plane_group_per_launch` | `3` | Uses player default `3`. | Clamped to 1..64; `1` restores stock cadence. Enemy and allied AI, normal `Combat.seria` only. Stock deck/availability checks remain; blocked attempts cancel a partial group. Independent of TWR, tactics and flares. |
 | `plane_group_launch_delay_seconds` | `0.5` | Uses player default `0.5`. | Clamped to 0.05..60 seconds; non-finite values use 0.5. Stock six-second cooldown returns after the last member. Restart to apply. |
-| `log_steering` | `false` | Uses player default `false`. | Write `Modloader/logs/hf_ai_steer_<unix>.csv`: the stock AI's wanted waypoint per ship. |
-| `log_hz` | `10.0` | Uses player default `10.0`. | Rows per second per ship in that file. |
-| `log_scan` | `false` | Uses player default `false`. | Write `hf_ai_scan_<id>.csv` / `hf_ai_obst_<id>.csv`: every AI scan call with the obstacle nodes and the steering numbers the game computed (50 Hz per ship). Off by default; see `scan_log.rs`. |
-| `log_scan_bodies` | `false` | Uses player default `false`. | With `log_scan`: also list every body the scan considered (only on ticks with a kept node). |
 | `ai_missile_dump_chance` | `0.4` | Uses player default `0.4`. | Chance (0..1) that an enemy ship keeps launching Zenith missiles right after a launch (a burst that empties the rack) instead of waiting for the game's 2 s cooldown. 0 = vanilla. Was `ai_missile_dump_chance` in qol.json. |
 | `ai_missile_dump_min_delay` | `0.6` | Uses player default `0.6`. | Shortest and longest wait between the launches of a burst, in seconds (`max` never below `min`). |
 | `ai_missile_dump_max_delay` | `1.5` | Uses player default `1.5`. | Longest wait between launches of a burst, seconds. |
@@ -101,7 +100,6 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | `panic_evasion_probability` | `0.1` | Uses player default `0.1`. | Chance, rolled once when a panic starts, that the evasion is a *panic evasion*: the ship ignores its normal steering completely, picks one escape direction and floors it that way and boosts its engines like a player holding Shift. The other panics use the plain evasion above.  Limited to `0.0` through `1.0`. |
 | `panic_boost` | `2.0` | Uses player default `2.0`. | Engine strength during a panic evasion: `1.0` is normal thrust, `2.0` is what the player's boost key gives.  Limited to `1.0` through `4.0`. |
 | `panic_evasion_seconds` | `5.0` | Uses player default `5.0`. | How long, in seconds, a panic evasion lasts. A missile that is still coming extends it by 2.5 s at a time.  Limited to `0.05` through `60`. |
-| `log_panic` | `false` | Uses player default `false`. | Writes `Modloader/logs/hf_ai_panic_<unix>.log`: one line per panic event (start, extension, end, ignored reaction roll, first panic-evasion direction, spin/boost) with the game time and the ship pointer. Disabled by default. |
 | `launch_flares_probability` | `0.6` | Uses player default `0.6`. | "Flare curtain": chance of dropping flares at random intervals before lock-on. For enemy ships it is rolled on player-side launches; for allied AI ships included by `allies`, on enemy-side launches. `0.0` disables curtains for both; the player-flown ship is excluded. Limited to `0.0` through `1.0`. |
 | `launch_flares_interval_min` | `0.5` | Uses player default `0.5`. | Shortest and longest wait between two drops of a curtain, in seconds (every drop fires all launchers). |
 | `launch_flares_interval_max` | `1.0` | Uses player default `1.0`. | Longest wait between two flare drops of a curtain, seconds (min is `launch_flares_interval_min`). |

@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **Unreleased (logging cleanup):** remove ship/battle/parts/body CSV capture, F9 capture markers and CSV analysis tools. Keep megalog, watchdog, crash dumps and other text logs. Group flags under `logging` in ally/AI configs, with compatibility for old logging-key locations and per-key precedence for nested values. Retain the former telemetry-only dead-node text diagnostic as `logging.dead_node` (default false). The `dae801d` battle-restart probe safety fix remains intact.
+
 A player-side, AI-run ship in battle for Highfleet Steam 1.163 (Rust, standalone; port to a QoL fork branch once the sites are confirmed).
 Background, addresses and open questions: `hf_notes/docs/findings/battle-ally.md`.
 

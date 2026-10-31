@@ -1,5 +1,8 @@
 {
   "enabled": true,
+  "logging": {
+    "log_panic": false
+  },
   "ai_missile_dump_chance": 0.4,
   "ai_missile_dump_min_delay": 0.6,
   "ai_missile_dump_max_delay": 1.5,
@@ -21,7 +24,6 @@
     "panic_evasion_probability": 0.1,
     "panic_boost": 2.0,
     "panic_evasion_seconds": 5.0,
-    "log_panic": false,
     "launch_flares_probability": 0.6,
     "launch_flares_interval_min": 0.5,
     "launch_flares_interval_max": 1.0,
@@ -82,9 +84,5 @@
     "aim_fire_probability": 0.5,
     "aim_fire_s": 1.0,
     "aim_fire_range": 1.6
-  },
-  "log_steering": false,
-  "log_hz": 10.0,
-  "log_scan": false,
-  "log_scan_bodies": false
+  }
 }
