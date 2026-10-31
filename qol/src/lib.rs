@@ -10,9 +10,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::config::Config;
 
 pub mod config;
+#[cfg(not(feature = "1_151"))]
+mod crash_fixes;
 mod dumpable;
 #[cfg(not(feature = "1_151"))]
 mod elevation;
+#[cfg(not(feature = "1_151"))]
+mod elevation_rules;
 mod flare_crash;
 mod guns;
 mod parts;
@@ -159,10 +163,19 @@ unsafe extern "C" fn init() -> bool {
             if config.elevation.enabled {
                 log::warn!("Elevation needs Steam 1.163, leaving it off");
             }
-            log::info!("Refuel rate and speed curve need Steam 1.163, leaving them alone");
+            log::info!("Refuel rate, speed curve and elevation rules need Steam 1.163, leaving them alone");
         } else {
+            prepare_patch!(crash_fixes::prepare(
+                &mut patch_session,
+                config.fix_plane_ai_crash,
+                config.fix_merge_crash
+            ));
             prepare_patch!(refuel::patch_refuel(&mut patch_session, &config.refuel));
             prepare_patch!(speed::patch_speed(&mut patch_session, &config.speed));
+            prepare_patch!(elevation_rules::patch_elevation_rules(
+                &mut patch_session,
+                config.elevation_rules
+            ));
 
             if config.elevation.enabled {
                 prepare_patch!(elevation::prepare(&mut patch_session, &config.elevation));

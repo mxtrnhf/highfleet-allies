@@ -3,6 +3,8 @@
   "enable_unblocked_guns": false,
   "enable_reduced_shake": false,
   "enable_flare_crash_fix": true,
+  "fix_plane_ai_crash": true,
+  "fix_merge_crash": true,
   "enable_unblocked_ttl": false,
   "enable_arcade_zoom": true,
   "max_zoom_level": 5,
@@ -144,6 +146,7 @@
     "exponent": 0.5,
     "max_kmh": 0.0
   },
+  "elevation_rules": "vanilla",
   "elevation": {
     "enabled": false,
     "max_floor": 3,

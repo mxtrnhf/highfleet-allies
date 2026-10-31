@@ -10,12 +10,14 @@ use highfleet::general::EscadraString;
 use serde::{de::Deserializer, Deserialize, Serialize};
 
 mod elevation;
+mod elevation_rules;
 mod loadout;
 mod plane;
 mod refuel;
 mod speed;
 
 pub use elevation::{parse_key, ElevationConfig, ElevationHint, ElevationKeys, ResolvedKeys};
+pub use elevation_rules::ElevationRules;
 pub use loadout::{ConfigItemMunition, ConfigLoadout};
 pub use plane::{ConfigPlane, DEFAULT_PLANE_HEALTH};
 pub use refuel::RefuelConfig;
@@ -44,8 +46,16 @@ pub struct Config {
     /// Prevents a crash in version 1.163 when a missile fuze loses its linked target.
     ///
     /// Enabled by default. Version 1.151 does not require this fix.
-    #[serde(default = "default_flare_crash_fix")]
+    #[serde(default = "default_crash_fix_enabled")]
     pub enable_flare_crash_fix: bool,
+    /// Fixes an out-of-bounds read in stock aircraft target choice on Steam 1.163.
+    /// Enabled by default; moved from ally.json to qol.json.
+    #[serde(default = "default_crash_fix_enabled")]
+    pub fix_plane_ai_crash: bool,
+    /// Guards null fleets and two null fleet-vector elements on Steam 1.163.
+    /// Enabled by default; defensive guards, not a confirmed fix for all merge crashes.
+    #[serde(default = "default_crash_fix_enabled")]
+    pub fix_merge_crash: bool,
     /// Stops armor-piercing projectiles from being forced to a shorter lifetime.
     ///
     /// Disabled by default.
@@ -104,6 +114,11 @@ pub struct Config {
     /// Disabled by default.
     #[serde(default)]
     pub elevation: ElevationConfig,
+    /// Gun/KAZ firing-arc rules on Steam 1.163: vanilla (default), modern,
+    /// classic (1.151 rules), or classic_kaz (classic plus KAZ truss exemption).
+    /// Independent of the manual editor elevation switch.
+    #[serde(default)]
+    pub elevation_rules: ElevationRules,
 }
 
 /// Controls how often and in what quantity one part can appear in city shops.
@@ -152,7 +167,7 @@ impl OneOrMany {
     }
 }
 
-fn default_flare_crash_fix() -> bool {
+fn default_crash_fix_enabled() -> bool {
     true
 }
 
@@ -182,6 +197,8 @@ impl Default for Config {
             enable_unblocked_guns: false,
             enable_reduced_shake: false,
             enable_flare_crash_fix: true,
+            fix_plane_ai_crash: true,
+            fix_merge_crash: true,
             enable_unblocked_ttl: false,
             enable_arcade_zoom: true,
             max_zoom_level: 5,
@@ -194,6 +211,7 @@ impl Default for Config {
             refuel: RefuelConfig::default(),
             speed: SpeedConfig::default(),
             elevation: ElevationConfig::default(),
+            elevation_rules: ElevationRules::default(),
         }
     }
 }

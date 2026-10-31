@@ -4,8 +4,8 @@ Two mods for **HighFleet (Steam 1.163)**, built on [logdot's Highfleet-Modloader
 
 | Mod | What it does |
 |---|---|
-| [`ally/`](ally) (**hf_ally**) | An AI-flown **wingman ship** that fights beside you, pre-combat **ALLY** buttons, radio lines, retreat/fuel logic; **carrier plane armament buttons** (bombs, rockets, optional K-13 AA missiles, charged to your inventory; they follow the game's own plane and loadout tables, so aircraft added by other mods through the QoL `planes` option get a button too); **more enemies per battle** (`max_enemy_ships`, enemy waves); crash guards for three vanilla crashes; the Sprint-intercept fix. |
-| [`qol/`](qol) (optional) | A copy of logdot's QoL `main` **plus manual elevation** in the ship editor. **Not required**: logdot's stock QoL release works with `hf_ally`/`hf_ai`. Ours only adds what his release does not have yet (refuel, speed, elevation) until he merges [our pull request](https://github.com/logdot/highfleet-qol/pull/20) and cuts a release. |
+| [`ally/`](ally) (**hf_ally**) | An AI-flown **wingman ship** that fights beside you, pre-combat **ALLY** buttons, radio lines, retreat/fuel logic; **carrier plane armament buttons** (bombs, rockets, optional K-13 AA missiles, charged to your inventory; they follow the game's own plane and loadout tables, so aircraft added by other mods through the QoL `planes` option get a button too); **more enemies per battle** (`max_enemy_ships`, enemy waves); the Sprint-intercept fix. |
+| [`qol/`](qol) (optional) | Logdot's QoL `main` **plus manual editor elevation and optional gun/KAZ firing-arc rules**. **Not required**: logdot's stock QoL release works with `hf_ally`/`hf_ai`. Our build includes refuel/speed settings, manual elevation ([PR #20](https://github.com/logdot/highfleet-qol/pull/20)) and `elevation_rules` ported from our separate fork (vanilla by default). |
 | [`ai/`](ai) (**hf_ai**) | A tactical **AI layer**: enemies dodge your aim line, deny the dive, drop flare curtains and evade missiles (allied AI ships too), and **empty their missile racks** in a burst (`ai_missile_dump_*`). Plain-language guide: [docs/hf-ai-tuning-guide.md](docs/hf-ai-tuning-guide.md). |
 
 Both are optional, independent DLLs. Everything is reverse-engineered, so **Steam 1.163 only**; they refuse to start on other versions. Back up your `Saves` folder first.
@@ -24,6 +24,15 @@ missing-key defaults match those presets. See [player-defaults.md](docs/player-d
 for the profile and release policy. Existing configs keep their explicit values.
 
 Every setting is already in the config files of the pack, so there is nothing to discover: [`docs/ally-config.md`](docs/ally-config.md) (hf_ally, every key), [`docs/hf-ai-config-reference.md`](docs/hf-ai-config-reference.md) (hf_ai, every key) with the plain-language [`docs/hf-ai-tuning-guide.md`](docs/hf-ai-tuning-guide.md), and [`docs/qol-guide.md`](docs/qol-guide.md) (refuel, speed formulas and manual elevation, for the QoL build).
+
+The bundled QoL also reads top-level `elevation_rules`: `vanilla` (default),
+`modern`, `classic` or `classic_kaz`. This controls gun/KAZ firing arcs independently
+of manual editor elevation. See [QoL guide](docs/qol-guide.md#elevation_rules-gunkaz-firing-arcs).
+
+The stock aircraft AI fix and null-fleet/vector guards now live in bundled QoL,
+not ally. Their `fix_plane_ai_crash` and `fix_merge_crash` keys belong in `qol.json`
+and default to true. Update both DLLs together. Stock upstream QoL does not contain
+these two additions; the fleet guards are not a confirmed fix for every merge crash.
 
 ## Build (developers)
 Rust nightly/stable ≥ 1.88 with `cargo-xwin` (cross-compiles to Windows MSVC from Linux; works on Windows too):

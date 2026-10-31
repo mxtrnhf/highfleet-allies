@@ -51,8 +51,6 @@ For individual features, use this table. Settings for an already-disabled parent
 | K-13 speed multiplier | `plane_aa_speed: 1.0` | No speed modification. |
 | K-13 engagement delay only | `plane_aa_delay: 0.0` | Removes the added wait, not the mod-managed interceptor; use `plane_k13: false` or `plane_loadouts: false` for the feature. |
 | Strategic-launch interception ignore list | `intercept_ignore_oids: []` | Empty list skips the patch and is vanilla. |
-| Aircraft target-choice crash fix | `fix_plane_ai_crash: false` | Literal vanilla code, but **not recommended**; true retains a stock-game crash fix. |
-| Fleet-merge/empty-vector crash guards | `fix_merge_crash: false` | Literal vanilla code, but **not recommended**; true retains the guards. |
 | `PLAYER` pre-combat label | `marker_text: ""` | Plane-loadout labels are controlled by `plane_loadouts`, not this key. |
 | Marker seam / delay | `marker_delay_ms: 0` removes the extra delay | `marker_seam` has no off value. Disable the owning label/UI feature instead. |
 | Spawn/ADD log-line budget | `logging.max_lines: 0` | Minimizes only those lines; it is not a general logging switch. |
@@ -63,6 +61,15 @@ For individual features, use this table. Settings for an already-disabled parent
 | HUD colour-call logging | `logging.log_colors: false` | Damage recolouring itself is independent. |
 | Debug megalog/watchdog/crash dump | `logging.debug_log: false` | The `megalog` cargo feature forces debug mode on. |
 | Dead-node assertion diagnostic | `logging.dead_node: false` | No dead-node hooks installed. |
+
+## Stock-game crash fixes moved to QoL
+
+`fix_plane_ai_crash` and `fix_merge_crash` now belong in `qol.json`, both defaulting
+to true. Ally no longer installs these patches; old keys in `ally.json` are ignored.
+The bundled QoL build provides them even without ally. Stock upstream QoL does not
+include these additions. Update both DLLs together and keep only one of each.
+The fleet fixes are null-fleet/vector guards, not a verified fix for all merge crashes.
+The battle-restart diagnostic-probe fix remains in ally.
 
 ## Logging (`logging` object)
 
@@ -109,7 +116,6 @@ Normal modloader log messages and the basic crash reporter remain available.
 | `max_allies` | `2` | Uses player default `2`. | How many AI allies may fight at the same time. Ships switched on beyond that wait in the reserve and step in, in ship-number order, when an ally is destroyed or has left. |
 | `spare_prizes` | `true` | Uses player default `true`. | Allies never keep a prize ship (the ships the player may capture and sell after the battle: the game flags them at creature +0xc19) as a target: they pick another enemy, or hold fire when only prizes are left. |
 | `intercept_ignore_oids` | `["MDL_MISSILE_03"]` | Uses player default `["MDL_MISSILE_03"]`. | SIDE PATCH (not in master). `m_oid`s the AI never treats as a strategic launch to intercept in the missile-vs-ship arcade scene, e.g. `["MDL_MISSILE_03"]` (the R-9 Sprint) for a Sprint modded to be strat-launchable (its category has bit 0x8000000, so the CIWS and anti-air launchers of both sides would shoot at it). Copy the names from `m_oid=` in OL.seria. Empty = vanilla. |
-| `fix_plane_ai_crash` | `true` | Uses player default `true`. | Stock-game aircraft target-choice crash fix. Default on. |
 | `plane_bombers` | `false` | Uses player default `false`. | Experimental: lets carrier planes with bombs/rockets attack in normal campaign battles (the game only does that in some scenes). Off by default. |
 | `extra_gunpod` | `true` | Uses player default `true`. | Normal tactical battle (`Combat.seria`) only, and **only for the vanilla T-7 / LA-29**: give a chosen FAB / NURS plane the vanilla 37 mm gun (`ITEM_GUN37`) and, once both its bombs and rockets are empty, switch it to the interceptor mode so it strafes with that gun until it is dry. Custom crafts (e.g. `CRAFT_SB15`) never get a gunpod from this flag and keep their vanilla leave-after-payload behaviour. If the loadout already has a gun (a class-4 item or a QoL `gun_ammo`, including a custom one), that gun is kept and nothing is added. Custom bombs / rockets are classified by their live ammo-table class, not by name. Strategic map bombers (`Bombers.seria`) keep their vanilla loadout and leave after the bombing run. Off = old behaviour: the plane leaves when its payload is empty. |
 | `plane_k13` | `true` | Uses player default `true`. | Offer the K-13 air-to-air loadout for carrier planes. Enabled in the player preset. |
@@ -118,7 +124,6 @@ Normal modloader log messages and the basic crash reporter remain available.
 | `plane_aa_delay` | `1.0` | Uses player default `1.0`. | Seconds after launch before a K-13 plane may engage. |
 | `plane_aa_angle` | `0.35` | Uses player default `0.35`. | How exactly a K-13 plane must point at the target before firing, in radians (vanilla 0.1745 = 10 degrees; 0.35 = 20 degrees). |
 | `plane_aa_speed` | `1.5` | Uses player default `1.5`. | Speed factor for K-13 planes (1.0 = vanilla); the pack uses 1.5 so they can catch missiles and planes. |
-| `fix_merge_crash` | `true` | Uses player default `true`. | Guards against a vanilla crash when fleets merge or land with an empty fleet list (three places). Leave on. |
 | `ally_ai_ammo` | `true` | Uses player default `true`. | Allies roll the AI's AP / proximity shell doctrine once, like enemy ships do at spawn. Default on. |
 | `max_enemy_ships` | `8` | Uses player default `8`. | Most enemy ships in one battle (vanilla 5, clamped to 1..=127). |
 | `enemy_group_size` | `3` | Uses player default `3`. | Enemy ships placed per wave (vanilla 3, 1..=40). Waves refill every tick after the first 30 s. |

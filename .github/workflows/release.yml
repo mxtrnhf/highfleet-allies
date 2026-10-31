@@ -6,7 +6,7 @@ on:
       version:
         description: Pack version without the v prefix
         required: true
-        default: "0.14.2"
+        default: "0.14.3"
 
 permissions:
   contents: read
@@ -77,11 +77,11 @@ jobs:
           from pathlib import Path
           archive = Path("release-artifacts") / ("hf_release_pack_v" + os.environ["PACK_VERSION"])
           run = os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + os.environ["GITHUB_RUN_ID"]
-          notes = "Built and validated by [GitHub Actions](" + run + ").\n\n```text\n" + (archive / "README.txt").read_text() + "\n```\n"
+          notes = (archive / "NOTES.md").read_text() + "\nBuilt by [GitHub Actions](" + run + ").\n"
           Path("release-notes.md").write_text(notes)
           PY
           gh release create "v$PACK_VERSION" \
             "release-artifacts/hf_release_pack_v$PACK_VERSION.zip" \
             "release-artifacts/hf_release_pack_v$PACK_VERSION.zip.sha256" \
-            --target "$GITHUB_SHA" --title "v$PACK_VERSION: player defaults" \
+            --target "$GITHUB_SHA" --title "v$PACK_VERSION: logging cleanup and elevation rules" \
             --notes-file release-notes.md --latest

@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **Unreleased (stock crash fixes moved to QoL):** aircraft target-choice fix and three null-fleet/vector guards are now installed by bundled QoL on Steam 1.163, not ally. Their existing `fix_plane_ai_crash` / `fix_merge_crash` keys move to `qol.json`, default true. Update both DLLs together. The fleet guards remain defensive, not a confirmed fix for all merge crashes. The ally-specific `dae801d` probe safety fix stays in ally.
+
 * **Unreleased (logging cleanup):** remove ship/battle/parts/body CSV capture, F9 capture markers and CSV analysis tools. Keep megalog, watchdog, crash dumps and other text logs. Group flags under `logging` in ally/AI configs, with compatibility for old logging-key locations and per-key precedence for nested values. Retain the former telemetry-only dead-node text diagnostic as `logging.dead_node` (default false). The `dae801d` battle-restart probe safety fix remains intact.
 
 A player-side, AI-run ship in battle for Highfleet Steam 1.163 (Rust, standalone; port to a QoL fork branch once the sites are confirmed).

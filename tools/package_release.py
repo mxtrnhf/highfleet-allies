@@ -35,11 +35,12 @@ def populate(stage, version, versions, commit):
     shutil.copytree(REPO / "release", stage, dirs_exist_ok=True)
     shutil.copy2(REPO / "LICENSE", stage / "LICENSE.txt")
 
-    readme = stage / "README.txt"
-    text = readme.read_text()
-    for key, value in {"PACK_VERSION": version, "ALLY_VERSION": versions["ally"], "AI_VERSION": versions["ai"]}.items():
-        text = text.replace("@" + key + "@", value)
-    readme.write_text(text)
+    for name in ("README.txt", "NOTES.md"):
+        destination = stage / name
+        text = destination.read_text()
+        for key, value in {"PACK_VERSION": version, "ALLY_VERSION": versions["ally"], "AI_VERSION": versions["ai"]}.items():
+            text = text.replace("@" + key + "@", value)
+        destination.write_text(text)
     (stage / "docs").mkdir()
     for name in GUIDES:
         destination = stage / "docs" / name

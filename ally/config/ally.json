@@ -21,7 +21,6 @@
   "intercept_ignore_oids": [
     "MDL_MISSILE_03"
   ],
-  "fix_plane_ai_crash": true,
   "plane_bombers": false,
   "extra_gunpod": true,
   "plane_k13": true,
@@ -30,7 +29,6 @@
   "plane_aa_delay": 1.0,
   "plane_aa_angle": 0.35,
   "plane_aa_speed": 1.5,
-  "fix_merge_crash": true,
   "ally_ai_ammo": true,
   "max_enemy_ships": 8,
   "enemy_group_size": 3,

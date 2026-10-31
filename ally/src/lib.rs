@@ -33,7 +33,6 @@ macro_rules! crumb {
 mod ally_ammo;
 mod ally_hud;
 mod color_probe;
-mod crash_fixes;
 mod diag;
 mod intercept;
 mod max_enemy;
@@ -215,8 +214,6 @@ struct Config {
     /// arcade scene, e.g. `["MDL_MISSILE_03"]` (the R-9 Sprint) for a Sprint modded to be strat-launchable (its category has bit 0x8000000, so
     /// the CIWS and anti-air launchers of both sides would shoot at it). Copy the names from `m_oid=` in OL.seria. Empty = vanilla.
     intercept_ignore_oids: Vec<String>,
-    /// Stock-game crash fixes (aircraft target choice, fleet-merge null fleet). Default on.
-    fix_plane_ai_crash: bool,
     plane_bombers: bool,
     /// Give a chosen bomb / rocket loadout a 37 mm gunpod and keep the plane in the fight after the payload is gone:
     /// once bombs and rockets are empty it switches to the interceptor mode and strafes with the gun until that is dry.
@@ -230,7 +227,6 @@ struct Config {
     plane_aa_delay: f32,
     plane_aa_angle: f32,
     plane_aa_speed: f32,
-    fix_merge_crash: bool,
     /// Allies roll the AI's AP / proximity shell doctrine once, like enemy ships do at spawn. Default on.
     ally_ai_ammo: bool,
     /// Most enemy ships in one battle (vanilla 5, clamped to 1..=127).
@@ -272,7 +268,6 @@ impl Default for Config {
             spare_prizes: true,
             intercept_ignore_oids: vec!["MDL_MISSILE_03".to_string()],
             logging: LoggingConfig::default(),
-            fix_plane_ai_crash: true,
             plane_bombers: false,
             extra_gunpod: true,
             plane_k13: true,
@@ -281,7 +276,6 @@ impl Default for Config {
             plane_aa_delay: 1.0,
             plane_aa_angle: 0.35,
             plane_aa_speed: 1.5,
-            fix_merge_crash: true,
             ally_ai_ammo: true,
             max_enemy_ships: 8,
             enemy_group_size: 3,
@@ -2999,7 +2993,6 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     if config.plane_bombers {
         plane_loadouts::install_bomber_gate(&mut session);
     }
-    crash_fixes::install(&mut session, config.fix_plane_ai_crash, config.fix_merge_crash);
     if config.spawn_ally {
         for (name, address, expected) in [
             ("deploy", DEPLOY, &DEPLOY_PROLOGUE[..]),
