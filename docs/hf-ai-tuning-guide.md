@@ -1,4 +1,4 @@
-# Tuning hf_ai: a plain-language guide (player defaults: v0.10.7)
+# Tuning hf_ai: a plain-language guide (player defaults: v0.10.8)
 
 Written 2026-10-24 for the person who tunes the AI, not for the person who reads the code. Every number below is a key in `Modloader/config/hf_ai.json`; the code defaults are in `hf_ai/src/tactics_math.rs` (`Params::default`) and `hf_ai/src/flares_config.rs`. Where I only know something from reading the code and not from playing, it says so.
 
@@ -13,7 +13,7 @@ Yes, with two corrections.
 ## 2. What happens every tick
 
 1. **Gates** (cheap checks first). hf_ai stays out (`stock`) unless: the ship is AI-flown (never the ship you fly), it is airborne (mode 1), it has a living target that is not itself, the arena bounds are readable, and the ship is on a side that is allowed (enemy always; your allies only with `allies`).
-2. **TWR gate.** The top-level `twr_cutoff` is the sole capability threshold. `0.0` admits every ship; a positive value admits battle TWR at or above that value. Individual tactic switches and safety checks still apply. The former strafe/dive acceleration settings are deprecated and ignored.
+2. **TWR gate.** The top-level `twr_cutoff` is the sole capability threshold. `0.0` admits every ship; a positive value admits strategic/Shipworks TWR at or above that value (before UI rounding, since v0.10.8). Individual tactic switches and safety checks still apply. The former strafe/dive acceleration settings are deprecated and ignored.
 3. **Priority order** (first match wins): **panic** > **aim** > **dive** > stock.
 4. The winning state produces a direction. It is mixed with the game's own direction as `stock_direction + weight * tactic_direction` and re-normalised, so a large weight means "mostly my direction", weight 0 means stock. Ground, arena edges and "never steer down when low" limits are applied after.
 5. Some states ask for an engine boost (like holding Shift). **The boost is applied by the `ai_flares` engine hook, so `dive_boost` / `aim_boost` do nothing unless `ai_flares.enabled` is true.**
@@ -84,7 +84,7 @@ Unconfirmed in play: whether allies really dodge as intended. The ally curtain a
 5. **Safe order for a "harder" AI:** raise `reaction_probability`, then the dive weights, then the aim window frequency, last the early fire. For an "easier" one reverse it. Early fire is the one that makes the AI visibly dangerous, so move it in steps of 0.1.
 6. **Pitfalls.** (a) Boosts need `ai_flares.enabled` true. (b) Qol's own `ai_flares` must be false while hf_ai's is true: both patch the same sites. (c) A ship under 30 thrust/mass never does anything, so heavies feel "stock". (d) Settings are read at game start (no hot reload that I know of; restart the game after editing). (e) Wrong key names are silently ignored (every key is optional), so check the `hf_ai: tactics ON (...)` log line shows your numbers.
 
-## 6. Player defaults (hf_ai v0.10.7)
+## 6. Player defaults (hf_ai v0.10.8)
 
 The exact [player preset](../ai/config/hf_ai.json) is shipped in the release and
 matches compiled defaults, including defaults for omitted fields. Flares,
@@ -145,7 +145,7 @@ and manual launches keep their existing behavior. Restart after editing.
 
 Set `"twr_cutoff": 3.5` at the top level of `Modloader/config/hf_ai.json`,
 alongside `ai_flares` and `tactics`, then restart the game. The player default is `2.0`; `0.0` means no TWR restriction. A positive value suppresses tactics and missile
-maneuvers for ships below that battle TWR; a ship exactly at the cutoff remains
+maneuvers for ships below that strategic TWR; a ship exactly at the cutoff remains
 eligible. Individual feature switches and normal target, timing and safety checks still apply; there are no separate acceleration gates.
 
 Below the cutoff, ships do not sidestep missiles, roll, boost for evasion, retreat

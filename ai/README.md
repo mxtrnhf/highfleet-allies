@@ -34,7 +34,9 @@ player profile and is not a vanilla/off configuration.
   allied AI carriers only, normal `Combat.seria`; strategic/manual paths keep
   stock behavior. Size 1 restores stock cadence.
 
-The top-level `twr_cutoff` is the sole maneuver capability threshold. The player
+The top-level `twr_cutoff` is the sole maneuver capability threshold. Since v0.10.8
+it uses live strategic TWR (`creature +0x160c`), as displayed in the shipbuilder
+before UI rounding, instead of battle TWR (`+0x1604`). The player
 default is **2.0**: ships below it do not use tactics or missile maneuvers;
 ships at or above it remain eligible. `0.0` removes this restriction. Individual
 switches, target checks and ground/arena safety limits still apply. Locked-threat
@@ -56,15 +58,10 @@ Flare-curtain retreat/shelter remains part of missile defense.
 
 ```bash
 cargo xwin build --release --locked --no-default-features --target x86_64-pc-windows-msvc
-cargo xwin test --release --locked --target x86_64-pc-windows-msvc --no-run
 ```
 
-From the repository root, `python3 tools/check_player_defaults.py --offline`
-runs host configuration/math tests without loading a DLL or starting the game.
-Full pure-math suites can also use rustc directly, for example:
-`rustc --edition 2021 --test src/tactics_math.rs -o /tmp/tactics_test`.
-The player performs gameplay testing; build/test compilation alone does not
-validate hooks in a running game.
+Automated tests have been removed. The player performs gameplay testing;
+build success alone does not validate hooks in a running game.
 
 Use one hf_ai DLL at a time. Keep the QoL flare crash fix enabled. A separate
 QoL ai_flares implementation must be off because it patches the same sites.

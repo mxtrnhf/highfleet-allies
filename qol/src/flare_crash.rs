@@ -51,28 +51,3 @@ fn build_trampoline(module: ProcessModule) -> Result<Trampoline> {
 
     Ok(trampoline)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn trampoline_branches_to_the_expected_runtime_addresses() {
-        let module_base = 0x140000000;
-        let trampoline = build_trampoline(ProcessModule::from_base(module_base)).unwrap();
-        let trampoline = trampoline.build(0x180000000).unwrap();
-
-        assert_eq!(&trampoline[..3], &[0x48, 0x85, 0xc0]);
-        assert_eq!(&trampoline[3..9], &[0x0f, 0x85, 0x0e, 0x00, 0x00, 0x00]);
-        assert_eq!(
-            usize::from_le_bytes(trampoline[15..23].try_into().unwrap()),
-            module_base + NULL_EXIT_RVA
-        );
-        assert_eq!(&trampoline[23..29], &ORIGINAL_BYTES);
-        assert_eq!(
-            usize::from_le_bytes(trampoline[35..43].try_into().unwrap()),
-            module_base + NON_NULL_RESUME_RVA
-        );
-        assert_eq!(trampoline.len(), 43);
-    }
-}

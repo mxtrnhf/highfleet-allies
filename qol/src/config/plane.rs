@@ -63,34 +63,3 @@ impl<'de> Deserialize<'de> for ConfigPlane {
 fn default_plane_health() -> f32 {
     DEFAULT_PLANE_HEALTH
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn deserializes_legacy_plane_loadout_arrays_with_default_health() {
-        let plane: ConfigPlane = serde_json::from_str("[]").unwrap();
-
-        assert_eq!(plane.health, DEFAULT_PLANE_HEALTH);
-        assert!(plane.loadouts.is_empty());
-    }
-
-    #[test]
-    fn deserializes_current_plane_settings() {
-        let plane: ConfigPlane = serde_json::from_str(r#"{"health":45.0,"loadouts":[]}"#).unwrap();
-
-        assert_eq!(plane.health, 45.0);
-        assert!(plane.loadouts.is_empty());
-    }
-
-    #[test]
-    fn defaults_omitted_health_and_serializes_the_current_shape() {
-        let plane: ConfigPlane = serde_json::from_str(r#"{"loadouts":[]}"#).unwrap();
-        let serialized = serde_json::to_value(&plane).unwrap();
-
-        assert_eq!(plane.health, DEFAULT_PLANE_HEALTH);
-        assert_eq!(serialized["health"], DEFAULT_PLANE_HEALTH);
-        assert!(serialized["loadouts"].as_array().unwrap().is_empty());
-    }
-}

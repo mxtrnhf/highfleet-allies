@@ -1,6 +1,6 @@
 # hf_ai settings (`Modloader/config/hf_ai.json`)
 
-The checked-in [player preset](../ai/config/hf_ai.json), compiled defaults, and release pack use the same values (hf_ai 0.10.7). The plain-language explanation of how the AI works and what to turn for which effect is in [hf-ai-tuning-guide.md](hf-ai-tuning-guide.md); this file is the complete key list with the code defaults. Edit while the game is closed; `"enabled": false` turns hf_ai off.
+The checked-in [player preset](../ai/config/hf_ai.json) and compiled defaults use the same values (hf_ai 0.10.8). The plain-language explanation of how the AI works and what to turn for which effect is in [hf-ai-tuning-guide.md](hf-ai-tuning-guide.md); this file is the complete key list with the code defaults. Edit while the game is closed; `"enabled": false` turns hf_ai off. Older release packs retain their original DLLs.
 
 ## Missing keys and how to revert to vanilla
 
@@ -73,7 +73,7 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Key | Default | If key omitted | What it does |
 |---|---|---|---|
 | `enabled` | `true` | Uses player default `true`. | Master switch. |
-| `twr_cutoff` | `2.0` | Uses player default `2.0`. | Minimum live battle TWR for tactics, missile evasion, rolls/boosts, curtain retreat/shelter, and stray-missile reactions. Below the cutoff these are suppressed; at or above it their individual switches still apply. Locked-missile flare bursts and preventive flare drops remain available. Negative/non-finite cutoffs use 0.0. With a positive cutoff, missing/non-finite ship TWR fails the gate. Independent of carrier plane groups. Restart after editing. |
+| `twr_cutoff` | `2.0` | Uses player default `2.0`. | Minimum live strategic/Shipworks TWR (before UI rounding, since v0.10.8) for tactics, missile evasion, rolls/boosts, curtain retreat/shelter, and stray-missile reactions. Below the cutoff these are suppressed; at or above it their individual switches still apply. Locked-missile flare bursts and preventive flare drops remain available. Negative/non-finite cutoffs use 0.0. With a positive cutoff, missing/non-finite ship TWR fails the gate. Independent of carrier plane groups. Restart after editing. |
 | `plane_group_per_launch` | `3` | Uses player default `3`. | Clamped to 1..64; `1` restores stock cadence. Enemy and allied AI, normal `Combat.seria` only. Stock deck/availability checks remain; blocked attempts cancel a partial group. Independent of TWR, tactics and flares. |
 | `plane_group_launch_delay_seconds` | `0.5` | Uses player default `0.5`. | Clamped to 0.05..60 seconds; non-finite values use 0.5. Stock six-second cooldown returns after the last member. Restart to apply. |
 | `log_steering` | `false` | Uses player default `false`. | Write `Modloader/logs/hf_ai_steer_<unix>.csv`: the stock AI's wanted waypoint per ship. |

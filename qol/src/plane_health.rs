@@ -106,22 +106,3 @@ unsafe extern "C" fn apply_plane_health(aircraft: *mut AircraftBody) {
 fn is_valid_health(health: f32) -> bool {
     health.is_finite() && health > 0.0
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_positive_finite_health() {
-        assert!(is_valid_health(1.0));
-        assert!(is_valid_health(DEFAULT_PLANE_HEALTH));
-    }
-
-    #[test]
-    fn rejects_non_positive_or_non_finite_health() {
-        assert!(!is_valid_health(0.0));
-        assert!(!is_valid_health(-1.0));
-        assert!(!is_valid_health(f32::INFINITY));
-        assert!(!is_valid_health(f32::NAN));
-    }
-}

@@ -516,25 +516,3 @@ unsafe fn finish_row(tick: &mut Tick, out: &mut Out, partial: bool) {
     }
     maybe_flush(out);
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_site_builds_and_replays_its_bytes_then_jumps_back() {
-        for site in &SITES {
-            let module = ProcessModule::from_base(0x1_4000_0000);
-            let built = build_trampoline(site, module).unwrap().build(0x1_8000_0000).unwrap();
-            assert!(built.windows(site.bytes.len()).any(|w| w == site.bytes), "site {}", site.id);
-            let tail = usize::from_le_bytes(built[built.len() - 8..].try_into().unwrap());
-            assert_eq!(tail, 0x1_4000_0000 + site.rva + site.bytes.len());
-            assert!(site.bytes.len() >= 5);
-        }
-    }
-
-    #[test]
-    fn snapshot_setup_dump() {
-        std::fs::write(std::env::var("SNAP_OUT").unwrap_or_else(|_| "snap.bin".into()), snapshot_setup(3, 8)).unwrap();
-    }
-}

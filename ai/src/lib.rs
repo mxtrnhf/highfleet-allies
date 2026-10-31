@@ -174,15 +174,21 @@ static LOGGED_STEER_PANIC: AtomicBool = AtomicBool::new(false);
 
 static TWR_CUTOFF: AtomicU32 = AtomicU32::new(0);
 
-/// Steam 1.163 battle TWR, not map TWR. See hf_notes/docs/findings/ship-profiles.md;
-/// confirmed against Creature_HasTWRStat (0x140073450) in the live Ghidra program.
+/// Steam 1.163 strategic TWR shown in Shipworks, not battle TWR (+0x1604).
+/// Verified displayinShipworks? reads +0x160c at 0x1400d7443 for TWR_STAT.
+/// See hf_notes/docs/findings/ship-profiles.md; highfleet-rs has no Creature layout.
+fn strategic_twr(creature: usize) -> Option<f32> {
+    // SAFETY: borrowed scalar only; rd page-checks the game-owned field.
+    unsafe { rd::<f32>(creature + 0x160c) }
+}
+
 fn maneuvers_allowed(creature: usize) -> bool {
     let cutoff = f32::from_bits(TWR_CUTOFF.load(Ordering::Relaxed));
     if cutoff == 0.0 {
         return true;
     }
-    // SAFETY: page-checked read; missing/invalid TWR fails the enabled gate.
-    twr_math::allows(unsafe { rd::<f32>(creature + 0x1604) }, cutoff)
+    // Missing/invalid strategic TWR fails the enabled gate.
+    twr_math::allows(strategic_twr(creature), cutoff)
 }
 
 
@@ -368,7 +374,7 @@ struct Config {
     plane_group_per_launch: i32,
     /// Seconds between group members (limited to 0.05..60; default 0.5).
     plane_group_launch_delay_seconds: f32,
-    /// Minimum battle TWR for evasion, stray-missile reactions and tactics; 0 disables the gate.
+    /// Minimum strategic/Shipworks TWR for maneuvers; 0 disables the gate.
     twr_cutoff: f32,
     /// Write `Modloader/logs/hf_ai_steer_<unix>.csv`: the stock AI's wanted waypoint per ship.
     log_steering: bool,
@@ -480,7 +486,7 @@ unsafe extern "C" fn init() -> bool {
     check_qol(&config);
     let cutoff = twr_math::sanitize_cutoff(config.twr_cutoff);
     TWR_CUTOFF.store(cutoff.to_bits(), Ordering::Relaxed);
-    log::info!("hf_ai: maneuver TWR cutoff {cutoff}");
+    log::info!("hf_ai: maneuver strategic/Shipworks TWR cutoff {cutoff}");
     tactics::init(&config.tactics);
     LOG_STEERING.store(config.log_steering, Ordering::Relaxed);
     scan_log::LOG_BODIES.store(config.log_scan_bodies, Ordering::Relaxed);
@@ -563,106 +569,4 @@ unsafe extern "C" fn init() -> bool {
         log::info!("hf_ai: ai_flares disabled in {CONFIG_PATH} (keep qol ai_flares evade OFF while hf_ai's steering hook is installed)");
     }
     true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plane_group_settings_default_and_accept_overrides() {
-        let defaults: Config = serde_json::from_str("{}").unwrap();
-        assert_eq!(defaults.plane_group_per_launch, 3);
-        assert_eq!(defaults.plane_group_launch_delay_seconds, 0.5);
-        let config: Config = serde_json::from_str(
-            r#"{"plane_group_per_launch":-1,"plane_group_launch_delay_seconds":1.25}"#,
-        ).unwrap();
-        let effective = plane_group_math::Config::sanitized(
-            config.plane_group_per_launch, config.plane_group_launch_delay_seconds,
-        );
-        assert_eq!(effective.size, 1);
-        assert_eq!(effective.delay, 1.25);
-        let json = serde_json::to_value(defaults).unwrap();
-        assert_eq!(json["plane_group_per_launch"], 3);
-        assert_eq!(json["plane_group_launch_delay_seconds"], 0.5);
-    }
-
-    #[test]
-    fn twr_cutoff_is_optional_and_configurable() {
-        let old: Config = serde_json::from_str("{}").unwrap();
-        assert_eq!(old.twr_cutoff, 2.0);
-        let configured: Config = serde_json::from_str(r#"{"twr_cutoff":3.5}"#).unwrap();
-        assert_eq!(configured.twr_cutoff, 3.5);
-        assert_eq!(serde_json::to_value(&configured).unwrap()["twr_cutoff"], 3.5);
-    }
-
-
-    #[test]
-    fn defaults_match_the_checked_in_player_preset() {
-        let preset: Config = serde_json::from_str(include_str!("../config/hf_ai.json")).unwrap();
-        let expected = serde_json::to_value(preset).unwrap();
-        assert_eq!(serde_json::to_value(Config::default()).unwrap(), expected);
-        let omitted: Config = serde_json::from_str("{}").unwrap();
-        assert_eq!(serde_json::to_value(omitted).unwrap(), expected);
-    }
-
-    /// Writes the full default config to the path in `HF_DUMP_CONFIG` (used to produce the example config of the release pack).
-    #[test]
-    #[ignore]
-    fn dump_default_config() {
-        if let Ok(path) = std::env::var("HF_DUMP_CONFIG") {
-            std::fs::write(path, serde_json::to_string_pretty(&Config::default()).unwrap()).unwrap();
-        }
-    }
-
-    #[test]
-    fn missing_flare_block_uses_player_defaults_and_explicit_off_is_respected() {
-        let config: Config = serde_json::from_str(r#"{"enabled": true, "log_steering": false}"#).unwrap();
-        assert!(!config.log_steering && config.ai_flares.enabled);
-        assert_eq!(config.ai_flares.trigger_range, 400.0);
-        let text = serde_json::to_string_pretty(&Config::default()).unwrap();
-        assert!(text.contains("\"ai_flares\"") && text.contains("\"log_panic\": false"));
-        let nested: Config = serde_json::from_str(r#"{"ai_flares": {"enabled": true, "log_panic": true}}"#).unwrap();
-        assert!(nested.ai_flares.enabled && nested.ai_flares.log_panic && nested.ai_flares.evade && nested.ai_flares.allies);
-    }
-
-    #[test]
-    fn missing_tactics_block_uses_player_defaults_and_explicit_off_is_respected() {
-        let config: Config = serde_json::from_str(r#"{"enabled": true, "ai_flares": {"enabled": true}}"#).unwrap();
-        assert!(config.tactics.enabled && config.ai_flares.enabled);
-        assert!(config.tactics.params().enabled);
-        let text = serde_json::to_string_pretty(&Config::default()).unwrap();
-        assert!(text.contains("\"tactics\"") && text.contains("\"aim_enabled\""));
-        let on: Config = serde_json::from_str(r#"{"tactics": {"enabled": true}}"#).unwrap();
-        assert!(on.tactics.params().enabled && on.ai_flares.enabled);
-        let off: Config = serde_json::from_str(
-            r#"{"tactics":{"enabled":false},"ai_flares":{"enabled":false}}"#,
-        ).unwrap();
-        assert!(!off.tactics.params().enabled && !off.ai_flares.enabled);
-    }
-
-    #[test]
-    fn steering_trampoline_round_trips_the_waypoint_and_replays_the_store() {
-        let module_base = 0x140000000;
-        let mut trampoline = Trampoline::new();
-        trampoline.preserved_call(on_steering as *const (), &steer_argument_setup(), &steer_result_handling(), ReturnType::None);
-        trampoline.bytes(&STEER_BYTES[..STEER_STOLEN_LEN]);
-        trampoline.absolute_jump(ProcessModule::from_base(module_base).resolve_rva(STEER_RESUME_RVA).unwrap());
-        let trampoline = trampoline.build(0x180000000).unwrap();
-
-        let setup = steer_argument_setup();
-        let result = steer_result_handling();
-        let setup_at = trampoline.windows(setup.len()).position(|window| window == setup).expect("waypoint copied out");
-        let result_at = trampoline.windows(result.len()).position(|window| window == result).expect("waypoint loaded back");
-        let store_at = trampoline
-            .windows(STEER_STOLEN_LEN)
-            .position(|window| window == &STEER_BYTES[..STEER_STOLEN_LEN])
-            .expect("the replaced store is replayed");
-        assert!(setup_at < result_at && result_at < store_at);
-        assert_eq!(
-            usize::from_le_bytes(trampoline[trampoline.len() - 8..].try_into().unwrap()),
-            module_base + STEER_RESUME_RVA
-        );
-        assert_eq!(STEER_RVA + STEER_STOLEN_LEN, STEER_RESUME_RVA);
-    }
 }

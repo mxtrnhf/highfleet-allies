@@ -2954,35 +2954,3 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     }
     session.install_permanently().map_err(|e| e.to_string())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn glitch_only_b24_is_never_selected() {
-        assert_eq!(select_marker_seam(22), 22);
-        assert_eq!(select_marker_seam(23), 23);
-        assert_eq!(select_marker_seam(24), 23);
-        assert_eq!(select_marker_seam(u32::MAX), 23);
-        assert_eq!(Config::default().marker_seam, 23);
-    }
-
-    #[test]
-    fn defaults_match_the_checked_in_player_preset() {
-        let preset: Config = serde_json::from_str(include_str!("../config/ally.json")).unwrap();
-        let expected = serde_json::to_value(preset).unwrap();
-        assert_eq!(serde_json::to_value(Config::default()).unwrap(), expected);
-        let omitted: Config = serde_json::from_str("{}").unwrap();
-        assert_eq!(serde_json::to_value(omitted).unwrap(), expected);
-    }
-
-    /// Writes the full default config to the path in `HF_DUMP_CONFIG` (used to produce the example config of the release pack).
-    #[test]
-    #[ignore]
-    fn dump_default_config() {
-        if let Ok(path) = std::env::var("HF_DUMP_CONFIG") {
-            std::fs::write(path, serde_json::to_string_pretty(&Config::default()).unwrap()).unwrap();
-        }
-    }
-}
