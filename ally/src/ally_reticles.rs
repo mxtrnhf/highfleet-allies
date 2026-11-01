@@ -7,8 +7,8 @@
 //! at `0x14029a8c1`.
 //!
 //! This module wraps that call: after the game's own boxes, it repeats the same projection and draw for
-//! the target (`ally+0xb00`) of every living ally, tinted with the configured ally colour. The box size
-//! stays the native 62 x 62 pixels.
+//! the target (`ally+0xb00`) of every living ally, tinted with the configured ally colour. The ally boxes
+//! are drawn at 80% of the native 62 x 62 pixels, so several of them stay readable next to the player's.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -36,7 +36,10 @@ const TARGET_POS_X: usize = 0x1840;
 const TARGET_POS_Y: usize = 0x1844;
 const TARGET_OFFSET_X: usize = 0x240;
 const TARGET_OFFSET_Y: usize = 0x244;
-const BOX_SCALE: f32 = 1.0;
+/// Extent multiplier for the box draw: 0.8 of the native 62 x 62 frame (about 50 x 50 px).
+const BOX_SIZE_SCALE: f32 = 0.8;
+/// Projection zoom handed to the world-to-screen call; the native box pass uses 1.0.
+const BOX_PROJECTION_ZOOM: f32 = 1.0;
 
 type WorldToScreenFn = unsafe extern "win64" fn(*mut f32, u8, f32);
 type FloorPointFn = unsafe extern "win64" fn(*mut f32);
@@ -52,17 +55,18 @@ unsafe fn rd<T: Copy>(address: usize) -> T {
 unsafe fn draw_box(out: &mut [f32; 2], sprite: usize, color: u32) {
     let to_screen: WorldToScreenFn = std::mem::transmute(WORLD_TO_SCREEN);
     let floor_point: FloorPointFn = std::mem::transmute(FLOOR_POINT);
-    to_screen(out.as_mut_ptr(), 0, BOX_SCALE);
+    to_screen(out.as_mut_ptr(), 0, BOX_PROJECTION_ZOOM);
     floor_point(out.as_mut_ptr());
 
     let set_color: SetColorFn = std::mem::transmute(SET_SPRITE_COLOR);
     set_color(sprite, color, -1);
-    (sprite as *mut f32).byte_add(SPRITE_SCALE).write_unaligned(BOX_SCALE);
+    // native box draw keeps the sprite scale at 1.0; the size comes from the RenderEx extents
+    (sprite as *mut f32).byte_add(SPRITE_SCALE).write_unaligned(1.0);
     (sprite as *mut u32).byte_add(SPRITE_BLEND).write_unaligned(0);
 
     let render: RenderExFn = std::mem::transmute(RENDER_EX);
-    // native call: rot 0, scale 1.0, scaleY 0 = same as scaleX
-    render(sprite, out[0], out[1], 0.0, BOX_SCALE, 0.0);
+    // native call: rot 0, scaleY 0 = same as scaleX
+    render(sprite, out[0], out[1], 0.0, BOX_SIZE_SCALE, 0.0);
 }
 
 /// Runs after the game's own target and spawn boxes.
