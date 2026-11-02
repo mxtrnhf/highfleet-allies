@@ -49,10 +49,13 @@ const _: () = {
     assert!(size_of::<Loadout>() == 0x60);
     assert!(size_of::<Munition>() == 0x28);
     assert!(offset_of!(Node, state) == 0x48);
+    assert!(offset_of!(Node, master) + offset_of!(Link, target) == 0x88);
     assert!(offset_of!(Body, position_x) == 0x128);
     assert!(offset_of!(Body, position_y) == 0x12c);
     assert!(offset_of!(Body, oid) == 0x190);
     assert!(offset_of!(Body, logic_s1) == 0x3f8);
+    assert!(offset_of!(Body, sprites) == 0x8c0);
+    assert!(offset_of!(Body, opacity) == 0x8f8);
     assert!(offset_of!(Body, aircraft_logic) == 0xa20);
     assert!(offset_of!(Link, target) == 8);
     assert!(offset_of!(Ammo, item_name) == 8);

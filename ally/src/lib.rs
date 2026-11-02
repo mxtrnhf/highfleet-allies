@@ -117,11 +117,30 @@ const GUI_SETPOS: usize = 0x1_4005_20b0; // setXposYpos(obj, Vec2*)
 const GUI_SETPOS_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x81, 0xec, 0xb0];
 const GUI_SETBG: usize = 0x1_4001_be50; // SetBackground_(gui, idx, sprite, f32, u8, i32)
 const GUI_SETBG_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10];
+/// `setBodyOwnerString(sprite, name, asFileName)` 0x1402e2030: the native name setter `SetBackground_` runs on
+/// the Sprite it has just constructed (see its decompilation). Applying it to our existing newest sprite changes
+/// the sprite instead of appending another one; it frees/clears the old animation state natively.
+const SET_SPRITE_NAME: usize = 0x1_402e_2030;
+const SET_SPRITE_NAME_PROLOGUE: [u8; 20] = [
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20,
+];
+/// `ObjectArray_DeleteAll(gui)` 0x14004bb10: calls each sprite's native deleting destructor (slot 0, the
+/// `New(0x1a8)` pair) and sets the vector end back to its begin. Used only to normalize an element that
+/// accumulated more than one background; safe in builder/input/tick callbacks, never from a render hook.
+const OBJECT_ARRAY_DELETE_ALL: usize = 0x1_4004_bb10;
+const OBJECT_ARRAY_DELETE_ALL_PROLOGUE: [u8; 11] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x56, 0x48, 0x83, 0xec, 0x20, 0x48];
 const GUI_RESET: usize = 0x1_4015_cc30; // clears the +0xab8/+0xad8/+0xaf8/+0xb18 strings
 const GUI_RESET_PROLOGUE: [u8; 9] = [0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9];
 const GUI_FIND: usize = 0x1_401a_9170; // FindGuiElement(char*)
 const GUI_FIND_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10];
 const GUI_ROOT: usize = 0x1_47fc_6f88; // pointer to the global node every GUI is added to
+/// The element list is walked to its own count plus this slack, capped so a corrupt count cannot hang the
+/// game thread. A walk that reaches the cap is reported as incomplete and is never used to hide our elements.
+const GUI_SCAN_SLACK: usize = 16;
+const GUI_SCAN_MIN: usize = 256;
+const GUI_SCAN_MAX: usize = 4096;
+/// Guards the native sprite destruction/load walks; our custom buttons normally own exactly one sprite.
+const GUI_SPRITE_LIMIT: usize = 4096;
 /// SomethingInputTask: per-frame input polling on the game thread (hf_voice hooks it too).
 const INPUT_TASK: usize = 0x1_4018_dbf0;
 const INPUT_TASK_PROLOGUE: [u8; 11] = [0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x70, 0x10];
@@ -1115,6 +1134,17 @@ const LOADOUT_GAP: f32 = 3.0;
 const LOADOUT_SIZE: f32 = 44.0;
 const LABEL_FONT: &std::ffi::CStr = c"flash_large_shadow";
 static TOGGLE_GUIS: [std::sync::atomic::AtomicUsize; 8] = [const { std::sync::atomic::AtomicUsize::new(0) }; 8];
+/// Identifies each builder visit for diagnostics and resets the bounded health-repair budget.
+/// Scene teardown may destroy our elements; retained addresses are never lifetime guarantees.
+static GUI_BUILD_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GUI_SERVICED_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GUI_HEALTH_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GUI_LAST_SCAN_WARN_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GUI_RECOVERY_TRIES: AtomicU32 = AtomicU32::new(0);
+static GUI_RECOVERY_EXHAUSTED: AtomicBool = AtomicBool::new(false);
+/// How often the unchanged-layout health check runs, and how many repairs it may make before it stays quiet.
+const GUI_HEALTH_INTERVAL_MS: u64 = 1000;
+const GUI_HEALTH_TRIES: u32 = 8;
 static LAST_TOGGLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PROBE_LINES: AtomicBool = AtomicBool::new(false);
 // per-battle summary (logged when the roster empties)
@@ -1170,6 +1200,8 @@ unsafe extern "C" fn on_precombat_b1() {
 unsafe extern "C" fn on_precombat_b2() {
     let _hook = diag::scope("on_precombat B2");
     PRECOMBAT_SEEN.store(true, Ordering::Relaxed);
+    // Every build (first entry, ship swap, RETRY) must revalidate retained addresses.
+    GUI_BUILD_EPOCH.fetch_add(1, Ordering::Relaxed);
     precombat_dump("B2 0x1402d73a0 end");
 }
 
@@ -1178,6 +1210,8 @@ type CtorFn = unsafe extern "C" fn(*mut u8, i32) -> *mut u8;
 type GuiInitFn = unsafe extern "C" fn(*mut u8, *const u8, f32, f32, f32, f32, *const u8, *const u8, *const u8, *const u8, *const u8, f32);
 type NodeAddFn = unsafe extern "C" fn(*mut u8, *mut u8, usize, usize);
 type SetBgFn = unsafe extern "C" fn(*mut u8, i32, *const u8, f32, u8, i32) -> *mut u8;
+type SetSpriteNameFn = unsafe extern "C" fn(*mut u8, *const u8, u8);
+type ClearSpritesFn = unsafe extern "C" fn(*mut u8);
 type ResetFn = unsafe extern "C" fn(*mut u8);
 type SetPosFn = unsafe extern "C" fn(*mut u8, *const f32);
 type FindFn = unsafe extern "C" fn(*const u8) -> usize;
@@ -1189,46 +1223,301 @@ fn toggle_line(message: String) {
 }
 
 /// Swaps the sprite of a toggle to show its slot's choice.
-unsafe fn paint_toggle(gui: *mut u8, slot: usize) {
-    let set_bg: SetBgFn = std::mem::transmute(GUI_SETBG);
+unsafe fn paint_toggle(gui: *mut u8, slot: usize) -> bool {
     let on = SLOT_MASK.load(Ordering::Relaxed) & (1 << slot) != 0;
-    let sprite = if on { SPRITE_ON } else { SPRITE_OFF };
-    set_bg(gui, 0, sprite.as_ptr(), read::<f32>(BG_MINUS_ONE), 0, -1);
+    paint_button(gui as usize, if on { SPRITE_ON } else { SPRITE_OFF })
+}
+
+/// Walks the game's GUI element list to its sentinel, including inactive entries.
+/// The count-derived bound accommodates large screens without treating a truncated list as complete.
+struct GuiScan {
+    elements: Vec<usize>,
+    /// False when the walk hit the cap before the sentinel: the list is only partially known.
+    complete: bool,
+    visited: usize,
+    limit: usize,
+}
+
+unsafe fn scan_gui_list() -> GuiScan {
+    let head: usize = read(GUI_LIST);
+    let count: usize = read(GUI_COUNT);
+    let limit = count.saturating_add(GUI_SCAN_SLACK).clamp(GUI_SCAN_MIN, GUI_SCAN_MAX);
+    let mut elements = Vec::new();
+    let mut visited = 0;
+    let mut complete = false;
+    if plausible(head) {
+        let mut node: usize = read(head);
+        for _ in 0..limit {
+            if node == head {
+                break;
+            }
+            if !plausible(node) {
+                break;
+            }
+            visited += 1;
+            let element: usize = read(node + 0x10);
+            if !plausible(element) {
+                break;
+            }
+            elements.push(element);
+            node = read(node);
+        }
+        complete = node == head;
+    }
+    GuiScan {
+        elements,
+        complete,
+        visited,
+        limit,
+    }
+}
+
+/// Writes the game's shown (2) / unused (0) state to one of our elements.
+unsafe fn set_gui_active(gui: usize, active: bool) {
+    if gui == 0 {
+        return;
+    }
+    (gui as *mut i32).byte_add(OFF_ACTIVE).write_unaligned(if active { 2 } else { 0 });
+}
+
+/// Parent node of an element (`Node.master` at 0x80, its `Link.target` at +8 => 0x88 in 1.163). A live element
+/// placed by `make_gui` is a child of the global root.
+unsafe fn master_node(gui: usize) -> usize {
+    read(gui + offset_of!(Node, master) + offset_of!(Link, target))
+}
+
+/// Cell of the `GUI_ELEMENTS` registry entry (+0xba8, see docs/ally-gui-v0.14.5-tester.md). Non-zero means the element is
+/// registered and can still be found by name; it says nothing about the dead-node queue.
+unsafe fn registry_cell(gui: usize) -> usize {
+    read(gui + 0xba8)
+}
+
+/// Checks registry/root fields of an element already obtained from the current native list.
+/// Callers must prove current membership BEFORE calling this function: it dereferences the pointer and is
+/// not itself a lifetime check for a cached address.
+unsafe fn gui_live_in_root(gui: usize) -> bool {
+    if !plausible(gui) || registry_cell(gui) == 0 {
+        return false;
+    }
+    let root: usize = read(GUI_ROOT);
+    plausible(root) && master_node(gui) == root
+}
+
+/// Checks a GUI already obtained from the current complete `GUI_ELEMENTS` walk for the expected name,
+/// registration and root ownership. Callers must establish membership before calling, especially for cached
+/// addresses. Detached or foreign-parented objects are
+/// never resurrected: `Node::add` does not clear a dead-node queue entry, so re-adding one could crash the
+/// native `CollectDeadNodes` pass.
+unsafe fn gui_reusable(gui: usize, name: &[u8]) -> bool {
+    if !plausible(gui) {
+        return false;
+    }
+    if cstr(gui + GUI_NAME).as_bytes() != &name[..name.len() - 1] {
+        return false;
+    }
+    // only a clean hidden (0) or active (2) object may be restored; 1 = removed/dying
+    match read::<i32>(gui + OFF_ACTIVE) {
+        0 | 2 => {}
+        _ => return false,
+    }
+    gui_live_in_root(gui)
+}
+
+/// Calls the element's vtable slot +0x88 (`GUI::Load`): resolves the element's own media names and loads the
+/// resources of every sprite in its list, then recurses into children. Only call on a newly constructed GUI
+/// or a current registry member validated by `get_or_make`, on the game thread outside rendering.
+unsafe fn load_gui(gui: usize) {
+    if gui == 0 {
+        return;
+    }
+    let vtable: usize = read(gui);
+    if !plausible(vtable) {
+        return;
+    }
+    let load: ResetFn = std::mem::transmute(read::<usize>(vtable + 0x88));
+    load(gui as *mut u8);
+}
+
+/// begin/end of the element's sprite vector (`Body.sprites`, 0x8c0), when the vector is sane.
+unsafe fn sprite_bounds(gui: usize) -> Option<(usize, usize)> {
+    let begin: usize = read(gui + offset_of!(Body, sprites));
+    let end: usize = read(gui + offset_of!(Body, sprites) + 8);
+    let capacity: usize = read(gui + offset_of!(Body, sprites) + 16);
+    // CVec's three pointers are private upstream; read their scalar native header, never an owning CVec.
+    if begin == 0 && end == 0 && capacity == 0 {
+        return Some((0, 0));
+    }
+    if !plausible(begin) || end < begin || capacity < end
+        || !(end - begin).is_multiple_of(8) || !(capacity - begin).is_multiple_of(8)
+        || (capacity - begin) / 8 > GUI_SPRITE_LIMIT
+    {
+        return None;
+    }
+    Some((begin, end))
+}
+
+/// The newest Sprite of one of our elements, when the vector is sane and non-empty.
+unsafe fn newest_sprite(gui: usize) -> Option<usize> {
+    let (begin, end) = sprite_bounds(gui)?;
+    if end == begin {
+        return None;
+    }
+    let sprite: usize = read(end - 8);
+    plausible(sprite).then_some(sprite)
+}
+
+/// 0 = no sprite list entry, 1 = newest sprite exists but its resource is not loaded, 2 = newest sprite loaded.
+/// The sprite vector is `Body::sprites` (0x8c0, highfleet-rs layout). A Sprite keeps its loaded HGE
+/// animation/media handle at +0x78 (`SpriteLoad_` 0x1402dfef0; it stays null when the name cannot be loaded).
+unsafe fn gui_sprite_state(gui: usize) -> u32 {
+    let Some(sprite) = newest_sprite(gui) else { return 0 };
+    if read::<usize>(sprite + 0x78) == 0 {
+        1
+    } else {
+        2
+    }
+}
+
+/// Maintains exactly one native-owned button sprite. The native setter is already a no-op for an unchanged
+/// resource name, so no parallel Rust sprite-state cache is needed.
+///
+/// SAFETY: callers provide a newly constructed or current-list-validated custom GUI on the game thread,
+/// outside rendering. Its bounded native sprite vector owns the Sprite objects; native functions retain
+/// allocation/destruction and string ownership. No owning Rust copies or references to game memory are made.
+/// Native contracts: docs/ally-gui-v0.14.5-tester.md, verified Steam 1.163 routines listed there.
+unsafe fn paint_button(gui: usize, name: &[u8]) -> bool {
+    let Some((begin, end)) = sprite_bounds(gui) else {
+        toggle_line("ALLY GUI paint refused: invalid native sprite vector".to_string());
+        return false;
+    };
+    let count = (end - begin) / 8;
+    if count == 1 {
+        let sprite: usize = read(begin);
+        if !plausible(sprite) {
+            toggle_line("ALLY GUI paint refused: invalid native sprite pointer".to_string());
+            return false;
+        }
+        let set_name: SetSpriteNameFn = std::mem::transmute(SET_SPRITE_NAME);
+        set_name(sprite as *mut u8, name.as_ptr(), 0);
+    } else {
+        if count > 1 {
+            // Validate the complete bounded pointer array before the native destructor walk.
+            for address in (begin..end).step_by(8) {
+                let sprite: usize = read(address);
+                if !plausible(sprite) || !plausible(read::<usize>(sprite)) {
+                    toggle_line("ALLY GUI paint refused: invalid native sprite entry".to_string());
+                    return false;
+                }
+            }
+            let clear: ClearSpritesFn = std::mem::transmute(OBJECT_ARRAY_DELETE_ALL);
+            clear(gui as *mut u8);
+        }
+        let set_bg: SetBgFn = std::mem::transmute(GUI_SETBG);
+        let sprite = set_bg(gui as *mut u8, 0, name.as_ptr(), read::<f32>(BG_MINUS_ONE), 0, -1);
+        if sprite.is_null() {
+            toggle_line("ALLY GUI paint failed: native sprite creation returned null".to_string());
+            return false;
+        }
+    }
+    load_gui(gui);
+    true
+}
+
+/// Counts for the per-build diagnostic line. Only pointers present in the current complete list are dereferenced.
+unsafe fn owned_sprite_summary(listed: &[usize]) -> (u32, u32, u32, u32, u32) {
+    let root: usize = read(GUI_ROOT);
+    let (mut active, mut unloaded, mut detached, mut invisible, mut abandoned) = (0, 0, 0, 0, 0);
+    for kept in TOGGLE_GUIS.iter().chain(LOADOUT_GUIS.iter()) {
+        let gui = kept.load(Ordering::Relaxed);
+        if gui == 0 {
+            continue;
+        }
+        if !listed.contains(&gui) {
+            abandoned += 1;
+            continue;
+        }
+        if !plausible(gui) {
+            continue;
+        }
+        if read::<i32>(gui + OFF_ACTIVE) == 2 {
+            active += 1;
+            if gui_sprite_state(gui) < 2 {
+                unloaded += 1;
+            }
+        }
+        if master_node(gui) != root {
+            detached += 1;
+        }
+        if read::<f32>(gui + offset_of!(Body, opacity)) <= 0.0 {
+            invisible += 1;
+        }
+    }
+    (active, unloaded, detached, invisible, abandoned)
+}
+
+/// Rate-limited note that a list walk was incomplete, so a truncated scan is never mistaken for "no cards".
+unsafe fn warn_incomplete_scan(visited: usize, limit: usize) {
+    let now = now_ms();
+    if now.wrapping_sub(GUI_LAST_SCAN_WARN_MS.load(Ordering::Relaxed)) < 2000 {
+        return;
+    }
+    GUI_LAST_SCAN_WARN_MS.store(now, Ordering::Relaxed);
+    toggle_line(format!(
+        "ALLY GUI scan incomplete: visited {visited} of at most {limit} list nodes (GUI count {}); screen state not inferred",
+        read::<usize>(GUI_COUNT)
+    ));
 }
 
 /// The player's ship cards on the pre-combat screen (`PRECOMBAT_A`; `PRECOMBAT_B` are the enemy's), left to right:
 /// (x, y, width, height). Positions are the float pairs at +0x128, sizes at +0x218.
-unsafe fn card_elements(quiet: bool) -> Vec<(f32, f32, f32, f32)> {
-    let head: usize = read(GUI_LIST);
-    let mut out = Vec::new();
+struct CardScan {
+    cards: Vec<(f32, f32, f32, f32)>,
+    elements: Vec<usize>,
+    complete: bool,
+    visited: usize,
+    limit: usize,
+}
+
+unsafe fn scan_cards(quiet: bool) -> CardScan {
+    let scan = scan_gui_list();
+    let mut cards = Vec::new();
     let mut other = Vec::new();
-    let mut node: usize = read(head);
-    for _ in 0..600 {
-        if node == 0 || node == head {
-            break;
+    for &element in &scan.elements {
+        if read::<i32>(element + OFF_ACTIVE) == 0 {
+            continue;
         }
-        let element: usize = read(node + 0x10);
-        if element != 0 && read::<i32>(element + OFF_ACTIVE) != 0 {
-            let name = cstr(element + GUI_NAME);
-            let entry = (read::<f32>(element + offset_of!(Body, position_x)), read::<f32>(element + offset_of!(Body, position_y)), read::<f32>(element + 0x218), read::<f32>(element + 0x21c));
-            if name == "PRECOMBAT_A" {
-                out.push(entry);
-            } else if !quiet && (name == "PRECOMBAT_B" || name == "MINIFIG_NUMBER" || name == "MES_APP") {
-                other.push(format!("{name} ({:.0},{:.0} {:.0}x{:.0})", entry.0, entry.1, entry.2, entry.3));
-            }
+        let name = cstr(element + GUI_NAME);
+        let entry = (
+            read::<f32>(element + offset_of!(Body, position_x)),
+            read::<f32>(element + offset_of!(Body, position_y)),
+            read::<f32>(element + 0x218),
+            read::<f32>(element + 0x21c),
+        );
+        if name == "PRECOMBAT_A" {
+            cards.push(entry);
+        } else if !quiet && (name == "PRECOMBAT_B" || name == "MINIFIG_NUMBER" || name == "MES_APP") {
+            other.push(format!("{name} ({:.0},{:.0} {:.0}x{:.0})", entry.0, entry.1, entry.2, entry.3));
         }
-        node = read(node);
     }
-    out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    cards.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     if !quiet {
         toggle_line(format!(
-        "ALLY cards: {} ship cards {:?} | others {}",
-        out.len(),
-        out.iter().map(|c| format!("({:.0},{:.0} {:.0}x{:.0})", c.0, c.1, c.2, c.3)).collect::<Vec<_>>(),
-        other.join(" "),
+            "ALLY cards: {} ship cards {:?} | others {} | scan {}/{} complete {}",
+            cards.len(),
+            cards.iter().map(|c| format!("({:.0},{:.0} {:.0}x{:.0})", c.0, c.1, c.2, c.3)).collect::<Vec<_>>(),
+            other.join(" "),
+            scan.visited,
+            scan.limit,
+            scan.complete,
         ));
     }
-    out
+    CardScan {
+        cards,
+        elements: scan.elements,
+        complete: scan.complete,
+        visited: scan.visited,
+        limit: scan.limit,
+    }
 }
 
 /// Builds one GUI element the way the game builds PRECOMBAT_OK (sequence read from `0x1402d7620`).
@@ -1271,43 +1560,73 @@ unsafe fn make_gui(name: &[u8]) -> *mut u8 {
     gui
 }
 
-/// Gets the element called `name`: an active one the game still lists, else our kept (hidden) one, else a new one.
+/// Gets the element called `name`: a live one the game still lists, else our kept (hidden) one, else a new one.
 /// Returns (gui, created).
-unsafe fn get_or_make(name: &[u8], kept_slot: &std::sync::atomic::AtomicUsize) -> Option<(usize, bool)> {
-    let find: FindFn = std::mem::transmute(GUI_FIND);
-    let wanted = String::from_utf8_lossy(&name[..name.len() - 1]).to_string();
-    let mut gui = find(name.as_ptr());
-    if gui == 0 {
-        let kept = kept_slot.load(Ordering::Relaxed);
-        if kept != 0 && cstr(kept + GUI_NAME) == wanted {
-            (kept as *mut i32).byte_add(OFF_ACTIVE).write_unaligned(2);
-            gui = kept;
+///
+/// A kept pointer is dereferenced only after the current complete `GUI_ELEMENTS` walk lists it, and it is reused
+/// only while it is registered and still a child of the global root. A detached/foreign-parented object may be
+/// queued for native collection; it is never re-added or resurrected, just abandoned and replaced.
+///
+/// The same rule guards every branch: a cached pointer can outlive its element after a screen rebuild (observed
+/// as a read at old `ALLY_TOGGLE_2 + 0xa40` in a B2 crash log), so no name/state/registry read is made before
+/// membership in the current list is established.
+unsafe fn get_or_make(
+    name: &[u8],
+    kept_slot: &std::sync::atomic::AtomicUsize,
+    listed: &[usize],
+    complete: bool,
+) -> Option<(usize, bool)> {
+    if !complete {
+        // an incomplete list cannot prove the kept object is gone; do not create duplicates
+        return None;
+    }
+    let kept = kept_slot.load(Ordering::Relaxed);
+    if listed.contains(&kept) && gui_reusable(kept, name) {
+        set_gui_active(kept, true);
+        return Some((kept, false));
+    }
+    // The snapshot also includes hidden objects. Never fall back to an unbounded native search after a
+    // truncated scan, and never read an unlisted cached pointer merely to compare its old name.
+    for &gui in listed {
+        if gui != kept && gui_reusable(gui, name) {
+            set_gui_active(gui, true);
+            kept_slot.store(gui, Ordering::Relaxed);
+            return Some((gui, false));
         }
     }
-    if gui != 0 {
-        return Some((gui, false));
+    if kept != 0 {
+        toggle_line(format!(
+            "ALLY GUI: retained {} is no longer reusable; discarding its cached address without reviving it",
+            String::from_utf8_lossy(&name[..name.len() - 1])
+        ));
+        // drop the cached number before allocating: a stale pointer must never be read again
+        kept_slot.store(0, Ordering::Relaxed);
     }
     let ptr = make_gui(name);
     if ptr.is_null() {
         return None;
     }
+    kept_slot.store(ptr as usize, Ordering::Relaxed);
     Some((ptr as usize, true))
 }
 
 /// The ship creature of each player card (`PRECOMBAT_A`), left to right: the card's `+0xbc0` is a Property pointer, `GetPropertyLinkedObject` gives the ship.
 unsafe fn card_ship_list() -> Vec<(f32, usize)> {
-    let head: usize = read(GUI_LIST);
+    let scan = scan_gui_list();
+    if !scan.complete {
+        return Vec::new();
+    }
+    card_ships_from(&scan.elements)
+}
+
+/// Reads ship links from the same complete snapshot as the card layout, so a second incomplete walk cannot
+/// turn existing carriers into apparent empty slots during placement or health checks.
+unsafe fn card_ships_from(listed: &[usize]) -> Vec<(f32, usize)> {
     let mut out = Vec::new();
-    let mut node: usize = read(head);
-    for _ in 0..600 {
-        if node == 0 || node == head {
-            break;
-        }
-        let element: usize = read(node + 0x10);
-        if element != 0 && read::<i32>(element + OFF_ACTIVE) != 0 && cstr(element + GUI_NAME) == "PRECOMBAT_A" {
+    for &element in listed {
+        if read::<i32>(element + OFF_ACTIVE) != 0 && cstr(element + GUI_NAME) == "PRECOMBAT_A" {
             out.push((read::<f32>(element + offset_of!(Body, position_x)), plane_loadouts::ship_of_link(read::<usize>(element + GUI_LINK_TARGET))));
         }
-        node = read(node);
     }
     out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     out
@@ -1326,10 +1645,9 @@ fn set_plane_label(slot: usize, label: Option<(f32, f32, f32, String)>) {
 }
 
 /// Paints the plane button with the sprite of its ship's current choice.
-unsafe fn paint_loadout(gui: *mut u8, ship: usize, craft: usize) {
-    let set_bg: SetBgFn = std::mem::transmute(GUI_SETBG);
+unsafe fn paint_loadout(gui: *mut u8, ship: usize, craft: usize) -> bool {
     let sprite = if plane_loadouts::choice(ship, craft).is_some() { plane_loadouts::SPRITE_CHOSEN } else { plane_loadouts::SPRITE_DEFAULT };
-    set_bg(gui, 0, sprite.as_ptr(), read::<f32>(BG_MINUS_ONE), 0, -1);
+    paint_button(gui as usize, sprite)
 }
 
 /// The ship carries plane type `craft` and the player can still choose an armament for it (or already did): it gets a button.
@@ -1338,7 +1656,15 @@ unsafe fn loadout_wanted(ship: usize, craft: usize) -> bool {
 }
 
 /// Places, shows or hides the button of plane type `craft` of card `card` (1-based); true when it is shown.
-unsafe fn place_loadout(card: usize, craft: usize, ship: Option<usize>, pos: [f32; 2], size: f32) -> bool {
+unsafe fn place_loadout(
+    card: usize,
+    craft: usize,
+    ship: Option<usize>,
+    pos: [f32; 2],
+    size: f32,
+    listed: &[usize],
+    complete: bool,
+) -> bool {
     let slot = craft * 9 + card; // 1-based button number
     let kept_slot = &LOADOUT_GUIS[slot - 1];
     let name = LOADOUT_NAMES[slot - 1];
@@ -1353,53 +1679,56 @@ unsafe fn place_loadout(card: usize, craft: usize, ship: Option<usize>, pos: [f3
     let Some(ship) = shown else {
         set_plane_label(slot, None);
         let kept = kept_slot.load(Ordering::Relaxed);
-        if kept != 0 && cstr(kept + GUI_NAME).as_bytes() == &name[..name.len() - 1] {
-            (kept as *mut i32).byte_add(OFF_ACTIVE).write_unaligned(0);
+        if listed.contains(&kept)
+            && cstr(kept + GUI_NAME).as_bytes() == &name[..name.len() - 1]
+            && read::<i32>(kept + OFF_ACTIVE) == 2
+        {
+            set_gui_active(kept, false);
         }
         return false;
     };
-    let Some((gui, created)) = get_or_make(name, kept_slot) else {
+    let previous = kept_slot.load(Ordering::Relaxed);
+    let Some((gui, created)) = get_or_make(name, kept_slot, listed, complete) else {
         toggle_line(format!("PLANE button {slot}: not created"));
         return false;
     };
     let ptr = gui as *mut u8;
     // a button the battle start switched off may still be found in the game's list (a RETRY in Shipworks): switch it on again
-    if read::<i32>(gui + OFF_ACTIVE) == 0 {
-        (ptr as *mut i32).byte_add(OFF_ACTIVE).write_unaligned(2);
+    set_gui_active(gui, true);
+    if !paint_loadout(ptr, ship, craft) {
+        set_gui_active(gui, false);
+        set_plane_label(slot, None);
+        return false;
     }
-    paint_loadout(ptr, ship, craft);
-    if created {
-        let vt: usize = read(gui);
-        let refresh: ResetFn = std::mem::transmute(read::<usize>(vt + 0x88));
-        refresh(ptr);
-        let reset: ResetFn = std::mem::transmute(GUI_RESET);
-        reset(ptr);
+    if created || gui != previous {
+        if created {
+            let reset: ResetFn = std::mem::transmute(GUI_RESET);
+            reset(ptr);
+        }
         kept_slot.store(gui, Ordering::Relaxed);
     }
     let set_pos: SetPosFn = std::mem::transmute(GUI_SETPOS);
     set_pos(ptr, pos.as_ptr());
+    // hit box = icon size (creation leaves the 274 x 154 screen-based size from the initializer)
     (ptr as *mut f32).byte_add(0x218).write_unaligned(size);
     (ptr as *mut f32).byte_add(0x21c).write_unaligned(size);
-    // a moved button must rebuild its picture at the new place (a button dragged to another card showed its icon offset)
-    {
-        let vt: usize = read(gui);
-        let refresh: ResetFn = std::mem::transmute(read::<usize>(vt + 0x88));
-        refresh(ptr);
-    }
+    // a moved or re-shown button must rebuild its picture at the new place (a button dragged to another card
+    // showed its icon offset); Load also restores sprite resources after a screen rebuild
+    load_gui(gui);
     set_plane_label(slot, Some((pos[0], pos[1], size, plane_loadouts::label_for(craft, plane_loadouts::choice(ship, craft)))));
     toggle_line(format!("PLANE button {slot}: ship {ship:#x} {} at ({:.0},{:.0}) size {size:.0}, choice {:?}", plane_loadouts::crafts()[craft].label, pos[0], pos[1], plane_loadouts::choice(ship, craft).map(|a| plane_loadouts::arms()[a].key.clone())));
     true
 }
 
 /// A signature of the card layout: the number of cards and their sorted x positions.
-fn card_signature(cards: &[(f32, f32, f32, f32)]) -> u64 {
+unsafe fn card_signature(cards: &[(f32, f32, f32, f32)], listed: &[usize]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ cards.len() as u64;
     for c in cards {
         h = (h ^ c.0.to_bits() as u64).wrapping_mul(0x100_0000_01b3);
     }
     if PLANE_BUTTONS.load(Ordering::Relaxed) {
         // two cards swapping places keep the same x positions: the ship behind each card counts too
-        for (_, ship) in unsafe { card_ship_list() } {
+        for (_, ship) in card_ships_from(listed) {
             h = (h ^ ship as u64).wrapping_mul(0x100_0000_01b3);
         }
     }
@@ -1410,8 +1739,35 @@ fn card_signature(cards: &[(f32, f32, f32, f32)]) -> u64 {
 /// n-th card from the left (`precombatOk` orders the squad by card x), so after the player shuffles the cards
 /// this is called again and every button goes to the card now standing in its slot.
 unsafe fn ensure_toggles() {
-    let mut cards = card_elements(false);
-    let signature = card_signature(&cards);
+    let scan = scan_cards(false);
+    if !scan.complete {
+        warn_incomplete_scan(scan.visited, scan.limit);
+        return;
+    }
+    let mut cards = scan.cards;
+    let signature = card_signature(&cards, &scan.elements);
+    let fresh_visit = !PRECOMBAT_LIVE.load(Ordering::Relaxed);
+    let build_epoch = GUI_BUILD_EPOCH.load(Ordering::Relaxed);
+    let new_build = build_epoch != GUI_SERVICED_EPOCH.load(Ordering::Relaxed);
+    if fresh_visit || new_build {
+        GUI_RECOVERY_TRIES.store(0, Ordering::Relaxed);
+        GUI_RECOVERY_EXHAUSTED.store(false, Ordering::Relaxed);
+        // give the GUI pass time to register freshly created children before the first health check
+        GUI_HEALTH_MS.store(now_ms(), Ordering::Relaxed);
+    }
+    if fresh_visit {
+        // a fresh visit starts with no armament chosen; clear before painting so no stale icon or label is shown
+        plane_loadouts::clear();
+    }
+    if new_build {
+        toggle_line(format!(
+            "ALLY pre-combat screen build {build_epoch}: {} cards, scan {}/{} complete {}",
+            cards.len(),
+            scan.visited,
+            scan.limit,
+            scan.complete
+        ));
+    }
     // cards stacked on one spot (not laid out yet): fall back to a grid read off the screenshots
     if cards.len() > 1 && cards.iter().all(|c| (c.0 - cards[0].0).abs() < 1.0) {
         for (i, c) in cards.iter_mut().enumerate() {
@@ -1425,13 +1781,21 @@ unsafe fn ensure_toggles() {
     for slot in 1..=9usize {
         let Some(&(x, _y, _, _)) = cards.get(slot - 1) else {
             if slot == 1 {
-                MARKER_SHOW.store(false, Ordering::Relaxed);
+                if scan.complete {
+                    MARKER_SHOW.store(false, Ordering::Relaxed);
+                }
                 continue;
             }
-            // no such ship on this screen: hide a button kept from an earlier build
-            let kept = TOGGLE_GUIS[slot - 2].load(Ordering::Relaxed);
-            if kept != 0 && cstr(kept + GUI_NAME) == format!("ALLY_TOGGLE_{slot}") {
-                (kept as *mut i32).byte_add(OFF_ACTIVE).write_unaligned(0);
+            // no such ship on this screen: hide a button kept from an earlier build. An incomplete scan does
+            // not prove the slot is absent, so nothing is hidden from a partial list.
+            if scan.complete {
+                let kept = TOGGLE_GUIS[slot - 2].load(Ordering::Relaxed);
+                if scan.elements.contains(&kept)
+                    && cstr(kept + GUI_NAME) == format!("ALLY_TOGGLE_{slot}")
+                    && read::<i32>(kept + OFF_ACTIVE) == 2
+                {
+                    set_gui_active(kept, false);
+                }
             }
             continue;
         };
@@ -1448,45 +1812,42 @@ unsafe fn ensure_toggles() {
             continue;
         }
         let (name, kept_slot) = (TOGGLE_NAMES[slot - 2], &TOGGLE_GUIS[slot - 2]);
-        let Some((gui, created)) = get_or_make(name, kept_slot) else {
+        let Some((gui, created)) = get_or_make(name, kept_slot, &scan.elements, scan.complete) else {
             toggle_line(format!("ALLY toggle {slot}: not created"));
-            return;
+            continue;
         };
         let ptr = gui as *mut u8;
+        set_gui_active(gui, true);
+        if !paint_toggle(ptr, slot) {
+            set_gui_active(gui, false);
+            continue;
+        }
         if created {
-            paint_toggle(ptr, slot);
-            let vt: usize = read(gui);
-            let refresh: ResetFn = std::mem::transmute(read::<usize>(vt + 0x88));
-            refresh(ptr);
             let reset: ResetFn = std::mem::transmute(GUI_RESET);
             reset(ptr);
-            kept_slot.store(gui, Ordering::Relaxed);
-        } else {
-            paint_toggle(ptr, slot);
         }
+        kept_slot.store(gui, Ordering::Relaxed);
         // the numbers sit at one height for every card, so the buttons do too (the card height varies per ship class)
         let pos = [x + dx, GRID_Y];
         set_pos(ptr, pos.as_ptr());
         // hit box = icon size (creation leaves the 274 x 154 screen-based size from the initializer)
         (ptr as *mut f32).byte_add(0x218).write_unaligned(size);
         (ptr as *mut f32).byte_add(0x21c).write_unaligned(size);
+        // Load after the move: reloads resources after a screen rebuild and rebuilds the picture at the new spot
+        load_gui(gui);
         layout.push(format!("{slot}@{:.0}+{:.0}/{:.0}", x, dx, size));
     }
     if PLANE_BUTTONS.load(Ordering::Relaxed) {
-        if !PRECOMBAT_LIVE.load(Ordering::Relaxed) {
-            // a fresh visit of the screen: forget the old elements and build new ones. A RETRY in Shipworks rebuilds the
-            // screen; the old element is still in the game's list and active, yet is not drawn (rel.41 screenshot).
-            hide_plane_buttons(&[]);
-            for kept in &LOADOUT_GUIS {
-                kept.store(0, Ordering::Relaxed);
-            }
-        }
-        let ships = card_ship_list();
+        // Reuse still-live plane buttons without abandoning hidden elements. Scene teardown may also have
+        // freed them, in which case get_or_make discards the stale address before creating a replacement.
+        let ships = card_ships_from(&scan.elements);
         let mut shown: Vec<usize> = Vec::new();
         for slot in 1..=9usize {
             let Some(&(x, _y, _, _)) = cards.get(slot - 1) else {
-                for craft in 0..plane_loadouts::crafts().len() {
-                    place_loadout(slot, craft, None, [0.0, 0.0], 0.0);
+                if scan.complete {
+                    for craft in 0..plane_loadouts::crafts().len() {
+                        place_loadout(slot, craft, None, [0.0, 0.0], 0.0, &scan.elements, scan.complete);
+                    }
                 }
                 continue;
             };
@@ -1502,19 +1863,31 @@ unsafe fn ensure_toggles() {
             let mut row = 0usize;
             for craft in 0..plane_loadouts::crafts().len() {
                 let pos = [x + dx + size + LOADOUT_GAP * 2.0, GRID_Y + row as f32 * (psize + LOADOUT_GAP)];
-                if place_loadout(slot, craft, ship, pos, psize) {
+                if place_loadout(slot, craft, ship, pos, psize, &scan.elements, scan.complete) {
                     shown.push(craft * 9 + slot);
                     row += 1;
                 }
             }
         }
-        hide_plane_buttons(&shown);
+        if scan.complete {
+            hide_plane_buttons(&shown);
+        }
     }
     PLACED_SIG.store(signature, Ordering::Relaxed);
-    if !PRECOMBAT_LIVE.swap(true, Ordering::Relaxed) {
-        plane_loadouts::clear(); // a fresh visit of the screen: no choice from an earlier one
+    if fresh_visit {
         ENTRY_MS.store(now_ms(), Ordering::Relaxed); // a fresh entry: the roller covers are about to play
         ROLL_SEEN.store(false, Ordering::Relaxed);
+    }
+    PRECOMBAT_LIVE.store(true, Ordering::Relaxed);
+    GUI_SERVICED_EPOCH.store(build_epoch, Ordering::Relaxed);
+    if new_build {
+        let final_scan = scan_gui_list();
+        if final_scan.complete {
+            let (active, unloaded, detached, invisible, abandoned) = owned_sprite_summary(&final_scan.elements);
+            toggle_line(format!(
+                "ALLY GUI build {build_epoch}: {active} owned elements active, {unloaded} without a loaded sprite, {detached} detached, {invisible} opacity 0, {abandoned} retained but unlisted"
+            ));
+        }
     }
     toggle_line(format!("ALLY placed (slot@card x+dx/size): {}", layout.join(" ")));
 }
@@ -1532,7 +1905,13 @@ unsafe fn screen_gone() -> bool {
     if !PRECOMBAT_LIVE.load(Ordering::Relaxed) {
         return false;
     }
-    if !card_elements(true).is_empty() {
+    let scan = scan_cards(true);
+    if !scan.complete {
+        warn_incomplete_scan(scan.visited, scan.limit);
+        CARDS_MISSING_SINCE.store(0, Ordering::Relaxed);
+        return false;
+    }
+    if !scan.cards.is_empty() {
         CARDS_MISSING_SINCE.store(0, Ordering::Relaxed);
         return false;
     }
@@ -1557,6 +1936,125 @@ unsafe fn esc_menu_open() -> bool {
     find(b"QUIT_BLACK\0".as_ptr()) != 0
 }
 
+/// Why one of our elements is not in its expected visible state. `None` = it is shown and its newest sprite is loaded.
+/// The separate reasons keep an expected-disabled element distinguishable from a sprite whose media is not loaded.
+unsafe fn gui_problem(gui: usize, name: &[u8], listed: &[usize]) -> Option<&'static str> {
+    if !plausible(gui) {
+        return Some("no usable pointer");
+    }
+    if !listed.contains(&gui) {
+        return Some("not in the current GUI list (reuse refused)");
+    }
+    if registry_cell(gui) == 0 {
+        return Some("registry cell 0 (reuse refused)");
+    }
+    if cstr(gui + GUI_NAME).as_bytes() != &name[..name.len() - 1] {
+        return Some("stale pointer (name mismatch)");
+    }
+    let root: usize = read(GUI_ROOT);
+    if !plausible(root) {
+        return Some("GUI root unavailable");
+    }
+    let master = master_node(gui);
+    if master != root {
+        return Some(if master == 0 {
+            "detached from the GUI root (reuse refused, not re-added)"
+        } else {
+            "foreign parent (reuse refused)"
+        });
+    }
+    match read::<i32>(gui + OFF_ACTIVE) {
+        0 => return Some("disabled (active flag 0)"),
+        2 => {}
+        _ => return Some("removed/dying or unexpected state (reuse refused)"),
+    }
+    match gui_sprite_state(gui) {
+        0 => Some("no sprite attached"),
+        1 => Some("sprite resource missing"),
+        _ => None,
+    }
+}
+
+/// Compares the elements we own with the cards that are on screen now. Does not change anything.
+unsafe fn gui_health(scan: &CardScan, cards: &[(f32, f32, f32, f32)]) -> Vec<String> {
+    let mut issues = Vec::new();
+    if !scan.complete {
+        issues.push(format!("card scan incomplete ({}/{})", scan.visited, scan.limit));
+        return issues;
+    }
+    let expected_slots = cards.len().min(9);
+    for slot in 2..=expected_slots {
+        if let Some(why) = gui_problem(TOGGLE_GUIS[slot - 2].load(Ordering::Relaxed), TOGGLE_NAMES[slot - 2], &scan.elements) {
+            issues.push(format!("ALLY_TOGGLE_{slot}: {why}"));
+        }
+    }
+    // kept buttons for slots that no longer have a card must not stay visible
+    for slot in (expected_slots.max(1) + 1)..=9 {
+        let gui = TOGGLE_GUIS[slot - 2].load(Ordering::Relaxed);
+        if scan.elements.contains(&gui)
+            && cstr(gui + GUI_NAME) == format!("ALLY_TOGGLE_{slot}")
+            && read::<i32>(gui + OFF_ACTIVE) == 2
+        {
+            issues.push(format!("ALLY_TOGGLE_{slot}: still visible without a card"));
+        }
+    }
+    if PLANE_BUTTONS.load(Ordering::Relaxed) {
+        let ships = card_ships_from(&scan.elements);
+        for slot in 1..=9usize {
+            let ship = if slot <= expected_slots { ships.get(slot - 1).map(|s| s.1) } else { None };
+            for craft in 0..plane_loadouts::crafts().len() {
+                let number = craft * 9 + slot;
+                let gui = LOADOUT_GUIS[number - 1].load(Ordering::Relaxed);
+                let wanted = ship.is_some_and(|s| loadout_wanted(s, craft));
+                let problem = if wanted {
+                    gui_problem(gui, LOADOUT_NAMES[number - 1], &scan.elements)
+                } else if scan.elements.contains(&gui)
+                    && cstr(gui + GUI_NAME).as_bytes() == &LOADOUT_NAMES[number - 1][..LOADOUT_NAMES[number - 1].len() - 1]
+                    && read::<i32>(gui + OFF_ACTIVE) == 2
+                {
+                    Some("still visible without a plane")
+                } else {
+                    None
+                };
+                if let Some(why) = problem {
+                    issues.push(format!("PLANE_ARM_{number}: {why}"));
+                }
+            }
+        }
+    }
+    issues
+}
+
+/// Bounded repair while the card layout is unchanged: at most one pass per second and `GUI_HEALTH_TRIES`
+/// consecutive repairs. A healthy check or new build resets the budget. Repairs reuse validated elements; a fresh one is created
+/// only when reuse is refused, so the budget also bounds any replacement objects.
+unsafe fn gui_health_tick(scan: &CardScan, cards: &[(f32, f32, f32, f32)], now: u64) {
+    if now.wrapping_sub(GUI_HEALTH_MS.load(Ordering::Relaxed)) < GUI_HEALTH_INTERVAL_MS {
+        return;
+    }
+    GUI_HEALTH_MS.store(now, Ordering::Relaxed);
+    let issues = gui_health(scan, cards);
+    if issues.is_empty() {
+        GUI_RECOVERY_TRIES.store(0, Ordering::Relaxed);
+        GUI_RECOVERY_EXHAUSTED.store(false, Ordering::Relaxed);
+        return;
+    }
+    if !scan.complete || GUI_RECOVERY_EXHAUSTED.load(Ordering::Relaxed) {
+        return;
+    }
+    let attempt = GUI_RECOVERY_TRIES.fetch_add(1, Ordering::Relaxed) + 1;
+    let shown: Vec<&str> = issues.iter().take(6).map(String::as_str).collect();
+    let more = issues.len().saturating_sub(shown.len());
+    let summary = format!("{}{}", shown.join("; "), if more > 0 { format!(" (+{more} more)") } else { String::new() });
+    if attempt > GUI_HEALTH_TRIES {
+        GUI_RECOVERY_EXHAUSTED.store(true, Ordering::Relaxed);
+        toggle_line(format!("ALLY GUI health: repair budget of {GUI_HEALTH_TRIES} used, staying quiet: {summary}"));
+        return;
+    }
+    toggle_line(format!("ALLY GUI health repair {attempt}/{GUI_HEALTH_TRIES}: {summary}"));
+    ensure_toggles();
+}
+
 unsafe fn precombat_tick(source: usize) {
     if screen_gone() {
         return;
@@ -1567,18 +2065,23 @@ unsafe fn precombat_tick(source: usize) {
     if TICKS_SEEN[source].fetch_add(1, Ordering::Relaxed) == 0 {
         toggle_line(format!("ALLY precombat tick: first call from hook {source} (0 = input task, 1 = battle manager)"));
     }
-    let cards = card_elements(true);
-    if cards.is_empty() {
+    let scan = scan_cards(true);
+    if !scan.complete {
+        // no placement, hiding or health decision from a partial list
+        warn_incomplete_scan(scan.visited, scan.limit);
         return;
     }
-    let sig = card_signature(&cards);
+    if scan.cards.is_empty() {
+        return;
+    }
+    let sig = card_signature(&scan.cards, &scan.elements);
     let now = now_ms();
     if sig != TICK_SIG.swap(sig, Ordering::Relaxed) {
         TICK_CHANGED_MS.store(now, Ordering::Relaxed);
         if diag::debug() && TICK_LOGS.fetch_add(1, Ordering::Relaxed) < 4000 {
             log::info!(
                 "ALLY card layout moving: {:?}",
-                cards.iter().map(|c| format!("{:.1}", c.0)).collect::<Vec<_>>()
+                scan.cards.iter().map(|c| format!("{:.1}", c.0)).collect::<Vec<_>>()
             );
         }
         return;
@@ -1586,6 +2089,10 @@ unsafe fn precombat_tick(source: usize) {
     if sig != PLACED_SIG.load(Ordering::Relaxed) && now.wrapping_sub(TICK_CHANGED_MS.load(Ordering::Relaxed)) >= SETTLE_MS {
         toggle_line("ALLY cards settled: placing the buttons again".to_string());
         ensure_toggles();
+        return;
+    }
+    if sig == PLACED_SIG.load(Ordering::Relaxed) {
+        gui_health_tick(&scan, &scan.cards, now);
     }
 }
 
@@ -1633,7 +2140,8 @@ unsafe fn draw_marker(seam: u32) {
 /// The plane buttons' labels, drawn the same way as the slot-1 text and under the same gates.
 unsafe fn draw_plane_labels(seam: u32) {
     let _hook = diag::scope("draw_plane_labels");
-    if seam != MARKER_SEAM_SEL.load(Ordering::Relaxed) || !PRECOMBAT_LIVE.load(Ordering::Relaxed) || screen_gone() || esc_menu_open() || doors_closed() {
+    // The input/battle ticks validate screen lifetime before rendering. Do not scan/repair GUI ownership here.
+    if seam != MARKER_SEAM_SEL.load(Ordering::Relaxed) || !PRECOMBAT_LIVE.load(Ordering::Relaxed) || esc_menu_open() || doors_closed() {
         return;
     }
     let Ok(labels) = PLANE_LABELS.try_lock().map(|l| l.clone()) else { return };
@@ -1671,7 +2179,7 @@ unsafe fn draw_marker_text(seam: u32) {
     if seam != MARKER_SEAM_SEL.load(Ordering::Relaxed) || now_ms().wrapping_sub(ENTRY_MS.load(Ordering::Relaxed)) < MARKER_DELAY_MS.load(Ordering::Relaxed) {
         return;
     }
-    if !PRECOMBAT_LIVE.load(Ordering::Relaxed) || !MARKER_SHOW.load(Ordering::Relaxed) || screen_gone() || esc_menu_open() {
+    if !PRECOMBAT_LIVE.load(Ordering::Relaxed) || !MARKER_SHOW.load(Ordering::Relaxed) || esc_menu_open() {
         return;
     }
     let Ok(text) = MARKER_TEXT.lock().map(|t| t.clone()) else { return };
@@ -1714,45 +2222,47 @@ unsafe extern "C" fn on_input_frame() {
     precombat_tick(0);
 }
 
-/// Switches off every listed `PLANE_LOADOUT_n` element whose number is not in `keep` (a stale one from an earlier card order).
+/// Switches off every listed `PLANE_ARM_n` element whose number is not in `keep` (a stale one from an earlier card order).
 unsafe fn hide_plane_buttons(keep: &[usize]) {
-    let head: usize = read(GUI_LIST);
-    let mut node: usize = read(head);
-    for _ in 0..600 {
-        if node == 0 || node == head {
-            break;
+    let scan = scan_gui_list();
+    if !scan.complete {
+        warn_incomplete_scan(scan.visited, scan.limit);
+    }
+    // keep is computed only from a complete placement scan, or is empty on an explicit screen exit.
+    // A partial exit scan can hide known members safely; it must not trigger an unbounded fallback search.
+    for &element in &scan.elements {
+        if read::<i32>(element + OFF_ACTIVE) != 2 {
+            continue;
         }
-        let element: usize = read(node + 0x10);
-        if element != 0 && read::<i32>(element + OFF_ACTIVE) != 0 {
-            if let Some(n) = cstr(element + GUI_NAME).strip_prefix("PLANE_ARM_").and_then(|n| n.parse::<usize>().ok()) {
-                if !keep.contains(&n) {
-                    (element as *mut i32).byte_add(OFF_ACTIVE).write_unaligned(0);
-                }
+        if let Some(number) = cstr(element + GUI_NAME).strip_prefix("PLANE_ARM_").and_then(|n| n.parse::<usize>().ok()) {
+            if !keep.contains(&number) {
+                set_gui_active(element, false);
             }
         }
-        node = read(node);
     }
 }
 
-/// Hides the toggles (active flag 0, as the game does for its own unused elements); the game never frees ours.
+/// Hides only currently listed owned toggles. Scene teardown may already have freed retained addresses.
 unsafe fn hide_toggles(why: &str) {
     PRECOMBAT_LIVE.store(false, Ordering::Relaxed);
+    MARKER_SHOW.store(false, Ordering::Relaxed);
     hide_plane_buttons(&[]);
     if let Ok(mut labels) = PLANE_LABELS.lock() {
         labels.clear();
     }
+    let scan = scan_gui_list();
+    if !scan.complete {
+        warn_incomplete_scan(scan.visited, scan.limit);
+    }
     let mut hidden = 0;
     for (i, name) in TOGGLE_NAMES.iter().enumerate() {
-        let kept = TOGGLE_GUIS[i].load(Ordering::Relaxed);
-        if kept != 0 && cstr(kept + GUI_NAME).as_bytes() == &name[..name.len() - 1] && read::<i32>(kept + OFF_ACTIVE) != 0 {
-            (kept as *mut i32).byte_add(OFF_ACTIVE).write_unaligned(0);
+        let gui = TOGGLE_GUIS[i].load(Ordering::Relaxed);
+        if scan.elements.contains(&gui)
+            && cstr(gui + GUI_NAME).as_bytes() == &name[..name.len() - 1]
+            && read::<i32>(gui + OFF_ACTIVE) == 2
+        {
+            set_gui_active(gui, false);
             hidden += 1;
-        }
-    }
-    for (i, name) in LOADOUT_NAMES.iter().enumerate() {
-        let kept = LOADOUT_GUIS[i].load(Ordering::Relaxed);
-        if kept != 0 && cstr(kept + GUI_NAME).as_bytes() == &name[..name.len() - 1] && read::<i32>(kept + OFF_ACTIVE) != 0 {
-            (kept as *mut i32).byte_add(OFF_ACTIVE).write_unaligned(0);
         }
     }
     if hidden > 0 {
@@ -1807,7 +2317,10 @@ unsafe extern "C" fn on_refund(creature: usize) {
     if !ours {
         return;
     }
-    if PRECOMBAT_LIVE.load(Ordering::Relaxed) || !card_elements(true).is_empty() {
+    let scan = scan_cards(true);
+    // while the pre-combat screen is up the game refunds on every ammo pick; a partial list is treated as
+    // "screen still up" so an uncertain scan cannot wipe the share the player just chose
+    if PRECOMBAT_LIVE.load(Ordering::Relaxed) || !scan.complete || !scan.cards.is_empty() {
         return;
     }
     let Ok(funding) = AMMO_FUNDING.lock() else { return };
@@ -1917,7 +2430,10 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
             if let Some(&(_, ship)) = card_ship_list().get(card - 1) {
                 let next = plane_loadouts::next_choice(ship, craft);
                 plane_loadouts::set_choice(ship, craft, next);
-                paint_loadout(gui as *mut u8, ship, craft);
+                // the state changed: retarget the button's existing sprite (no new Sprite per click)
+                if !paint_loadout(gui as *mut u8, ship, craft) {
+                    set_gui_active(gui, false);
+                }
                 if let Ok(mut labels) = PLANE_LABELS.lock() {
                     if let Some(l) = labels.iter_mut().find(|l| l.0 == slot) {
                         let mut bytes = plane_loadouts::label_for(craft, next).into_bytes();
@@ -1925,9 +2441,6 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
                         l.4 = bytes;
                     }
                 }
-                let vt: usize = read(gui);
-                let refresh: ResetFn = std::mem::transmute(read::<usize>(vt + 0x88));
-                refresh(gui as *mut u8);
                 toggle_line(format!("PLANE button clicked: slot {slot} ship {ship:#x} -> {:?}", next.map(|a| plane_loadouts::arms()[a].key.clone())));
             }
         }
@@ -1941,10 +2454,10 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
     if button as u32 == 1 && (2..=9).contains(&slot) && now.wrapping_sub(LAST_TOGGLE_MS.load(Ordering::Relaxed)) > 350 {
         LAST_TOGGLE_MS.store(now, Ordering::Relaxed);
         let mask = SLOT_MASK.fetch_xor(1 << slot, Ordering::Relaxed) ^ (1 << slot);
-        paint_toggle(gui as *mut u8, slot);
-        let vt: usize = read(gui);
-        let refresh: ResetFn = std::mem::transmute(read::<usize>(vt + 0x88));
-        refresh(gui as *mut u8);
+        // the slot state changed: retarget the button's existing sprite and reload it
+        if !paint_toggle(gui as *mut u8, slot) {
+            set_gui_active(gui, false);
+        }
         toggle_line(format!("ALLY toggle clicked: ship {slot} {}", if mask & (1 << slot) != 0 { "ON" } else { "OFF" }));
     }
     true
@@ -1998,26 +2511,25 @@ unsafe fn precombat_dump(which: &str) {
     if build >= 24 && !diag::debug() {
         return;
     }
-    let head: usize = read(GUI_LIST);
     let count: usize = read(GUI_COUNT);
+    let scan = scan_gui_list();
     let mut names = Vec::new();
     let mut ok = 0usize;
-    let mut node: usize = read(head);
-    for _ in 0..600 {
-        if node == 0 || node == head {
-            break;
+    for &element in &scan.elements {
+        let name = cstr(element + GUI_NAME);
+        if name == "PRECOMBAT_OK" {
+            ok = element;
         }
-        let element: usize = read(node + 0x10);
-        if element != 0 {
-            let name = cstr(element + GUI_NAME);
-            if name == "PRECOMBAT_OK" {
-                ok = element;
-            }
-            names.push(format!("{name}@{element:#x}{}", if read::<i32>(element + OFF_ACTIVE) != 0 { "" } else { "(off)" }));
-        }
-        node = read(node);
+        names.push(format!("{name}@{element:#x}{}", if read::<i32>(element + OFF_ACTIVE) != 0 { "" } else { "(off)" }));
     }
-    log::info!("PRECOMBAT build #{build} [{which}]: GUI count {count}, {} listed: {}", names.len(), names.join(" "));
+    log::info!(
+        "PRECOMBAT build #{build} [{which}]: GUI count {count}, {} listed (scan {}/{} complete {}): {}",
+        names.len(),
+        scan.visited,
+        scan.limit,
+        scan.complete,
+        names.join(" ")
+    );
     if ok != 0 {
         let floats: Vec<String> = (0x100..0x140).step_by(4).map(|o| format!("{o:#x}={:.1}", read::<f32>(ok + o))).collect();
         let sizes: Vec<String> = (0x210..0x224).step_by(4).map(|o| format!("{o:#x}={:.1}", read::<f32>(ok + o))).collect();
@@ -2845,6 +3357,8 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             ("gui ctor", GUI_CTOR, &GUI_CTOR_PROLOGUE[..]),
             ("gui setpos", GUI_SETPOS, &GUI_SETPOS_PROLOGUE[..]),
             ("gui setbg", GUI_SETBG, &GUI_SETBG_PROLOGUE[..]),
+            ("gui sprite name", SET_SPRITE_NAME, &SET_SPRITE_NAME_PROLOGUE[..]),
+            ("gui sprite clear", OBJECT_ARRAY_DELETE_ALL, &OBJECT_ARRAY_DELETE_ALL_PROLOGUE[..]),
             ("gui reset", GUI_RESET, &GUI_RESET_PROLOGUE[..]),
             ("gui find", GUI_FIND, &GUI_FIND_PROLOGUE[..]),
         ] {
