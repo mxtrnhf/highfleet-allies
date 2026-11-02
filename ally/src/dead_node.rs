@@ -157,7 +157,7 @@ unsafe fn report_dead(kind: &str, node: usize, master_off: usize, master_id_off:
     let _ = writeln!(text, "  name(+0xc8)={:?}", read_string(node + 0xc8, 40));
     for (i, ship) in roster().into_iter().enumerate() {
         let (begin, end): (usize, usize) = (read(ship + OFF_PARTS.0), read(ship + OFF_PARTS.1));
-        if begin == 0 || end < begin || (end - begin) / 0x18 > 4000 {
+        if begin < 0x10000 || end < begin || (end - begin) / 0x18 > 4000 {
             continue;
         }
         for (part, address) in (begin..end).step_by(0x18).enumerate() {

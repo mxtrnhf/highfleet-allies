@@ -12,6 +12,10 @@ const PART_STATS: usize = 0x188;
 const STAT_CAL: usize = 0x144;
 const STAT_LIST_BASE: usize = 0x1_43a3_3bf0;
 const STAT_LIST_END: usize = 0x1_43a3_3bf8;
+/// Byte stride of one gun link in the group-0 list: the part pointer sits at +8.
+const GUN_LINK_STRIDE: usize = 0x18;
+/// Ceiling on the gun links read from group 0; a group has far fewer, so a larger count is a corrupt header.
+const GUN_LIST_LIMIT: usize = 64;
 
 unsafe fn rd<T: Copy>(a: usize) -> T {
     (a as *const T).read_unaligned()
@@ -20,7 +24,11 @@ unsafe fn rd<T: Copy>(a: usize) -> T {
 /// Calibre key of the first gun of group 0, `None` while the list is empty or the record is unreadable.
 unsafe fn first_cal(ship: usize) -> Option<i32> {
     let (b, e): (usize, usize) = (rd(ship + OFF_GROUP0.0), rd(ship + OFF_GROUP0.1));
-    if b < 0x10000 || e < b + 0x18 || (e - b) / 0x18 > 64 {
+    if b < 0x10000 || e < b {
+        return None;
+    }
+    let list_bytes = e - b;
+    if list_bytes < GUN_LINK_STRIDE || list_bytes / GUN_LINK_STRIDE > GUN_LIST_LIMIT {
         return None;
     }
     let part: usize = rd(b + 8);
@@ -29,10 +37,14 @@ unsafe fn first_cal(ship: usize) -> Option<i32> {
     }
     let idx: i32 = rd(part + PART_STATS);
     let (base, end): (usize, usize) = (rd(STAT_LIST_BASE), rd(STAT_LIST_END));
-    if idx < 0 || base == 0 || end < base || idx as usize >= (end - base) / 8 {
+    if idx < 0 || base < 0x10000 || end < base {
         return None;
     }
-    let record: usize = rd(base + idx as usize * 8);
+    let stat_count = (end - base) / std::mem::size_of::<usize>();
+    if idx as usize >= stat_count {
+        return None;
+    }
+    let record: usize = rd(base + idx as usize * std::mem::size_of::<usize>());
     crate::plausible(record).then(|| rd::<i32>(record + STAT_CAL))
 }
 

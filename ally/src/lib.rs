@@ -139,6 +139,8 @@ const GUI_ROOT: usize = 0x1_47fc_6f88; // pointer to the global node every GUI i
 const GUI_SCAN_SLACK: usize = 16;
 const GUI_SCAN_MIN: usize = 256;
 const GUI_SCAN_MAX: usize = 4096;
+/// Byte size of one `Sprite*` entry in the native `Body.sprites` vector.
+const GUI_SPRITE_SLOT_SIZE: usize = 8;
 /// Guards the native sprite destruction/load walks; our custom buttons normally own exactly one sprite.
 const GUI_SPRITE_LIMIT: usize = 4096;
 /// SomethingInputTask: per-frame input polling on the game thread (hf_voice hooks it too).
@@ -181,6 +183,13 @@ const ALLY_SLOT: usize = 1;
 const OFF_MODE_D70: usize = 0xd70; // i32: 1 = flown by the player, 2 = wingman
 const OFF_ACTIVE: usize = offset_of!(Node, state); // i32: non-zero while the ship is in the level
 
+/// Byte stride of one `Link` entry in the native object vectors below: the pointer sits at +8.
+const LINK_STRIDE: usize = size_of::<Link>();
+/// Ceiling on the entries read from one battle roster / ship part / gun list. A real ship has far fewer, so a
+/// larger count means the native vector header is corrupt.
+const SHIP_LIST_LIMIT: usize = 64;
+/// Ceiling on the entries read from the global creature list, for the same reason.
+const CREATURE_LIST_LIMIT: usize = 4096;
 /// Global creature list (`Link` entries, 0x18 bytes, pointer at +8): begin / end.
 const CREATURES_BEGIN: usize = 0x1_43fa_a5d8;
 const CREATURES_END: usize = 0x1_43fa_a5e0;
@@ -752,10 +761,10 @@ unsafe extern "C" fn on_creature(creature: *const u8, removing: u8) {
 /// Roster entries (ship pointers).
 unsafe fn roster() -> Vec<usize> {
     let (b, e): (usize, usize) = (read(ROSTER_BEGIN), read(ROSTER_END));
-    if b == 0 || e < b || (e - b) / 0x18 > 64 {
+    if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
         return Vec::new();
     }
-    (0..(e - b) / 0x18).map(|i| read::<usize>(b + i * 0x18 + 8)).filter(|p| *p != 0).collect()
+    (0..(e - b) / LINK_STRIDE).map(|i| read::<usize>(b + i * LINK_STRIDE + 8)).filter(|p| *p != 0).collect()
 }
 
 type DeployFn = unsafe extern "C" fn(usize, usize, *mut u64, u64, f32, f32, f32, f32, u32, i32) -> u8;
@@ -783,11 +792,11 @@ static PROBE_ENEMY: Mutex<Probe> = Mutex::new(Probe { who: 0, t0: 0.0, last_pos:
 /// (entries, sum of loaded rounds, sum of reserve rounds, entries off cooldown) of a part list.
 unsafe fn part_list(ship: usize, list: (usize, usize)) -> (usize, f32, i64, usize) {
     let (b, e): (usize, usize) = (read(ship + list.0), read(ship + list.1));
-    if b == 0 || e < b || (e - b) / 0x18 > 64 {
+    if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
         return (0, 0.0, 0, 0);
     }
     let (mut n, mut loaded, mut reserve, mut ready) = (0, 0.0f32, 0i64, 0);
-    for a in (b..e).step_by(0x18) {
+    for a in (b..e).step_by(LINK_STRIDE) {
         let part: usize = read(a + 8);
         if part == 0 {
             continue;
@@ -882,10 +891,14 @@ unsafe fn probe_ship_in_battle(ship: usize) -> bool {
     let (Some(begin), Some(end)) = (diag::rd::<usize>(CREATURES_BEGIN), diag::rd::<usize>(CREATURES_END)) else {
         return false;
     };
-    if begin < 0x10000 || end < begin || (end - begin) % 0x18 != 0 || (end - begin) / 0x18 > 4096 {
+    if begin < 0x10000 || end < begin {
         return false;
     }
-    for entry in (begin..end).step_by(0x18) {
+    let list_bytes = end - begin;
+    if !list_bytes.is_multiple_of(LINK_STRIDE) || list_bytes / LINK_STRIDE > CREATURE_LIST_LIMIT {
+        return false;
+    }
+    for entry in (begin..end).step_by(LINK_STRIDE) {
         let Some(current) = diag::rd::<usize>(entry + 8) else { return false };
         if current != ship {
             continue;
@@ -905,12 +918,16 @@ unsafe fn probe_ship_in_battle(ship: usize) -> bool {
 /// `from` must be a current creature validated on the game thread by the caller.
 unsafe fn nearest_enemy(from: usize) -> usize {
     let (cb, ce): (usize, usize) = (read(CREATURES_BEGIN), read(CREATURES_END));
-    if cb < 0x10000 || ce < cb || (ce - cb) % 0x18 != 0 || (ce - cb) / 0x18 > 4096 {
+    if cb < 0x10000 || ce < cb {
+        return 0;
+    }
+    let list_bytes = ce - cb;
+    if !list_bytes.is_multiple_of(LINK_STRIDE) || list_bytes / LINK_STRIDE > CREATURE_LIST_LIMIT {
         return 0;
     }
     let (fx, fy) = (read::<f32>(from + OFF_POS_X), read::<f32>(from + OFF_POS_Y));
     let mut best = (usize::MAX as f32, 0usize);
-    for a in (cb..ce).step_by(0x18) {
+    for a in (cb..ce).step_by(LINK_STRIDE) {
         let Some(p) = diag::rd::<usize>(a + 8) else { return 0 };
         if !plausible(p)
             || !diag::rd::<u8>(p + OFF_CODE).is_some_and(|class| class & 0x2f == 0x2f)
@@ -1347,10 +1364,21 @@ unsafe fn sprite_bounds(gui: usize) -> Option<(usize, usize)> {
     if begin == 0 && end == 0 && capacity == 0 {
         return Some((0, 0));
     }
-    if !plausible(begin) || end < begin || capacity < end
-        || !(end - begin).is_multiple_of(8) || !(capacity - begin).is_multiple_of(8)
-        || (capacity - begin) / 8 > GUI_SPRITE_LIMIT
+    if !plausible(begin) || end < begin || capacity < end {
+        return None;
+    }
+
+    let used_bytes = end - begin;
+    let available_bytes = capacity - begin;
+
+    if !used_bytes.is_multiple_of(GUI_SPRITE_SLOT_SIZE)
+        || !available_bytes.is_multiple_of(GUI_SPRITE_SLOT_SIZE)
     {
+        return None;
+    }
+
+    let sprite_capacity = available_bytes / GUI_SPRITE_SLOT_SIZE;
+    if sprite_capacity > GUI_SPRITE_LIMIT {
         return None;
     }
     Some((begin, end))
@@ -2283,10 +2311,10 @@ unsafe fn record_ammo_funding(creature: usize) -> usize {
     let Ok(mut funding) = AMMO_FUNDING.lock() else { return 0 };
     for list in REFUND_GUN_LISTS {
         let (b, e): (usize, usize) = (read(creature + list), read(creature + list + 8));
-        if b < 0x10000 || e < b || (e - b) / 0x18 > 64 {
+        if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
             continue;
         }
-        for a in (b..e).step_by(0x18) {
+        for a in (b..e).step_by(LINK_STRIDE) {
             let gun: usize = read(a + 8);
             if !plausible(gun) {
                 continue;
@@ -2327,10 +2355,10 @@ unsafe extern "C" fn on_refund(creature: usize) {
     let (mut restored, mut unrecorded) = (0, 0);
     for list in REFUND_GUN_LISTS {
         let (b, e): (usize, usize) = (read(creature + list), read(creature + list + 8));
-        if b < 0x10000 || e < b || (e - b) / 0x18 > 64 {
+        if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
             continue;
         }
-        for a in (b..e).step_by(0x18) {
+        for a in (b..e).step_by(LINK_STRIDE) {
             let gun: usize = read(a + 8);
             if !plausible(gun) {
                 continue;
@@ -2916,11 +2944,11 @@ unsafe extern "C" fn on_target_chosen(ship: usize) {
     }
     let (sx, sy) = (read::<f32>(ship + OFF_POS_X), read::<f32>(ship + OFF_POS_Y));
     let (cb, ce): (usize, usize) = (read(CREATURES_BEGIN), read(CREATURES_END));
-    if cb == 0 || ce < cb || (ce - cb) / 0x18 > 4096 {
+    if cb < 0x10000 || ce < cb || (ce - cb) / LINK_STRIDE > CREATURE_LIST_LIMIT {
         return;
     }
     let mut best: Option<(f32, usize)> = None;
-    for a in (cb..ce).step_by(0x18) {
+    for a in (cb..ce).step_by(LINK_STRIDE) {
         let p: usize = read(a + 8);
         if !plausible(p) || p == target || read::<i32>(p + OFF_ACTIVE) == 0 || read::<f32>(p + OFF_SIDE) >= 0.0 || read::<u8>(p + OFF_PRIZE) != 0 {
             continue;

@@ -64,6 +64,8 @@ const OFF_BOMBS: usize = 0x1438;
 const OFF_FLARES: usize = 0x1408;
 const FLARE_ENTRY_SIZE: usize = 0x18;
 const FLARE_ENTRY_PART: usize = 0x8;
+/// Ceiling on the flare launchers walked in one pulse; a longer vector means the header is corrupt.
+const FLARE_LIMIT: usize = 256;
 const OFF_RADIUS: usize = 0x1850;
 const OFF_MASS: usize = 0x15b8;
 const OFF_THRUST: usize = 0x1664;
@@ -348,7 +350,11 @@ unsafe fn drop_flares(ship: usize, entry: &mut Entry, now: f64) {
     let Some(length) = end.checked_sub(begin) else {
         return;
     };
-    if !plausible(begin) || length % FLARE_ENTRY_SIZE != 0 || length / FLARE_ENTRY_SIZE > 256 {
+    if !plausible(begin) || !length.is_multiple_of(FLARE_ENTRY_SIZE) {
+        return;
+    }
+    let flare_count = length / FLARE_ENTRY_SIZE;
+    if flare_count > FLARE_LIMIT {
         return;
     }
     let Some(root) = root_part(ship) else {

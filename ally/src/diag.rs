@@ -360,12 +360,19 @@ fn start_megalog() {
 const CURRENT_LOCATION: usize = 0x1_43a1_1940; // pointer to the location the player is at
 const PLAYER_ESCADRA: usize = 0x1_43a1_3eb0; // pointer to the player's fleet
 const PLAYER_SIDE_VEC: (usize, usize) = (0x1_43a1_58e0, 0x1_43a1_58e8); // Links (0x18 bytes, fleet pointer at +8)
+const PAGE_SIZE: usize = 4096;
 static LAST_SNAPSHOT: Mutex<String> = Mutex::new(String::new());
 
 /// Reads `T` at `addr` only if the page is mapped and readable (a snapshot must never fault the game).
 pub unsafe fn rd<T: Copy>(addr: usize) -> Option<T> {
     let end = addr.checked_add(std::mem::size_of::<T>())?;
-    if addr < 0x1_0000 || !readable(addr) || (end - 1) / 4096 != addr / 4096 && !readable(end - 1) {
+    let last = end - 1;
+    if addr < 0x1_0000 || !readable(addr) {
+        return None;
+    }
+    // The first byte is mapped above; the last byte needs its own check only when the read spans two pages.
+    let spans_two_pages = last / PAGE_SIZE != addr / PAGE_SIZE;
+    if spans_two_pages && !readable(last) {
         return None;
     }
     Some((addr as *const T).read_unaligned())
@@ -422,7 +429,7 @@ pub unsafe fn snapshot(why: &str) {
     let mut s = format!("location={here:#x} player_fleet={player:#x}\n");
     let (begin, end) = (rd::<usize>(profile + 0x1f8).unwrap_or(0), rd::<usize>(profile + 0x200).unwrap_or(0));
     let mut fleets = Vec::new();
-    if begin != 0 && end >= begin && (end - begin) / 8 <= 256 {
+    if begin >= 0x10000 && end >= begin && (end - begin) / 8 <= 256 {
         for i in 0..(end - begin) / 8 {
             fleets.push(rd::<usize>(begin + i * 8).unwrap_or(0));
         }
@@ -455,7 +462,7 @@ pub unsafe fn snapshot(why: &str) {
     let _ = writeln!(s, "  ({omitted} enemy/neutral fleets not listed)");
     let (vb, ve) = (rd::<usize>(PLAYER_SIDE_VEC.0).unwrap_or(0), rd::<usize>(PLAYER_SIDE_VEC.1).unwrap_or(0));
     let mut entries = String::new();
-    if vb != 0 && ve >= vb && (ve - vb) / 0x18 <= 64 {
+    if vb >= 0x10000 && ve >= vb && (ve - vb) / 0x18 <= 64 {
         for i in 0..(ve - vb) / 0x18 {
             let node = rd::<usize>(vb + i * 0x18 + 8).unwrap_or(0);
             let _ = write!(entries, " {node:#x}{}", if node != 0 && fleets.contains(&node) { "" } else { "(NOT in profile)" });
@@ -478,7 +485,7 @@ pub unsafe fn fleet_has_ship(ship: usize) -> bool {
     let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(crate::GET_PROFILE);
     let profile = get_profile();
     let (Some(begin), Some(end)) = (rd::<usize>(profile + 0x1f8), rd::<usize>(profile + 0x200)) else { return false };
-    if begin == 0 || end < begin || (end - begin) / 8 > 256 {
+    if begin < 0x10000 || end < begin || (end - begin) / 8 > 256 {
         return false;
     }
     for i in 0..(end - begin) / 8 {

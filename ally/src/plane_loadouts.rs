@@ -100,6 +100,8 @@ const PART_COUNT: usize = offset_of!(Munition, count);
 /// class: 2 bombs, 3 rockets, 4 gun, 5 K-13) as the first int, the item name string at `+8`.
 const AMMO_LIST: usize = 0x1_43a1_3be0;
 const AMMO_SIZE: usize = size_of::<Ammo>();
+/// Ceiling on the records read from the ammo list; a longer list means the header is corrupt.
+const AMMO_LIST_LIMIT: usize = 10_000;
 
 /// The vanilla table, used when the live one cannot be read: (loadout suffix, item, T-7 count, LA-29 count).
 const VANILLA: [(&str, &str, i32, i32); 5] = [
@@ -233,7 +235,11 @@ unsafe fn map_nodes(global: usize) -> Vec<usize> {
 unsafe fn ammo_classes() -> HashMap<String, i32> {
     let mut out = HashMap::new();
     let (b, e): (usize, usize) = (rd(AMMO_LIST), rd(AMMO_LIST + 8));
-    if b < 0x10000 || e < b || (e - b) % AMMO_SIZE != 0 || (e - b) / AMMO_SIZE > 10_000 || !crate::plausible(b) {
+    if b < 0x10000 || !crate::plausible(b) || e < b {
+        return out;
+    }
+    let list_bytes = e - b;
+    if !list_bytes.is_multiple_of(AMMO_SIZE) || list_bytes / AMMO_SIZE > AMMO_LIST_LIMIT {
         return out;
     }
     for rec in (b..e).step_by(AMMO_SIZE) {
