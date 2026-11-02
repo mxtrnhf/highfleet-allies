@@ -10,6 +10,7 @@
 //!
 //! Rendering one frame before compositing matches the stock panels, which also show the previous frame.
 
+use std::mem::offset_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -46,11 +47,63 @@ const BLEND_PANEL: u32 = 0x10;
 /// Battle HUD enable byte and the panel pass' own suppression flag.
 const HUD_ENABLED: usize = 0x1_43a1_1961;
 const PANEL_SUPPRESSED: usize = 0x1_43a1_5908;
+/// The stock target panel is skipped while a message/panel is on screen (the end-game gate byte).
+const TARGET_PANEL_HIDDEN: usize = 0x1_47fc_6fca;
 /// Virtual frame height (1920 x 1080 target).
 const FRAME_HEIGHT: usize = 0x1_43a1_3e5c;
 /// Player profile and its creature lookup used by mode 3.
 const GET_PROFILE: usize = 0x1_4029_2a90;
 const GET_PLAYER_CREATURE: usize = 0x1_4029_24b0;
+
+/// `DrawBattleShipPanel` scans HUD marker layers 1..39 by way of the counts at `0x143a51160`
+/// and the layer-1 owner field at `0x144094c88` (exactly `HUD_MARKERS + 40000 * 0x18 + 8`).
+/// Ships spawned through the normal battle path have type-2 part markers there; the temporary
+/// ally deployment path does not, so the panel would show only its text. The native marker
+/// initialisation below is the fix; the fields after it describe the last-resort fallback that
+/// builds markers for one call and removes them immediately afterward.
+const HUD_MARKERS: usize = 0x1_43fa_a680;
+const HUD_MARKER_COUNTS: usize = 0x1_43a5_1160;
+const HUD_MARKER_LIMIT: usize = 40_000;
+/// `Body::UpdateHudMarkers` `0x14002d7b0(body, initialise)`. The stock per-frame pass calls this
+/// for every world body with `initialise = 0`, but it leaves bodies alone whose `+0x910` byte is
+/// still clear. That byte is set only by the one-time `initialise = 1` call the normal spawn path
+/// performs; the mod's temporary ally deploy skipped it, so none of the ally's parts ever entered
+/// the HUD marker table. Calling it once with `initialise = 1` registers the whole child subtree
+/// exactly like a stock ship.
+const BODY_UPDATE_HUD_MARKERS: usize = 0x1_4002_d7b0;
+type BodyHudMarkersFn = unsafe extern "C" fn(usize, u8);
+const HUD_MARKER_STRIDE: usize = 0x18;
+const HUD_MARKER_TYPE_CHILD: i32 = 2;
+const HUD_MARKER_OWNER: usize = 8;
+const HUD_MARKER_INDEX: usize = 0x10;
+const HUD_MARKER_SCALE: usize = 0x14;
+/// The panel applies a brightness lift of `layer / 40`; use the first scanned layer so temporary
+/// markers keep the same dark palette as normal parts instead of becoming washed-out white.
+const SPARE_LAYER: usize = 1;
+const PANEL_LAYER_LAST: usize = 39;
+/// Creature part list (`+0x1330/+0x1338`, 0x18-byte Link entries, part at +8).
+const OFF_PART_LIST: (usize, usize) = (0x1330, 0x1338);
+/// Part `Body` sprite vector (`CVec<*mut Sprite>`).
+const OFF_PART_SPRITES: (usize, usize) = (0x8c0, 0x8c8);
+/// Part `Body` owner link target: the ship a part belongs to (`Node.owner + Link.target`).
+const OFF_PART_OWNER: usize = 0xb8;
+/// Registration skips sprites whose `+0x128` float is zero.
+const OFF_SPRITE_VISIBLE: usize = 0x128;
+/// Node state; `Hud_DrawChildMarker` draws only parts with state > 1.
+const OFF_NODE_STATE: usize = 0x48;
+/// Part health and maximum; the panel's palette darkens towards red as `hp / hp_max` drops.
+const OFF_PART_HP: usize = 0x2c8;
+const OFF_PART_HP_MAX: usize = 0x2cc;
+const PART_LIST_LIMIT: usize = 512;
+const PART_SPRITE_LIMIT: usize = 64;
+/// Main battle render body grid (`DAT_146449688`, 60 layers x 40000 entries, stride 0x18) and
+/// its counts at `DAT_143a51200`. This is the same source the enemy target/module view uses, so
+/// it includes hull bodies that are not in the creature's mounted-part vector.
+const RENDER_BODY_GRID: usize = 0x1_4644_9688;
+const RENDER_BODY_COUNTS: usize = 0x1_43a5_1200;
+const RENDER_BODY_LAYERS: usize = 0x3c;
+const RENDER_BODY_LIMIT: usize = 40_000;
+const RENDER_BODY_STRIDE: usize = 0x18;
 
 const PANEL_WIDTH: f32 = 350.0;
 const PANEL_HEIGHT: f32 = 300.0;
@@ -85,16 +138,13 @@ static PANELS: Mutex<[Option<NativePanel>; MAX_PANELS]> = Mutex::new([None, None
 static DISPLAYED_SHIPS: Mutex<[usize; MAX_PANELS]> = Mutex::new([0; MAX_PANELS]);
 static PANEL_CREATE_FAILED: AtomicBool = AtomicBool::new(false);
 static FIRST_RENDER: AtomicBool = AtomicBool::new(true);
+static PANEL_MARKERS_LOGGED: AtomicBool = AtomicBool::new(false);
 
 unsafe fn rd<T: Copy>(address: usize) -> T {
     (address as *const T).read_unaligned()
 }
 
-unsafe fn write(address: usize, value: usize) {
-    (address as *mut usize).write_unaligned(value);
-}
-
-/// Up to [`MAX_PANELS`] living allies the mod deployed, in deployment order.
+/// Up to [`MAX_PANELS`] live allies the mod deployed, in deployment order.
 unsafe fn living_allies() -> [usize; MAX_PANELS] {
     let mut slots = [0usize; MAX_PANELS];
     let roster = crate::roster();
@@ -104,11 +154,13 @@ unsafe fn living_allies() -> [usize; MAX_PANELS] {
         if used == MAX_PANELS {
             break;
         }
-        // side > 0 keeps this to the player's own ships; mode 1 is the ship the player flies
+        // side > 0 keeps this to the player's own ships; mode 1 is the ship the player flies.
+        // State 2 is the AI strike/retreat state; its ship is leaving and must not keep a panel.
         if !roster.contains(&ally)
             || !crate::live_ship(ally)
             || rd::<f32>(ally + crate::OFF_SIDE) <= 0.0
             || rd::<i32>(ally + crate::OFF_MODE_D70) == 1
+            || !matches!(rd::<i32>(ally + crate::OFF_STATE), 0 | 1)
         {
             continue;
         }
@@ -124,16 +176,22 @@ pub fn displayed_ship(slot: usize) -> Option<usize> {
     displayed.get(slot).copied().filter(|ship| *ship != 0)
 }
 
-/// Do not associate an old target texture with a new ship after a handoff or battle teardown.
-pub fn invalidate() {
-    if let Ok(mut displayed) = DISPLAYED_SHIPS.lock() {
-        *displayed = [0; MAX_PANELS];
-    }
+/// Clear only the panel content. Keep `DISPLAYED_SHIPS` (the last composited frame) for key selection.
+fn clear_rendered() {
     if let Ok(mut panels) = PANELS.lock() {
         for panel in panels.iter_mut().flatten() {
             panel.rendered_ship = 0;
         }
     }
+}
+
+/// Do not associate an old target texture with a new ship after a handoff or battle teardown.
+pub fn invalidate() {
+    if let Ok(mut displayed) = DISPLAYED_SHIPS.lock() {
+        *displayed = [0; MAX_PANELS];
+    }
+    clear_rendered();
+    PANEL_MARKERS_LOGGED.store(false, Ordering::Relaxed);
 }
 
 unsafe fn player_creature() -> Option<usize> {
@@ -188,9 +246,237 @@ unsafe fn ensure_panels() -> bool {
     true
 }
 
+/// Temporary part markers appended to the spare layer for one panel call.
+struct TemporaryMarkers {
+    original_count: usize,
+    added: usize,
+}
+
+/// Type-2 markers the native panel can already see for this ally. Do not add duplicates for these:
+/// the panel draws with blend mode 6, so drawing the same sprite twice lightens it ("milky" panels).
+unsafe fn existing_panel_markers(ally: usize) -> Vec<(usize, usize)> {
+    let mut existing = Vec::new();
+    for layer in 1..=PANEL_LAYER_LAST {
+        let count = rd::<i32>(HUD_MARKER_COUNTS + layer * 4);
+        if count < 0 || count as usize > HUD_MARKER_LIMIT {
+            continue;
+        }
+        let base = HUD_MARKERS + layer * HUD_MARKER_LIMIT * HUD_MARKER_STRIDE;
+        for index in 0..count as usize {
+            let marker = base + index * HUD_MARKER_STRIDE;
+            if rd::<i32>(marker) != HUD_MARKER_TYPE_CHILD {
+                continue;
+            }
+            let part = rd::<usize>(marker + HUD_MARKER_OWNER);
+            if !crate::plausible(part) {
+                continue;
+            }
+            let Some(part_owner) = crate::diag::rd::<usize>(part + OFF_PART_OWNER) else {
+                continue;
+            };
+            if part_owner != ally {
+                continue;
+            }
+            let part_index = rd::<i32>(marker + HUD_MARKER_INDEX);
+            if part_index >= 0 {
+                existing.push((part, part_index as usize));
+            }
+        }
+    }
+    existing
+}
+
+/// All part bodies of the ally. Prefer the main battle render grid (the source the enemy target
+/// view uses); fall back to the creature's mounted-part vector if the grid has nothing.
+unsafe fn part_bodies(ally: usize) -> Vec<usize> {
+    let mut bodies = Vec::new();
+    for layer in 0..RENDER_BODY_LAYERS {
+        let count = rd::<i32>(RENDER_BODY_COUNTS + layer * 4);
+        if count < 0 || count as usize > RENDER_BODY_LIMIT {
+            continue;
+        }
+        let base = RENDER_BODY_GRID + layer * RENDER_BODY_LIMIT * RENDER_BODY_STRIDE;
+        for index in 0..count as usize {
+            let part = rd::<usize>(base + index * RENDER_BODY_STRIDE);
+            if !crate::plausible(part) || bodies.contains(&part) {
+                continue;
+            }
+            let Some(owner) = crate::diag::rd::<usize>(part + OFF_PART_OWNER) else {
+                continue;
+            };
+            if owner == ally {
+                bodies.push(part);
+            }
+        }
+    }
+    let (begin, end): (usize, usize) = (rd(ally + OFF_PART_LIST.0), rd(ally + OFF_PART_LIST.1));
+    if begin < 0x10000 || end < begin {
+        return bodies;
+    }
+    let bytes = end - begin;
+    if !bytes.is_multiple_of(crate::LINK_STRIDE) || bytes / crate::LINK_STRIDE > PART_LIST_LIMIT {
+        return bodies;
+    }
+    for entry in (begin..end).step_by(crate::LINK_STRIDE) {
+        let part = rd::<usize>(entry + offset_of!(crate::native_layout::Link, target));
+        if !crate::plausible(part) || bodies.contains(&part) {
+            continue;
+        }
+        let Some(owner) = crate::diag::rd::<usize>(part + OFF_PART_OWNER) else {
+            continue;
+        };
+        if owner == ally {
+            bodies.push(part);
+        }
+    }
+    bodies
+}
+
+/// Give the ally the same HUD marker initialisation the stock spawn path performs, then return the
+/// type-2 markers the panel can now see. Called before every panel render because the marker table
+/// is rebuilt each frame; it only does work while the ally still has no markers.
+unsafe fn ensure_native_markers(ally: usize) -> Vec<(usize, usize)> {
+    let mut existing = existing_panel_markers(ally);
+    if existing.is_empty() {
+        let update: BodyHudMarkersFn = std::mem::transmute(BODY_UPDATE_HUD_MARKERS);
+        update(ally, 1);
+        existing = existing_panel_markers(ally);
+        if !PANEL_MARKERS_LOGGED.swap(true, Ordering::Relaxed) {
+            log::info!(
+                "ALLY panel c={ally:#x}: native marker initialisation produced {} part markers",
+                existing.len()
+            );
+        }
+    }
+    existing
+}
+
+/// Build type-2 child markers from the ally's actual part/sprite lists. The normal ally deploy
+/// path does not reliably leave these in the HUD marker table; without them the panel draws its
+/// text but no ship schematic. Markers are appended to [`SPARE_LAYER`] and removed by count restore.
+unsafe fn insert_part_markers(ally: usize) -> Option<TemporaryMarkers> {
+    // The native registration draws the ship exactly like an enemy panel, so only fall back when
+    // it produced nothing at all.
+    let existing = ensure_native_markers(ally);
+    if !existing.is_empty() {
+        return None;
+    }
+
+    let spare_count = rd::<i32>(HUD_MARKER_COUNTS + SPARE_LAYER * 4);
+    if spare_count < 0 || spare_count as usize > HUD_MARKER_LIMIT {
+        return None;
+    }
+    let spare_count = spare_count as usize;
+    let parts_list = part_bodies(ally);
+    if parts_list.is_empty() {
+        return None;
+    }
+
+    let mut markers = Vec::new();
+    let parts = parts_list.len();
+    let mut inactive = 0usize;
+    let mut hp_low = f32::INFINITY;
+    let mut hp_high = 0.0f32;
+    for part in parts_list {
+        if rd::<i32>(part + OFF_NODE_STATE) <= 1 {
+            inactive += 1;
+        }
+        let hp = rd::<f32>(part + OFF_PART_HP);
+        let hp_max = rd::<f32>(part + OFF_PART_HP_MAX);
+        if hp_max > 0.0 {
+            let ratio = (hp / hp_max).clamp(0.0, 1.0);
+            hp_low = hp_low.min(ratio);
+            hp_high = hp_high.max(ratio);
+        }
+        let (sprites_begin, sprites_end): (usize, usize) =
+            (rd(part + OFF_PART_SPRITES.0), rd(part + OFF_PART_SPRITES.1));
+        if sprites_begin < 0x10000 || sprites_end < sprites_begin {
+            continue;
+        }
+        let sprite_bytes = sprites_end - sprites_begin;
+        if !sprite_bytes.is_multiple_of(8) || sprite_bytes / 8 > PART_SPRITE_LIMIT {
+            continue;
+        }
+        for index in 0..sprite_bytes / 8 {
+            let sprite = rd::<usize>(sprites_begin + index * 8);
+            if !crate::plausible(sprite) {
+                continue;
+            }
+            let Some(visible) = crate::diag::rd::<f32>(sprite + OFF_SPRITE_VISIBLE) else {
+                continue;
+            };
+            if visible == 0.0 {
+                continue;
+            }
+            let mut marker = [0u8; HUD_MARKER_STRIDE];
+            std::ptr::write_unaligned(marker.as_mut_ptr() as *mut i32, HUD_MARKER_TYPE_CHILD);
+            std::ptr::write_unaligned(
+                marker.as_mut_ptr().byte_add(HUD_MARKER_OWNER) as *mut usize,
+                part,
+            );
+            std::ptr::write_unaligned(
+                marker.as_mut_ptr().byte_add(HUD_MARKER_INDEX) as *mut i32,
+                index as i32,
+            );
+            std::ptr::write_unaligned(
+                marker.as_mut_ptr().byte_add(HUD_MARKER_SCALE) as *mut f32,
+                1.0,
+            );
+            markers.push(marker);
+        }
+    }
+
+    if markers.is_empty() {
+        return None;
+    }
+    if spare_count + markers.len() > HUD_MARKER_LIMIT {
+        if !PANEL_MARKERS_LOGGED.swap(true, Ordering::Relaxed) {
+            log::warn!(
+                "ALLY panel c={ally:#x}: spare marker layer full ({spare_count} + {})",
+                markers.len()
+            );
+        }
+        return None;
+    }
+    let spare_base = HUD_MARKERS + SPARE_LAYER * HUD_MARKER_LIMIT * HUD_MARKER_STRIDE;
+    for (offset, marker) in markers.iter().enumerate() {
+        let destination = spare_base + (spare_count + offset) * HUD_MARKER_STRIDE;
+        std::ptr::copy_nonoverlapping(marker.as_ptr(), destination as *mut u8, HUD_MARKER_STRIDE);
+    }
+    (HUD_MARKER_COUNTS as *mut i32)
+        .byte_add(SPARE_LAYER * 4)
+        .write_unaligned((spare_count + markers.len()) as i32);
+    if !PANEL_MARKERS_LOGGED.swap(true, Ordering::Relaxed) {
+        let hp_low = if hp_low.is_finite() { hp_low } else { 1.0 };
+        log::info!(
+            "ALLY panel c={ally:#x}: built {} fallback part markers from {parts} parts ({inactive} inactive, hp {hp_low:.2}..{hp_high:.2})",
+            markers.len()
+        );
+    }
+    Some(TemporaryMarkers {
+        original_count: spare_count,
+        added: markers.len(),
+    })
+}
+
+/// Hide the temporary part markers again; the native panel has already consumed them.
+unsafe fn restore_temporary_markers(temporary: TemporaryMarkers) {
+    if temporary.added == 0 {
+        return;
+    }
+    (HUD_MARKER_COUNTS as *mut i32)
+        .byte_add(SPARE_LAYER * 4)
+        .write_unaligned(temporary.original_count as i32);
+}
+
 /// Render each live ally into its private target for the next frame's composite.
 unsafe extern "C" fn render_allies() {
-    if !crate::SPAWN_ALLY.load(Ordering::Relaxed) || rd::<usize>(PANEL_SUPPRESSED) != 0 {
+    // A frame with no fresh panel content must not composite last frame's texture.
+    clear_rendered();
+    if !crate::SPAWN_ALLY.load(Ordering::Relaxed)
+        || rd::<usize>(PANEL_SUPPRESSED) != 0
+        || rd::<u8>(TARGET_PANEL_HIDDEN) != 0
+    {
         return;
     }
     let allies = living_allies();
@@ -204,6 +490,9 @@ unsafe extern "C" fn render_allies() {
     let Ok(mut panels) = PANELS.lock() else { return };
 
     let panel: PanelFn = std::mem::transmute(PANEL);
+    let set_link: crate::SetLinkFn = std::mem::transmute(crate::SET_LINK);
+    let target_link = player + crate::OFF_TARGET_LINK;
+    let saved_target = rd::<usize>(player + crate::OFF_TARGET);
     for native in panels.iter_mut().flatten() {
         native.rendered_ship = 0;
     }
@@ -212,11 +501,15 @@ unsafe extern "C" fn render_allies() {
             break;
         }
         let Some(native) = panels[slot].as_mut() else { continue };
-        let saved_target = rd::<usize>(player + crate::OFF_TARGET);
-        write(player + crate::OFF_TARGET, ally);
+        // Use the native link operation: a raw +0xb00 write leaves the link registered on the old
+        // target's link list and its saved id stale.
+        let temporary = insert_part_markers(ally);
+        set_link(target_link, ally);
         panel(native.surface_a, native.surface_b, PANEL_MODE_TARGET);
-        // the AI reads the target link during the frame: put it back before anything else runs
-        write(player + crate::OFF_TARGET, saved_target);
+        set_link(target_link, saved_target);
+        if let Some(temporary) = temporary {
+            restore_temporary_markers(temporary);
+        }
         native.rendered_ship = ally;
     }
 
@@ -237,10 +530,11 @@ unsafe extern "C" fn composite_allies() {
     if !crate::SPAWN_ALLY.load(Ordering::Relaxed)
         || rd::<u8>(HUD_ENABLED) == 0
         || rd::<usize>(PANEL_SUPPRESSED) != 0
+        || rd::<u8>(TARGET_PANEL_HIDDEN) != 0
     {
         return;
     }
-    let roster = crate::roster();
+    let allies = living_allies();
     let Ok(panels) = PANELS.lock() else { return };
 
     let frame_height = rd::<i32>(FRAME_HEIGHT);
@@ -253,10 +547,8 @@ unsafe extern "C" fn composite_allies() {
     for slot in 0..MAX_PANELS {
         let Some(native) = panels[slot] else { continue };
         let ally = native.rendered_ship;
-        // Cached pointers are dereferenced only while still owned by the current battle roster.
-        if !roster.contains(&ally) || !crate::live_ship(ally)
-            || rd::<i32>(ally + crate::OFF_MODE_D70) == 1
-        {
+        // Only a ship still in a live ally slot may be dereferenced and composited.
+        if ally == 0 || !allies.contains(&ally) {
             continue;
         }
         let sprite = native.sprite;
