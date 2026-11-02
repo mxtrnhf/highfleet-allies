@@ -54,6 +54,7 @@ The game's addresses, struct layouts and findings are in a separate repo: **[mxt
 
 ## Credits and legal
 * Built on logdot's [Highfleet-Modloader](https://github.com/logdot/Highfleet-Modloader), [patchy-rs](https://github.com/logdot/patchy-rs), [highfleet-qol](https://github.com/logdot/highfleet-qol) and [highfleet-rs](https://github.com/logdot/highfleet-rs); the `ai_flares` and missile-dump ideas started in the QoL fork.
+* The combat ship-switching idea was inspired by **greatf1y** on Discord.
 * `hf_ally` pins `highfleet-rs` to revision `8a6a8a3` for Steam 1.163 aircraft/loadout and GUI layouts. Compile-time checks preserve the existing field offsets; game-native constructors, string assignment and link operations still manage game-owned objects.
 * Much of the code and notes were written with the help of Claude Code (Anthropic); commits carry the co-author line.
 * Unofficial fan project, not affiliated with the HighFleet developers or publisher. No game files are included. MIT licensed, see [LICENSE](LICENSE).
