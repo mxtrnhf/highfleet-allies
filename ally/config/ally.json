@@ -17,6 +17,7 @@
   "retreat_key": 119,
   "ally_toggle": true,
   "max_allies": 2,
+  "ship_switching": true,
   "spare_prizes": true,
   "ally_bombers": false,
   "intercept_ignore_oids": [
@@ -38,6 +39,7 @@
   "ally_damage_color": 58623,
   "ally_panels": true,
   "ally_reticles": true,
+  "ally_reticle_scale": 0.8,
   "ally_sounds": true,
   "ally_fuel_retreat_percent": 30.0,
   "marker_text": "PLAYER",

@@ -33,6 +33,7 @@ macro_rules! crumb {
 mod ally_ammo;
 mod ally_hud;
 mod ally_panels;
+mod ship_switch;
 mod ally_reticles;
 mod bomber;
 mod bomber_math;
@@ -241,8 +242,12 @@ struct Config {
     max_allies: u32,
     /// Draw a half-size ship panel for each ally beside the player's own panel while the ally is in the battle.
     ally_panels: bool,
+    /// 1/2 take the displayed top/bottom ally; TAB cycles deployed friendly ships.
+    ship_switching: bool,
     /// Draw an ally-coloured target box around the enemy each ally is currently shooting at.
     ally_reticles: bool,
+    /// Ally target box size relative to the native 62 x 62 frame.
+    ally_reticle_scale: f32,
     /// Allies never keep a prize ship (the ships the player may capture and sell after the battle: the game flags
     /// them at creature +0xc19) as a target: they pick another enemy, or hold fire when only prizes are left.
     spare_prizes: bool,
@@ -323,7 +328,9 @@ impl Default for Config {
             ally_damage_color: "#00E4FF".to_string(),
             max_allies: 2,
             ally_panels: true,
+            ship_switching: true,
             ally_reticles: true,
+            ally_reticle_scale: 0.8,
             ally_sounds: true,
             ally_fuel_retreat_percent: 30.0,
             marker_text: "PLAYER".to_string(),
@@ -651,6 +658,7 @@ unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
         PLAYER_SEEN.store(0, Ordering::Relaxed);
         TRACK_ALLY.store(0, Ordering::Relaxed);
         bomber::reset();
+        ally_panels::invalidate();
         // Probe pointers belong to one battle only. A restart can reuse a freed ship's
         // address for a GUI object whose active field also happens to be nonzero.
         if let (Ok(mut ally_probe), Ok(mut enemy_probe)) = (PROBE_ALLY.lock(), PROBE_ENEMY.lock()) {
@@ -3038,6 +3046,7 @@ unsafe extern "C" fn on_battle_tick() {
     }
     let ships = roster();
     restore_orders("battle tick", false);
+    ship_switch::tick(&ships);
     if !ARMED.load(Ordering::Relaxed) {
         // not an ally battle: touch nothing; just keep the roster-empty bookkeeping so a later battle starts clean
         if ships.is_empty() {
@@ -3047,6 +3056,16 @@ unsafe extern "C" fn on_battle_tick() {
     }
     track_ally(&ships);
     retreat_logic(&ships);
+    // A manual handoff can introduce a new AI ally even after the reserve is exhausted.
+    if AMMO_ON.load(Ordering::Relaxed) {
+        if let (Ok(allies), Ok(mut rolled)) = (ALLIES.lock(), AMMO_ROLLED.lock()) {
+            for &a in allies.iter().filter(|ship| ships.contains(ship)) {
+                if live_ship(a) && !rolled.contains(&a) && ally_ammo::roll(a) {
+                    rolled.push(a);
+                }
+            }
+        }
+    }
     ally_sound_events(&ships);
     summary_tick(&ships);
     if !ships.is_empty() {
@@ -3099,15 +3118,6 @@ unsafe extern "C" fn on_battle_tick() {
         });
         allies.len() as u32
     };
-    if AMMO_ON.load(Ordering::Relaxed) {
-        if let (Ok(allies), Ok(mut rolled)) = (ALLIES.lock(), AMMO_ROLLED.lock()) {
-            for &a in allies.iter() {
-                if !rolled.contains(&a) && ally_ammo::roll(a) {
-                    rolled.push(a);
-                }
-            }
-        }
-    }
     if alive >= MAX_ALLIES.load(Ordering::Relaxed) {
         return;
     }
@@ -3547,7 +3557,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         ally_panels::install(&mut session);
     }
     if config.spawn_ally && config.ally_reticles {
-        ally_reticles::install(&mut session, ally_damage_color);
+        ally_reticles::install(&mut session, ally_damage_color, config.ally_reticle_scale);
     }
     if config.logging.log_colors {
         color_probe::install(&mut session);
@@ -3578,6 +3588,10 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         if found != BATTLE_PROLOGUE {
             return Err(format!("battle manager at {battle:#x} has unexpected bytes {found:02x?}"));
         }
+        if config.ship_switching {
+            ship_switch::verify_native()?;
+        }
+        ship_switch::ENABLED.store(config.ship_switching, Ordering::Relaxed);
         session
             .patch_call(
                 battle,

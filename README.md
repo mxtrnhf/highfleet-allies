@@ -25,6 +25,10 @@ for the profile and release policy. Existing configs keep their explicit values.
 
 Every setting is already in the config files of the pack, so there is nothing to discover: [`docs/ally-config.md`](docs/ally-config.md) (hf_ally, every key), [`docs/hf-ai-config-reference.md`](docs/hf-ai-config-reference.md) (hf_ai, every key) with the plain-language [`docs/hf-ai-tuning-guide.md`](docs/hf-ai-tuning-guide.md), and [`docs/qol-guide.md`](docs/qol-guide.md) (refuel, speed formulas and manual elevation, for the QoL build).
 
+**Combat ship switching:** **1** takes the top ally-panel ship, **2** the bottom,
+and **TAB** cycles deployed friendly ships. Your old ship becomes an AI ally.
+Enabled by `ship_switching` (default true); [details and keybinding caveats](docs/ship-switching.md).
+
 The bundled QoL also reads top-level `elevation_rules`: `vanilla` (default),
 `modern`, `classic` or `classic_kaz`. This controls gun/KAZ firing arcs independently
 of manual editor elevation. See [QoL guide](docs/qol-guide.md#elevation_rules-gunkaz-firing-arcs).

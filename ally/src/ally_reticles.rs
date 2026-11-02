@@ -8,7 +8,7 @@
 //!
 //! This module wraps that call: after the game's own boxes, it repeats the same projection and draw for
 //! the target (`ally+0xb00`) of every living ally, tinted with the configured ally colour. The ally boxes
-//! are drawn at 80% of the native 62 x 62 pixels, so several of them stay readable next to the player's.
+//! default to 80% of the native 62 x 62 pixels; their size is configurable.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -36,8 +36,6 @@ const TARGET_POS_X: usize = 0x1840;
 const TARGET_POS_Y: usize = 0x1844;
 const TARGET_OFFSET_X: usize = 0x240;
 const TARGET_OFFSET_Y: usize = 0x244;
-/// Extent multiplier for the box draw: 0.8 of the native 62 x 62 frame (about 50 x 50 px).
-const BOX_SIZE_SCALE: f32 = 0.8;
 /// Projection zoom handed to the world-to-screen call; the native box pass uses 1.0.
 const BOX_PROJECTION_ZOOM: f32 = 1.0;
 
@@ -47,6 +45,7 @@ type SetColorFn = unsafe extern "win64" fn(usize, u32, i32);
 type RenderExFn = unsafe extern "win64" fn(usize, f32, f32, f32, f32, f32);
 
 static ALLY_COLOR: AtomicU32 = AtomicU32::new(0xff00_e4ff);
+static ALLY_RETICLE_SCALE: AtomicU32 = AtomicU32::new(0.8_f32.to_bits());
 
 unsafe fn rd<T: Copy>(address: usize) -> T {
     (address as *const T).read_unaligned()
@@ -66,7 +65,8 @@ unsafe fn draw_box(out: &mut [f32; 2], sprite: usize, color: u32) {
 
     let render: RenderExFn = std::mem::transmute(RENDER_EX);
     // native call: rot 0, scaleY 0 = same as scaleX
-    render(sprite, out[0], out[1], 0.0, BOX_SIZE_SCALE, 0.0);
+    let scale = f32::from_bits(ALLY_RETICLE_SCALE.load(Ordering::Relaxed));
+    render(sprite, out[0], out[1], 0.0, scale, 0.0);
 }
 
 /// Runs after the game's own target and spawn boxes.
@@ -105,8 +105,15 @@ unsafe extern "C" fn draw_ally_targets() {
     }
 }
 
-pub unsafe fn install(session: &mut PatchSession, argb: u32) {
+pub unsafe fn install(session: &mut PatchSession, argb: u32, scale: f32) {
     ALLY_COLOR.store(argb & 0x00ff_ffff, Ordering::Relaxed);
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        log::warn!("hf_ally: invalid ally_reticle_scale {scale}; using 0.8");
+        0.8
+    };
+    ALLY_RETICLE_SCALE.store(scale.to_bits(), Ordering::Relaxed);
 
     let found = std::slice::from_raw_parts(CALL_SITE as *const u8, CALL_SITE_BYTES.len());
     if found != CALL_SITE_BYTES {

@@ -78,9 +78,11 @@ struct NativePanel {
     surface_a: usize,
     surface_b: usize,
     sprite: usize,
+    rendered_ship: usize,
 }
 
 static PANELS: Mutex<[Option<NativePanel>; MAX_PANELS]> = Mutex::new([None, None]);
+static DISPLAYED_SHIPS: Mutex<[usize; MAX_PANELS]> = Mutex::new([0; MAX_PANELS]);
 static PANEL_CREATE_FAILED: AtomicBool = AtomicBool::new(false);
 static FIRST_RENDER: AtomicBool = AtomicBool::new(true);
 
@@ -95,6 +97,7 @@ unsafe fn write(address: usize, value: usize) {
 /// Up to [`MAX_PANELS`] living allies the mod deployed, in deployment order.
 unsafe fn living_allies() -> [usize; MAX_PANELS] {
     let mut slots = [0usize; MAX_PANELS];
+    let roster = crate::roster();
     let Ok(allies) = crate::ALLIES.lock() else { return slots };
     let mut used = 0;
     for &ally in allies.iter() {
@@ -102,7 +105,8 @@ unsafe fn living_allies() -> [usize; MAX_PANELS] {
             break;
         }
         // side > 0 keeps this to the player's own ships; mode 1 is the ship the player flies
-        if !crate::live_ship(ally)
+        if !roster.contains(&ally)
+            || !crate::live_ship(ally)
             || rd::<f32>(ally + crate::OFF_SIDE) <= 0.0
             || rd::<i32>(ally + crate::OFF_MODE_D70) == 1
         {
@@ -112,6 +116,24 @@ unsafe fn living_allies() -> [usize; MAX_PANELS] {
         used += 1;
     }
     slots
+}
+
+/// Identity of the ship actually composited into this slot, not the next frame's roster selection.
+pub fn displayed_ship(slot: usize) -> Option<usize> {
+    let displayed = DISPLAYED_SHIPS.lock().ok()?;
+    displayed.get(slot).copied().filter(|ship| *ship != 0)
+}
+
+/// Do not associate an old target texture with a new ship after a handoff or battle teardown.
+pub fn invalidate() {
+    if let Ok(mut displayed) = DISPLAYED_SHIPS.lock() {
+        *displayed = [0; MAX_PANELS];
+    }
+    if let Ok(mut panels) = PANELS.lock() {
+        for panel in panels.iter_mut().flatten() {
+            panel.rendered_ship = 0;
+        }
+    }
 }
 
 unsafe fn player_creature() -> Option<usize> {
@@ -160,7 +182,7 @@ unsafe fn ensure_panels() -> bool {
             return false;
         }
         ctor(object, surface_a, 0.0, 0.0, 350.0, 300.0, 0.0, 0.0, 0.0, 0.0);
-        panels[slot] = Some(NativePanel { surface_a, surface_b, sprite: object });
+        panels[slot] = Some(NativePanel { surface_a, surface_b, sprite: object, rendered_ship: 0 });
     }
     log::info!("hf_ally: ally ship panel targets created");
     true
@@ -179,19 +201,23 @@ unsafe extern "C" fn render_allies() {
     if !ensure_panels() {
         return;
     }
-    let Ok(panels) = PANELS.lock() else { return };
+    let Ok(mut panels) = PANELS.lock() else { return };
 
     let panel: PanelFn = std::mem::transmute(PANEL);
+    for native in panels.iter_mut().flatten() {
+        native.rendered_ship = 0;
+    }
     for (slot, &ally) in allies.iter().take(MAX_PANELS).enumerate() {
         if ally == 0 {
             break;
         }
-        let Some(native) = panels[slot] else { continue };
+        let Some(native) = panels[slot].as_mut() else { continue };
         let saved_target = rd::<usize>(player + crate::OFF_TARGET);
         write(player + crate::OFF_TARGET, ally);
         panel(native.surface_a, native.surface_b, PANEL_MODE_TARGET);
         // the AI reads the target link during the frame: put it back before anything else runs
         write(player + crate::OFF_TARGET, saved_target);
+        native.rendered_ship = ally;
     }
 
     if FIRST_RENDER.swap(false, Ordering::Relaxed) {
@@ -205,16 +231,16 @@ unsafe extern "C" fn render_allies() {
 
 /// Composite the targets prepared last frame, where the stock panel sprites are drawn.
 unsafe extern "C" fn composite_allies() {
+    // A hidden HUD must not leave keyboard-selectable panels from a previous frame.
+    let Ok(mut displayed) = DISPLAYED_SHIPS.lock() else { return };
+    *displayed = [0; MAX_PANELS];
     if !crate::SPAWN_ALLY.load(Ordering::Relaxed)
         || rd::<u8>(HUD_ENABLED) == 0
         || rd::<usize>(PANEL_SUPPRESSED) != 0
     {
         return;
     }
-    let allies = living_allies();
-    if allies[0] == 0 {
-        return;
-    }
+    let roster = crate::roster();
     let Ok(panels) = PANELS.lock() else { return };
 
     let frame_height = rd::<i32>(FRAME_HEIGHT);
@@ -224,17 +250,22 @@ unsafe extern "C" fn composite_allies() {
     let set_color: SetColorFn = std::mem::transmute(SET_SPRITE_COLOR);
     let render: RenderExFn = std::mem::transmute(RENDER_EX);
 
-    for (slot, &ally) in allies.iter().take(MAX_PANELS).enumerate() {
-        if ally == 0 {
-            break;
-        }
+    for slot in 0..MAX_PANELS {
         let Some(native) = panels[slot] else { continue };
+        let ally = native.rendered_ship;
+        // Cached pointers are dereferenced only while still owned by the current battle roster.
+        if !roster.contains(&ally) || !crate::live_ship(ally)
+            || rd::<i32>(ally + crate::OFF_MODE_D70) == 1
+        {
+            continue;
+        }
         let sprite = native.sprite;
         let y = frame_height - PANEL_HEIGHT + slot as f32 * ALLY_SLOT_STEP;
         set_color(sprite, 0xffff_ffff, -1);
         set_z(sprite, layer_z(3), -1);
         (sprite as *mut u32).byte_add(SPRITE_BLEND).write_unaligned(BLEND_PANEL);
         render(sprite, ALLY_X, y, 0.0, ALLY_SCALE, ALLY_SCALE);
+        displayed[slot] = ally;
     }
 }
 
