@@ -1987,6 +1987,11 @@ unsafe fn follow_toggles(cards: &[(f32, f32, f32, f32)], listed: &[usize], layou
         let Some((x, dx, size)) = slot_geometry(cards, slot) else {
             break;
         };
+        // plane buttons belong to the card, not to the ALLY toggle: slot 1 has no toggle, and a missing toggle
+        // must not stop its card's plane buttons from following
+        if PLANE_BUTTONS.load(Ordering::Relaxed) {
+            follow_plane_buttons(listed, slot, x, dx, size);
+        }
         if slot == 1 {
             MARKER_X.store((x + dx + MARKER_DX).to_bits(), Ordering::Relaxed);
             continue;
@@ -1998,9 +2003,6 @@ unsafe fn follow_toggles(cards: &[(f32, f32, f32, f32)], listed: &[usize], layou
             continue;
         }
         move_gui(gui, [x + dx, GRID_Y], size);
-        if PLANE_BUTTONS.load(Ordering::Relaxed) {
-            follow_plane_buttons(listed, slot, x, dx, size);
-        }
     }
     PLACED_LAYOUT_SIG.store(layout, Ordering::Relaxed);
     complete
