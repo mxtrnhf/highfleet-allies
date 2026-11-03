@@ -13,13 +13,14 @@ pub const MAX_SECONDS: f32 = 60.0;
 /// panics when a missile that has locked on to it comes within `trigger_range`: it dumps flares and
 /// throws itself sideways until the missile is gone.
 ///
-/// Only has an effect on Steam 1.163. Defaults match config/hf_ai.json. Keep any separate QoL ai_flares feature off;
-/// exactly one implementation may own the flare hooks.
+/// Only has an effect on Steam 1.163. Defaults match config/hf_ai.json. Keep any separate QoL ai_flares feature off:
+/// both patch the same sites. The block also controls missile evasion, barrel rolls, the preventive flare curtain and
+/// stray-missile reactions, not only flare releases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiFlaresConfig {
-    /// Turns AI flares on. Enabled by player default. Enable it only when qol's `ai_flares.enabled` is `false`: both
-    /// patch the same three sites and whichever loads second finds other bytes and skips.
+    /// Turns AI missile defence on. Enabled by player default. Enable it only when qol's `ai_flares.enabled` is
+    /// `false`: both patch the same three sites and whichever loads second finds other bytes and skips.
     pub enabled: bool,
     /// How close, in game units, an incoming missile has to be before the ship reacts.
     ///

@@ -1,6 +1,6 @@
 [package]
 name = "hf-ai"
-version = "0.10.8"
+version = "0.10.10"
 edition = "2021"
 description = "Tactical AI layer for Highfleet 1.163: overrides the outputs of the stock per-ship AI tick (steering waypoint, engine strength, fire, launches). Standalone; not part of QoL."
 
@@ -14,4 +14,4 @@ log = "0.4.28"
 patchy = { package = "patchy-rs", git = "https://github.com/logdot/patchy-rs.git", tag = "v0.1.0" }
 serde = { version = "1.0.221", features = ["derive"] }
 serde_json = "1.0.144"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Memory"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_Security"] }

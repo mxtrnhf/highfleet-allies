@@ -1,4 +1,4 @@
-//! The pure part of the "flare curtain": when the player's side launches a missile, an AI ship may start dropping
+//! The pure part of the "flare curtain": when the other camp launches a missile, an AI ship may start dropping
 //! flares at random intervals BEFORE any missile is locked on to it, like a helicopter flooding the area with fake
 //! heat sources. No game memory, no dependencies, host-testable:
 //! `rustc --edition 2021 --test src/curtain_math.rs -o /tmp/cm_test && /tmp/cm_test`.
@@ -7,7 +7,7 @@
 pub const FRESH_LAUNCH_S: f64 = 1.0;
 
 #[derive(Debug, Clone, Copy)]
-pub struct Params {
+pub struct CurtainParams {
     /// Chance, rolled once per ship per launch, that the ship starts a curtain. 0 = feature off.
     pub probability: f32,
     pub interval_min: f32,
@@ -27,7 +27,7 @@ pub struct Params {
     pub eta_max_wait: f32,
 }
 
-impl Default for Params {
+impl Default for CurtainParams {
     fn default() -> Self {
         Self { probability: 0.0, interval_min: 0.5, interval_max: 1.0, seconds: 5.0, max_drops: 6, cooldown: 6.0, delay_min: 0.0, delay_max: 0.0, eta_lead: 4.0, eta_max_wait: 8.0 }
     }
@@ -36,22 +36,22 @@ impl Default for Params {
 #[derive(Debug, Clone, Default)]
 pub struct Curtain {
     /// The last launch number this ship looked at.
-    pub seen_seq: u64,
+    pub seen_launch: u64,
     /// The curtain runs until this game time (0 = none).
     pub until: f64,
     pub next_drop: f64,
     pub quiet_until: f64,
-    pub drops: u32,
+    pub releases: u32,
     /// +1 / -1: which side of the line to the missile the ship slips to while the curtain runs.
     pub side: f32,
     /// The engine boost of the retreat is valid until this game time (set by the steering glue each tick it retreats).
     pub boost_until: f64,
-    /// This curtain drops flares (false: the ship has no launcher or its rack is low; it still retreats).
-    pub drops_enabled: bool,
+    /// This curtain may release flares (false: the ship has no launcher or its rack is low; it still retreats).
+    pub may_release: bool,
     /// Most flares ever seen loaded in this ship's racks (the rack's capacity).
-    pub rack_max: f32,
+    pub rack_capacity: f32,
     /// The ship never had a flare (no launcher): it may shelter in an ally's flares instead of running.
-    pub no_flares: bool,
+    pub has_no_launcher: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,8 +59,8 @@ pub enum Event {
     None,
     Started,
     Extended,
-    /// Release one flare launcher now.
-    Drop,
+    /// Release all flare launchers now.
+    ReleaseFlares,
     /// The curtain ended (time out, drop cap or a real panic took over).
     Ended,
 }
@@ -69,26 +69,36 @@ fn range(lo: f32, hi: f32, rand: &mut dyn FnMut() -> f32) -> f64 {
     f64::from(lo + (hi - lo).max(0.0) * rand())
 }
 
-/// One step for one ship. `launch_seq` / `launch_time`: number and game time of the newest launch from the player's
-/// side (0 = none yet). `panicking`: the ship is in a real missile panic; the curtain stops and never touches the
-/// panic's timers.
+/// One curtain step reads.
+#[derive(Debug, Clone, Copy)]
+pub struct CurtainInput {
+    pub now: f64,
+    /// Number and game time of the newest launch from the other camp (0 = none yet).
+    pub launch_number: u64,
+    pub launch_time: f64,
+    /// The ship is in a real missile panic: the curtain stops and never touches the panic's timers.
+    pub panicking: bool,
+    /// The racks can release flares (a launcher exists and the reserve is held).
+    pub can_release: bool,
+    /// This ship is the launch target or a neighbour of it.
+    pub eligible: bool,
+    /// Estimated seconds until the missile arrives; `None` when unknown.
+    pub eta: Option<f32>,
+}
+
+/// One step for one ship.
 pub fn update(
     c: &mut Curtain,
-    p: &Params,
-    now: f64,
-    launch_seq: u64,
-    launch_time: f64,
-    panicking: bool,
-    can_drop: bool,
-    eligible: bool,
-    eta: Option<f32>,
+    p: &CurtainParams,
+    input: &CurtainInput,
     rand: &mut dyn FnMut() -> f32,
 ) -> Event {
+    let CurtainInput { now, launch_number, launch_time, panicking, can_release, eligible, eta } = *input;
     if p.probability <= 0.0 {
         return Event::None;
     }
     if panicking {
-        c.seen_seq = launch_seq;
+        c.seen_launch = launch_number;
         if c.until > 0.0 {
             c.until = 0.0;
             c.quiet_until = now + f64::from(p.cooldown);
@@ -97,8 +107,8 @@ pub fn update(
         return Event::None;
     }
     let mut event = Event::None;
-    if launch_seq != c.seen_seq {
-        c.seen_seq = launch_seq;
+    if launch_number != c.seen_launch {
+        c.seen_launch = launch_number;
         if eligible && now - launch_time <= FRESH_LAUNCH_S {
             if c.until > 0.0 {
                 c.until = c.until.max(now + f64::from(p.seconds));
@@ -109,8 +119,8 @@ pub fn update(
                     None => range(p.delay_min, p.delay_max, rand),
                 };
                 c.until = now + delay + f64::from(p.seconds);
-                c.drops = 0;
-                c.drops_enabled = can_drop;
+                c.releases = 0;
+                c.may_release = can_release;
                 c.side = if rand() < 0.5 { -1.0 } else { 1.0 };
                 c.next_drop = now + delay;
                 event = Event::Started;
@@ -118,15 +128,15 @@ pub fn update(
         }
     }
     if c.until > 0.0 {
-        if now >= c.until || (c.drops_enabled && c.drops >= p.max_drops) {
+        if now >= c.until || (c.may_release && c.releases >= p.max_drops) {
             c.until = 0.0;
             c.quiet_until = now + f64::from(p.cooldown);
             return Event::Ended;
         }
-        if c.drops_enabled && now >= c.next_drop && event == Event::None {
-            c.drops += 1;
+        if c.may_release && now >= c.next_drop && event == Event::None {
+            c.releases += 1;
             c.next_drop = now + range(p.interval_min, p.interval_max, rand);
-            return Event::Drop;
+            return Event::ReleaseFlares;
         }
     }
     event
@@ -161,7 +171,8 @@ pub fn shelter_waypoint(
     (out.0.is_finite() && out.1.is_finite()).then_some(out)
 }
 
-/// Ground guard of the retreat: above this y (y grows downward) the retreat may not point further down.
+/// Ground guard of the retreat: below this y (y grows downward, so larger y is lower) the retreat may not point
+/// further down.
 pub const NO_DESCENT_BELOW_Y: f32 = -250.0;
 
 /// While a curtain runs the ship moves AWAY from the launched missile (retreat plus a little sidestep, `side`), blended

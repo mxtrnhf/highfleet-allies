@@ -86,7 +86,7 @@ fn armed(carrier: usize, plane: usize) {
         return;
     }
     let entry = groups.entry(key).or_default();
-    entry.group.launched(now, config);
+    entry.group.record_launch(now, config);
     entry.last_seen = now;
 }
 
@@ -120,7 +120,7 @@ fn cooldown(carrier: usize) -> f32 {
         groups.remove(&key);
         return STOCK_COOLDOWN;
     }
-    entry.group.finish_attempt(delta)
+    entry.group.cooldown_after_attempt(delta)
 }
 
 fn trampoline(callback: *const (), args: &[u8], result: &[u8]) -> Trampoline {

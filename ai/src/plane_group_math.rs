@@ -31,7 +31,7 @@ pub struct Group {
 }
 
 impl Group {
-    pub fn launched(&mut self, now: f64, config: Config) {
+    pub fn record_launch(&mut self, now: f64, config: Config) {
         let continuing = self.remaining > 0
             && self
                 .last_launch
@@ -51,7 +51,7 @@ impl Group {
 
     /// A failed stock attempt cancels a partial group. The game subtracts this frame's
     /// delta immediately after the cooldown store, so compensate only the group delay.
-    pub fn finish_attempt(&mut self, frame_delta: f32) -> f32 {
+    pub fn cooldown_after_attempt(&mut self, frame_delta: f32) -> f32 {
         match self.pending_cooldown.take() {
             Some(delay) if self.remaining > 0 => delay + frame_delta.max(0.0),
             Some(delay) => delay,

@@ -23,18 +23,18 @@ pub enum State {
     /// The ported missile panic owns the waypoint (set by the caller).
     Panic,
     /// "Deny the dive": sidestepping out of the line straight above / below the target.
-    Dive,
+    DiveDodge,
     /// The target sat in the dive cone for the dwell time but the chance roll said no (stays stock until it leaves).
-    DiveSkip,
+    DiveDeclined,
     /// "Aim awareness": the player's aim line crosses this ship during an awareness window, it slips off the line.
     Aim,
 }
 
 /// Sanitized config values the tactics use.
 #[derive(Clone, Copy, Debug)]
-pub struct Params {
+pub struct TacticsParams {
     pub enabled: bool,
-    pub apply_to_allies: bool,
+    pub allies: bool,
     /// Ground reference in game y (y grows downward). The ground itself varies with x; see `ground_clearance`.
     pub ground_y: f32,
     /// Closer than this above `ground_y` (ship.y > ground_y - ground_clearance) no downward component is added.
@@ -97,11 +97,11 @@ pub struct Params {
     pub aim_fire_range: f32,
 }
 
-impl Default for Params {
+impl Default for TacticsParams {
     fn default() -> Self {
         Self {
             enabled: true,
-            apply_to_allies: true,
+            allies: true,
             ground_y: 200.0,
             ground_clearance: 450.0,
             ground_hard_y: 120.0,
@@ -184,42 +184,6 @@ impl Rng {
     pub fn range(&mut self, lo: f32, hi: f32) -> f32 {
         lo + (hi - lo).max(0.0) * self.unit()
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Gate {
-    Pass,
-    /// Some gate failed: stock behaviour.
-    Stock,
-    /// The ship is in a missile panic: the panic stage owns the waypoint.
-    Panic,
-}
-
-/// Everything the gate looks at (already read from the game).
-#[derive(Clone, Copy, Debug)]
-pub struct GateInput {
-    pub ai_flag: u8,
-    pub side: f32,
-    pub mode: Option<i32>,
-    pub has_target: bool,
-    pub panicking: bool,
-}
-
-/// `Pass` only when every gate holds. Mode 1 = airborne combat (`+0xb48`; landed is 3, takeoff 0).
-pub fn gate(p: &Params, g: &GateInput) -> Gate {
-    if !p.enabled || g.ai_flag == 0 || !g.side.is_finite() || g.side == 0.0 {
-        return Gate::Stock;
-    }
-    if g.side > 0.0 && !p.apply_to_allies {
-        return Gate::Stock;
-    }
-    if g.mode != Some(1) || !g.has_target {
-        return Gate::Stock;
-    }
-    if g.panicking {
-        return Gate::Panic;
-    }
-    Gate::Pass
 }
 
 /// Larger of the two group reaches that is positive and finite.
@@ -306,7 +270,7 @@ struct Limits {
     min_y: Option<f32>,
 }
 
-fn limits(ship: (f32, f32), stock: (f32, f32), bounds: &Bounds, p: &Params) -> Limits {
+fn limits(ship: (f32, f32), stock: (f32, f32), bounds: &Bounds, p: &TacticsParams) -> Limits {
     // Never more downward (+y) than the stock direction, and never downward at all if stock is level or up.
     let max_y = if ship.1 > p.ground_hard_y {
         Some(0.0)
@@ -329,7 +293,7 @@ fn satisfies(d: (f32, f32), l: &Limits) -> bool {
 /// `ship + 200 * normalize(stock_unit + w * tactic)`, with the safety limits applied to the FINAL direction (the
 /// normalization of a partly opposing sum can be more downward or outward than either input). `None` when the two
 /// nearly cancel, when a limit cannot be met (corner conflicts) or on any non-finite value: the caller leaves stock.
-pub fn compose(ship: (f32, f32), stock_vec: (f32, f32), tactic: (f32, f32), w: f32, bounds: &Bounds, p: &Params) -> Option<(f32, f32)> {
+pub fn compose(ship: (f32, f32), stock_vec: (f32, f32), tactic: (f32, f32), w: f32, bounds: &Bounds, p: &TacticsParams) -> Option<(f32, f32)> {
     if !(ship.0.is_finite() && ship.1.is_finite() && tactic.0.is_finite() && tactic.1.is_finite() && w.is_finite()) {
         return None;
     }
@@ -362,7 +326,7 @@ pub fn compose(ship: (f32, f32), stock_vec: (f32, f32), tactic: (f32, f32), w: f
 }
 
 /// Is the target within the cone straight below / above, within range? `widen` > 1 loosens it (hysteresis while already aligned).
-pub fn in_dive_cone(to: (f32, f32), p: &Params, widen: f32) -> bool {
+pub fn in_dive_cone(to: (f32, f32), p: &TacticsParams, widen: f32) -> bool {
     let d = (to.0 * to.0 + to.1 * to.1).sqrt();
     if !(d.is_finite() && d > 1.0 && d <= p.dive_range * widen) {
         return false;
@@ -392,7 +356,7 @@ pub fn track_target(st: &mut ShipState, now: f64, target: (f32, f32)) {
 
 /// Side of the sidestep: away from a near arena wall; else AGAINST the target's sideways motion (it has to reverse
 /// its momentum to follow: "wrong-foot"); else random.
-pub fn dive_side(ship_x: f32, bounds: &Bounds, p: &Params, rng: &mut Rng, target_vx: f32) -> f32 {
+pub fn dive_side(ship_x: f32, bounds: &Bounds, p: &TacticsParams, rng: &mut Rng, target_vx: f32) -> f32 {
     let wall = 2.0 * p.edge_margin;
     if bounds.xmax - ship_x < wall && ship_x - bounds.xmin >= wall {
         -1.0
@@ -416,7 +380,7 @@ enum Dive {
     Active(f32),
 }
 
-fn dive_update(p: &Params, st: &mut ShipState, bounds: &Bounds, now: f64, ship: (f32, f32), to: (f32, f32), rng: &mut Rng) -> Dive {
+fn dive_update(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, now: f64, ship: (f32, f32), to: (f32, f32), rng: &mut Rng) -> Dive {
     if let Some((until, side)) = st.dive {
         if now < until {
             return Dive::Active(side);
@@ -481,7 +445,7 @@ pub struct AimClock {
 
 impl AimClock {
     /// Advances the clock to `now` and says whether a window is open.
-    pub fn update(&mut self, now: f64, p: &Params, rng: &mut Rng) -> bool {
+    pub fn update(&mut self, now: f64, p: &TacticsParams, rng: &mut Rng) -> bool {
         if !self.started || now < self.open_until - f64::from(p.aim_window_s) - 1.0 {
             // first call, or the game clock restarted
             self.started = true;
@@ -500,7 +464,7 @@ impl AimClock {
 }
 
 /// Early fire is allowed while the player is inside `aim_fire_range` x the ship's gun reach (reach unknown: never).
-pub fn early_fire_in_range(dist: f32, reach: Option<f32>, p: &Params) -> bool {
+pub fn early_fire_in_range(dist: f32, reach: Option<f32>, p: &TacticsParams) -> bool {
     reach.is_some_and(|r| r.is_finite() && r > 0.0 && dist.is_finite() && dist <= r * p.aim_fire_range)
 }
 
@@ -513,7 +477,7 @@ pub struct AimInput {
 
 /// Is `ship` on the aim ray? Returns the unit direction that slips off the line (perpendicular to the aim, on the side
 /// the ship already is). `None` when the ship is behind the player, too far along the ray, or off the line.
-pub fn aim_dodge_dir(aim: &AimInput, ship: (f32, f32), p: &Params, rng: &mut Rng) -> Option<(f32, f32)> {
+pub fn aim_dodge_dir(aim: &AimInput, ship: (f32, f32), p: &TacticsParams, rng: &mut Rng) -> Option<(f32, f32)> {
     let v = (ship.0 - aim.player.0, ship.1 - aim.player.1);
     let along = v.0 * aim.dir.0 + v.1 * aim.dir.1;
     let cross = aim.dir.0 * v.1 - aim.dir.1 * v.0;
@@ -544,7 +508,7 @@ pub struct Step {
 }
 
 /// One decision for a ship that passed the gates. Updates the side timer and the state.
-pub fn step(p: &Params, st: &mut ShipState, bounds: &Bounds, inp: &StepInput, rng: &mut Rng) -> Step {
+pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepInput, rng: &mut Rng) -> Step {
     st.last_seen = inp.now;
     track_target(st, inp.now, inp.target);
     let to = (inp.target.0 - inp.ship.0, inp.target.1 - inp.ship.1);
@@ -563,11 +527,11 @@ pub fn step(p: &Params, st: &mut ShipState, bounds: &Bounds, inp: &StepInput, rn
                 let level = (to.1 / 150.0).clamp(-1.0, 1.0) * p.dive_level_weight;
                 let dir = normalized(side, level).unwrap_or((side, 0.0));
                 let waypoint = compose(inp.ship, stock_vec, dir, p.dive_weight, bounds, p);
-                return Step { state: State::Dive, waypoint };
+                return Step { state: State::DiveDodge, waypoint };
             }
             Dive::Skip => skipped = true,
             Dive::Idle => {}
         }
     }
-    Step { state: if skipped { State::DiveSkip } else { State::Stock }, waypoint: None }
+    Step { state: if skipped { State::DiveDeclined } else { State::Stock }, waypoint: None }
 }

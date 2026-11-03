@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::tactics_math::Params;
+use crate::tactics_math::TacticsParams;
 
 /// The aim-dodge and dive-avoidance `tactics` block of `hf_ai.json`. Enabled by player default; every key optional.
 /// Distances are game units, times are game seconds. Applies to AI-flown, airborne ships with a living target only.
@@ -10,8 +10,8 @@ pub struct TacticsConfig {
     /// Master switch (A/B tests).
     pub enabled: bool,
     /// Also steer AI ships of the player's side (allies). The ship you fly is never touched.
-    #[serde(rename = "allies", alias = "apply_to_allies")]
-    pub apply_to_allies: bool,
+    #[serde(alias = "apply_to_allies")]
+    pub allies: bool,
     /// Ground reference y (y grows downward) and the clearance above it where no downward component is added.
     pub ground_y: f32,
     pub ground_clearance: f32,
@@ -66,10 +66,10 @@ pub struct TacticsConfig {
 
 impl Default for TacticsConfig {
     fn default() -> Self {
-        let p = Params::default();
+        let p = TacticsParams::default();
         Self {
             enabled: p.enabled,
-            apply_to_allies: p.apply_to_allies,
+            allies: p.allies,
             ground_y: p.ground_y,
             ground_clearance: p.ground_clearance,
             ground_hard_y: p.ground_hard_y,
@@ -116,7 +116,7 @@ impl TacticsConfig {
         let aim_gap_min_s = pick(self.aim_gap_min_s, d.aim_gap_min_s, aim_window_s, 120.0);
         Self {
             enabled: self.enabled,
-            apply_to_allies: self.apply_to_allies,
+            allies: self.allies,
             ground_y: pick(self.ground_y, d.ground_y, -5000.0, 5000.0),
             ground_clearance: pick(self.ground_clearance, d.ground_clearance, 0.0, 5000.0),
             ground_hard_y: pick(self.ground_hard_y, d.ground_hard_y, -5000.0, 5000.0),
@@ -152,11 +152,11 @@ impl TacticsConfig {
         }
     }
 
-    pub fn params(&self) -> Params {
+    pub fn params(&self) -> TacticsParams {
         let s = self.sanitized();
-        Params {
+        TacticsParams {
             enabled: s.enabled,
-            apply_to_allies: s.apply_to_allies,
+            allies: s.allies,
             ground_y: s.ground_y,
             ground_clearance: s.ground_clearance,
             ground_hard_y: s.ground_hard_y,

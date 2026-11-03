@@ -2,11 +2,11 @@
 //!
 //! Plan (see `README.md` and `hf_notes/docs/findings/ai-telemetry.md`): the stock per-ship tick `FUN_140062f90` is kept;
 //! this mod overrides its OUTPUTS (the steering waypoint at `+0xbf0/+0xbf4`, engine command strength, fire bytes,
-//! launch gating) from a small set of tactics. Tactic logic is code; the numbers it uses live in `ai.json`.
+//! launch gating) from a small set of tactics. Tactic logic is code; the numbers it uses live in `hf_ai.json`.
 //!
 //! The tactics stage retains aim dodging and dive avoidance. Optional strafe/band positioning was retired in v0.10.6.
 //!
-//! v0.2.0 adds the port of qol's `ai_flares` (`ai_flares.rs`, config block `ai_flares`, off by default): after
+//! The port of qol's `ai_flares` (`ai_flares.rs`, config block `ai_flares`) runs after
 //! [`decide`] has had its say about the waypoint, the missile-panic stage may override it (panic beats tactics), and
 //! the flare-burst and engine-boost sites are hooked. See README.md.
 //!
@@ -26,6 +26,7 @@ use windows_sys::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION}
 
 mod ai_flares;
 mod curtain_math;
+mod debug_state;
 mod flares_config;
 mod missile_dump;
 mod panic_math;
@@ -57,7 +58,7 @@ const TICK_RVA: usize = 0x62f90;
 const TICK_PROLOGUE: [u8; 12] = [0x48, 0x8b, 0xc4, 0x55, 0x53, 0x41, 0x56, 0x48, 0x8d, 0xa8, 0xa8, 0xfe];
 
 const CLOCK: usize = 0x1_43a1_19c0; // f64 game clock
-const OFF_SIDE: usize = 0xad4; // f32: negative = AI, positive = player's side
+const OFF_SIDE: usize = 0xad4; // f32: negative = enemy, positive = player's side
 const OFF_TARGET: usize = 0xb00; // pointer: target node (a ship or a part of one)
 const OFF_POS_X: usize = 0x1840; // f32 centre of mass
 const OFF_POS_Y: usize = 0x1844;
@@ -68,7 +69,6 @@ const OFF_CODE: usize = 0x28;
 static STEER_BUFFER: [AtomicU32; 4] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
 
 /// What the tactic layer gets to look at when the stock AI has picked a waypoint.
-#[allow(dead_code)]
 struct Ctx {
     now: f64,
     creature: usize,
@@ -122,11 +122,11 @@ unsafe fn target_info(node: usize) -> Option<(usize, (f32, f32))> {
 }
 
 /// Called from the AI tick right before it stores the waypoint it wants for `creature`.
-/// Stages: the stock waypoint -> [`decide`] (tactics) -> the ported missile panic (`ai_flares::steer`, which overrides
+/// Stages: the stock waypoint -> [`decide`] (tactics) -> the ported missile panic (`ai_flares::panic_waypoint`, which overrides
 /// tactics while a ship is evading) -> the waypoint goes back to the tick.
 unsafe extern "C" fn on_steering(creature: usize) {
     // A Rust panic must never unwind into the game.
-    if catch_unwind(AssertUnwindSafe(|| steering(creature))).is_err() && !LOGGED_STEER_PANIC.swap(true, Ordering::Relaxed) {
+    if catch_unwind(AssertUnwindSafe(|| apply_steering_overrides(creature))).is_err() && !LOGGED_STEER_PANIC.swap(true, Ordering::Relaxed) {
         log::error!("hf_ai: a panic was caught in the steering hook and ignored");
     }
 }
@@ -153,7 +153,7 @@ fn maneuvers_allowed(creature: usize) -> bool {
 }
 
 
-unsafe fn steering(creature: usize) {
+unsafe fn apply_steering_overrides(creature: usize) {
     let load = |index: usize| f32::from_bits(STEER_BUFFER[index].load(Ordering::Relaxed));
     let (wanted, ship) = ((load(0), load(1)), (load(2), load(3)));
     let Some(now) = rd::<f64>(CLOCK) else { return };
@@ -167,14 +167,22 @@ unsafe fn steering(creature: usize) {
         target: info.map(|(_, position)| position),
         target_creature: info.map(|(creature, _)| creature),
     };
-    let (tactic, _) = tactics::decide(&ctx, || ai_flares::panicking(creature, now));
+    let (tactic, tactic_state) = tactics::decide(&ctx, || ai_flares::panicking(creature, now));
+    let tactics_code = match tactic_state {
+        tactics_math::State::Stock => debug_state::TACTICS_STOCK,
+        tactics_math::State::Panic => debug_state::TACTICS_PANIC,
+        tactics_math::State::DiveDodge => debug_state::TACTICS_DIVE,
+        tactics_math::State::DiveDeclined => debug_state::TACTICS_DIVE_SKIP,
+        tactics_math::State::Aim => debug_state::TACTICS_AIM,
+    };
+    debug_state::set_tactics(creature, now, tactics_code);
     // The panic stage sees the waypoint the tick will store (the tactic's, if it chose one) and overrides it.
     let tactic_waypoint = match tactic {
         Some((x, y)) if x.is_finite() && y.is_finite() => (x, y),
         _ => wanted,
     };
     // (returns None at once when ai_flares is off: its runtime is never created then)
-    let panic = ai_flares::steer(creature, now, tactic_waypoint, ship).filter(|(x, y)| x.is_finite() && y.is_finite());
+    let panic = ai_flares::panic_waypoint(creature, now, tactic_waypoint, ship).filter(|(x, y)| x.is_finite() && y.is_finite());
     let chosen = panic.or(tactic);
     if let Some((x, y)) = chosen {
         if x.is_finite() && y.is_finite() {
@@ -293,7 +301,7 @@ struct Config {
     /// The ported qol `ai_flares` (flares burst, sidestep, panic evasion, barrel roll, allies). Enabled by player default:
     /// use it only with qol's `ai_flares.enabled` (and `evade`) turned off.
     ai_flares: AiFlaresConfig,
-    /// Aim dodging and dive avoidance. Off by default.
+    /// Aim dodging and dive avoidance.
     tactics: TacticsConfig,
     /// Chance (0..1) that an enemy ship keeps launching Zenith missiles right after a launch (a burst that empties the
     /// rack) instead of waiting for the game's 2 s cooldown. 0 = vanilla. Was `ai_missile_dump_chance` in qol.json.
@@ -386,6 +394,7 @@ unsafe extern "C" fn init() -> bool {
         return true;
     }
     check_qol(&config);
+    debug_state::init();
     let cutoff = twr_math::sanitize_cutoff(config.twr_cutoff);
     TWR_CUTOFF.store(cutoff.to_bits(), Ordering::Relaxed);
     log::info!("hf_ai: maneuver strategic/Shipworks TWR cutoff {cutoff}");

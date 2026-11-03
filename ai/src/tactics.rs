@@ -1,5 +1,5 @@
 //! Aim-dodge and dive-avoidance game-memory glue around the pure `tactics_math`. Runs for every AI
-//! ship on every AI tick, so the default-off path is one atomic load, and everything read from the game is
+//! ship on every AI tick, so the disabled path is one atomic load, and everything read from the game is
 //! page-checked (`crate::rd`). Own gun reach for early fire is refreshed once a second.
 
 use std::collections::HashMap;
@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::tactics_config::TacticsConfig;
-use crate::tactics_math::{self as tm, Bounds, Gate, GateInput, Params, Rng, ShipState, State, StepInput};
+use crate::tactics_math::{self as tm, Bounds, Rng, ShipState, State, StepInput, TacticsParams};
 use crate::{plausible, rd, Ctx};
 
 const OFF_AI_FLAG: usize = 0xbd4; // u8: 0 = flown by a player
@@ -27,7 +27,7 @@ const MAX_ENTRIES: usize = 256;
 const MAX_GATE_LOGS: u32 = 24;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
-static PARAMS: OnceLock<Params> = OnceLock::new();
+static PARAMS: OnceLock<TacticsParams> = OnceLock::new();
 static GATE_LOGS: AtomicU32 = AtomicU32::new(0);
 /// `dive_boost` as f32 bits (1.0 = none).
 static DIVE_BOOST: AtomicU32 = AtomicU32::new(0x3f80_0000);
@@ -43,13 +43,13 @@ const MIN_AIM_LEN: f32 = 5.0;
 const BOOST_HOLD_S: f64 = 0.3;
 
 /// Boost factor the engine-command hook applies to `creature` at `now` because of a dodge (1.0 = none).
-pub fn dive_boost_for(creature: usize, now: f64) -> f32 {
+pub fn dodge_boost_for(creature: usize, now: f64) -> f32 {
     let Ok(list) = BOOSTED.try_lock() else { return 1.0 };
     list.iter().filter(|&&(c, until, _)| c == creature && now <= until).map(|&(_, _, factor)| factor).fold(1.0, f32::max)
 }
 
 /// Whether the engine hook must be installed for the dodge boost.
-pub fn wants_dive_boost() -> bool {
+pub fn wants_engine_boost() -> bool {
     ENABLED.load(Ordering::Relaxed) && f32::from_bits(DIVE_BOOST.load(Ordering::Relaxed)).max(f32::from_bits(AIM_BOOST.load(Ordering::Relaxed))) > 1.0
 }
 
@@ -106,7 +106,7 @@ pub fn init(config: &TacticsConfig) {
     if params.enabled {
         log::info!(
             "hf_ai: tactics ON (allies {}; dive {} chance {} cone {} deg range {} dwell {} s boost {})",
-            params.apply_to_allies,
+            params.allies,
             params.dive_enabled,
             params.dive_chance,
             params.dive_cone_deg,
@@ -194,7 +194,7 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
     }
     let Some(p) = PARAMS.get() else { return (None, State::Stock) };
     // cheap gates first: side, then the AI flag and mode (two reads), then the target
-    if !ctx.side.is_finite() || ctx.side == 0.0 || (ctx.side > 0.0 && !p.apply_to_allies) {
+    if !ctx.side.is_finite() || ctx.side == 0.0 || (ctx.side > 0.0 && !p.allies) {
         return (None, State::Stock);
     }
     // SAFETY: page-checked reads.
@@ -221,6 +221,7 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
     let world = guard.get_or_insert_with(World::default);
     let now = ctx.now;
     if tm::clock_reset(world.last_now, now) {
+        crate::debug_state::clear();
         world.ships.clear();
         world.bounds = None;
         world.next_bounds_read = 0.0;
@@ -301,13 +302,6 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
             );
         }
     }
-    let gate = tm::gate(
-        p,
-        &GateInput { ai_flag, side: ctx.side, mode, has_target: true, panicking: false },
-    );
-    if gate != Gate::Pass {
-        return (None, State::Stock);
-    }
     let step = tm::step(
         p,
         &mut entry.st,
@@ -316,11 +310,9 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
         &mut entry.rng,
     );
     // Early fire (aim awareness): one roll per awareness window for a ship that is on the aim line.
-    let mut aim_window = 0;
     if p.aim_fire_probability > 0.0 {
-        aim_window = world_aim_window;
-        if step.state == State::Aim && entry.fire_rolled != aim_window {
-            entry.fire_rolled = aim_window;
+        if step.state == State::Aim && entry.fire_rolled != world_aim_window {
+            entry.fire_rolled = world_aim_window;
             let dist = (target.0 - ctx.ship.0).hypot(target.1 - ctx.ship.1);
             if tm::early_fire_in_range(dist, entry.st.reach(), p) && entry.rng.unit() < p.aim_fire_probability {
                 entry.fire_until = now + f64::from(p.aim_fire_s);
@@ -340,9 +332,8 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
             }
         }
     }
-    let _ = aim_window;
     let factor = match step.state {
-        State::Dive => f32::from_bits(DIVE_BOOST.load(Ordering::Relaxed)),
+        State::DiveDodge => f32::from_bits(DIVE_BOOST.load(Ordering::Relaxed)),
         State::Aim => f32::from_bits(AIM_BOOST.load(Ordering::Relaxed)),
         _ => 1.0,
     };

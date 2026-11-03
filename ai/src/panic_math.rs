@@ -18,7 +18,7 @@ pub const SCAN_INTERVAL: f64 = 0.1;
 
 /// The sanitized config values the panic logic uses.
 #[derive(Debug, Clone, Copy)]
-pub struct Params {
+pub struct PanicParams {
     pub evade: bool,
     pub reaction_probability: f32,
     pub burst_seconds: f32,
@@ -43,27 +43,25 @@ pub struct Threat {
     pub stray: bool,
 }
 
-pub struct Ship {
+pub struct PanicState {
     pub next_scan: f64,
     /// Flares are dropped until this game time.
-    pub burst_until: f64,
+    pub flare_burst_until: f64,
     /// The ship evades until this game time.
-    pub evade_until: f64,
+    pub maneuver_until: f64,
     /// No new panic starts before this game time.
-    pub quiet_until: f64,
+    pub cooldown_until: f64,
     /// This panic is a barrel roll: the ship spins instead of evading.
-    pub roll: bool,
-    /// Game time the barrel roll started.
-    pub roll_start: f64,
+    pub barrel_roll: bool,
     /// This panic is a panic evasion: boost, full steering takeover, one fixed direction.
-    pub panic: bool,
+    pub panic_evasion: bool,
     /// The direction a panic evasion has committed to (unit vector).
     pub flight: Option<(f32, f32)>,
     /// `1.0` or `-1.0`: which side of the missile's line of approach the ship runs to (and which
     /// way a barrel roll turns).
-    pub side: f32,
+    pub dodge_side: f32,
     /// Where the nearest threatening missile was at the last scan.
-    pub threat: Option<(f32, f32)>,
+    pub missile_position: Option<(f32, f32)>,
     // Trace-only bookkeeping (hf_ai addition; never read by the behaviour).
     /// A panic start was traced and its end has not been traced yet.
     pub trace_active: bool,
@@ -71,19 +69,18 @@ pub struct Ship {
     pub trace_last_engine: f64,
 }
 
-impl Default for Ship {
+impl Default for PanicState {
     fn default() -> Self {
         Self {
             next_scan: 0.0,
-            burst_until: 0.0,
-            evade_until: 0.0,
-            quiet_until: 0.0,
-            roll: false,
-            roll_start: 0.0,
-            panic: false,
+            flare_burst_until: 0.0,
+            maneuver_until: 0.0,
+            cooldown_until: 0.0,
+            barrel_roll: false,
+            panic_evasion: false,
             flight: None,
-            side: 1.0,
-            threat: None,
+            dodge_side: 1.0,
+            missile_position: None,
             trace_active: false,
             trace_last_steer: f64::NEG_INFINITY,
             trace_last_engine: f64::NEG_INFINITY,
@@ -91,36 +88,36 @@ impl Default for Ship {
     }
 }
 
-impl Ship {
+impl PanicState {
     /// Whether the ship is in a panic (flares dropping or evading).
-    pub fn panicking(&self, now: f64) -> bool {
-        now < self.burst_until || now < self.evade_until
+    pub fn is_panicking(&self, now: f64) -> bool {
+        now < self.flare_burst_until || now < self.maneuver_until
     }
 
     /// Whether the launchers should be fired this frame.
-    pub fn firing(&self, now: f64) -> bool {
-        now < self.burst_until
+    pub fn releasing_flares(&self, now: f64) -> bool {
+        now < self.flare_burst_until
     }
 
     /// Whether the per-ship state can be dropped (nothing running and no quiet period left).
-    pub fn idle(&self, now: f64) -> bool {
-        !(self.burst_until > now || self.evade_until > now || self.quiet_until > now)
+    pub fn is_idle(&self, now: f64) -> bool {
+        !(self.flare_burst_until > now || self.maneuver_until > now || self.cooldown_until > now)
     }
 }
 
 /// What a scan of one ship did.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ScanEvent {
+pub enum ThreatEvent {
     /// Not time to scan yet, or the ship is in its quiet period.
     NotDue,
     /// Scanned, nothing threatening (or a panic running with no missile left).
-    Clear,
+    NoThreat,
     /// A panic is running and a missile is still coming.
-    Seen(Threat),
+    ThreatContinues(Threat),
     /// A missile is in range but the reaction roll failed.
-    Ignored(Threat),
+    ReactionRollFailed(Threat),
     /// A panic started.
-    Started(Threat),
+    PanicStarted(Threat),
 }
 
 fn random_side(rand: &mut dyn FnMut() -> f32) -> f32 {
@@ -135,37 +132,37 @@ fn random_side(rand: &mut dyn FnMut() -> f32) -> f32 {
 /// (`threatened`) and only runs when a scan is due; `rand` is the `[0, 1)` generator. The order of the dice rolls
 /// is the original's.
 pub fn scan(
-    ship: &mut Ship,
+    ship: &mut PanicState,
     now: f64,
-    p: &Params,
+    p: &PanicParams,
     find_threat: impl FnOnce() -> Option<Threat>,
     rand: &mut dyn FnMut() -> f32,
-) -> ScanEvent {
-    let panicking = ship.panicking(now);
+) -> ThreatEvent {
+    let panicking = ship.is_panicking(now);
 
-    if now >= ship.next_scan && (panicking || now >= ship.quiet_until) {
+    if now >= ship.next_scan && (panicking || now >= ship.cooldown_until) {
         ship.next_scan = now + SCAN_INTERVAL;
         let threat = find_threat();
         if panicking {
             // A missile that is still coming keeps the evasion going.
             if let Some(found) = threat {
-                ship.threat = Some(found.position);
+                ship.missile_position = Some(found.position);
                 // A stray starts evasion only. If a locked missile appears during that evasion, add one flare burst;
                 // a burst that already ran has a non-zero expiry and is not restarted on every scan.
-                if !found.stray && ship.burst_until == 0.0 {
-                    ship.burst_until = now + f64::from(p.burst_seconds);
+                if !found.stray && ship.flare_burst_until == 0.0 {
+                    ship.flare_burst_until = now + f64::from(p.burst_seconds);
                 }
-                if p.evade && !ship.roll {
-                    let extension = if ship.panic {
+                if p.evade && !ship.barrel_roll {
+                    let extension = if ship.panic_evasion {
                         PANIC_EVASION_EXTENSION
                     } else {
                         EVASION_EXTENSION
                     };
-                    ship.evade_until = ship.evade_until.max(now + extension);
-                    ship.quiet_until =
-                        ship.burst_until.max(ship.evade_until) + f64::from(p.min_interval_seconds);
+                    ship.maneuver_until = ship.maneuver_until.max(now + extension);
+                    ship.cooldown_until =
+                        ship.flare_burst_until.max(ship.maneuver_until) + f64::from(p.min_interval_seconds);
                 }
-                return ScanEvent::Seen(found);
+                return ThreatEvent::ThreatContinues(found);
             }
         } else if let Some(found) = threat {
             // EXTENSION POINT (threat decision): `found` carries the missile body address, its position and its
@@ -173,31 +170,30 @@ pub fn scan(
             // dodge) would go here, between the threat and the reaction roll. Deliberately not done in v0.2.0:
             // the port is behaviour-identical to qol `ai_flares`.
             if rand() < p.reaction_probability {
-                ship.threat = Some(found.position);
-                ship.burst_until = if found.stray { 0.0 } else { now + f64::from(p.burst_seconds) };
-                ship.roll = p.evade && rand() < p.barrel_roll_probability;
-                ship.roll_start = now;
-                ship.panic = p.evade && !ship.roll && rand() < p.panic_evasion_probability;
-                ship.evade_until = if !p.evade {
+                ship.missile_position = Some(found.position);
+                ship.flare_burst_until = if found.stray { 0.0 } else { now + f64::from(p.burst_seconds) };
+                ship.barrel_roll = p.evade && rand() < p.barrel_roll_probability;
+                ship.panic_evasion = p.evade && !ship.barrel_roll && rand() < p.panic_evasion_probability;
+                ship.maneuver_until = if !p.evade {
                     0.0
-                } else if ship.roll {
+                } else if ship.barrel_roll {
                     now + f64::from(p.barrel_roll_seconds)
-                } else if ship.panic {
+                } else if ship.panic_evasion {
                     now + f64::from(p.panic_evasion_seconds)
                 } else {
                     now + f64::from(p.evasion_seconds)
                 };
                 ship.flight = None;
-                ship.side = random_side(rand);
-                ship.quiet_until =
-                    ship.burst_until.max(ship.evade_until) + f64::from(p.min_interval_seconds);
-                return ScanEvent::Started(found);
+                ship.dodge_side = random_side(rand);
+                ship.cooldown_until =
+                    ship.flare_burst_until.max(ship.maneuver_until) + f64::from(p.min_interval_seconds);
+                return ThreatEvent::PanicStarted(found);
             }
-            return ScanEvent::Ignored(found);
+            return ThreatEvent::ReactionRollFailed(found);
         }
-        return ScanEvent::Clear;
+        return ThreatEvent::NoThreat;
     }
-    ScanEvent::NotDue
+    ThreatEvent::NotDue
 }
 
 pub fn normalized(x: f32, y: f32) -> Option<(f32, f32, f32)> {
@@ -231,7 +227,7 @@ pub fn stray_cpa(
     (miss.is_finite() && miss <= radius).then_some((t, miss))
 }
 
-/// Above this y (the ground is at about +250; y grows downward) a ship in a panic may not steer downward: flares drop
+/// Below this y (the ground is at about +250; y grows downward) a ship in a panic may not steer downward: flares drop
 /// BELOW the ship, so the way out is up or sideways, never into the ground or the flares.
 pub const NO_DESCENT_BELOW_Y: f32 = -250.0;
 /// The two sidestep candidates must differ by at least this in y for the higher one to be preferred over `side`.
@@ -282,9 +278,9 @@ pub fn evade_waypoint(
     Some((ship.0 + x * course_length, ship.1 + y * course_length))
 }
 
-/// Result of [`steer`].
+/// Result of [`evasive_waypoint`].
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct SteerOutcome {
+pub struct EvasionOutcome {
     /// The replacement waypoint, `None` = leave it.
     pub waypoint: Option<(f32, f32)>,
     /// A panic evasion committed to a direction on this call (first steering call of the panic).
@@ -293,27 +289,27 @@ pub struct SteerOutcome {
 
 /// The waypoint block of the original `on_steering` (everything after the per-ship lookup).
 /// `waypoint` and `ship_xy` are what the AI tick wants / where the ship is.
-pub fn steer(
-    ship: &mut Ship,
+pub fn evasive_waypoint(
+    ship: &mut PanicState,
     now: f64,
-    p: &Params,
+    p: &PanicParams,
     waypoint: (f32, f32),
     ship_xy: (f32, f32),
-) -> SteerOutcome {
-    let none = SteerOutcome::default();
+) -> EvasionOutcome {
+    let none = EvasionOutcome::default();
     let (waypoint_x, waypoint_y) = waypoint;
     let (ship_x, ship_y) = ship_xy;
-    if now >= ship.evade_until {
+    if now >= ship.maneuver_until {
         return none;
     }
-    let Some(missile) = ship.threat else {
+    let Some(missile) = ship.missile_position else {
         return none;
     };
 
-    if ship.roll {
+    if ship.barrel_roll {
         // The engines are commanded directly (see `on_engine_commands`).
         none
-    } else if ship.panic {
+    } else if ship.panic_evasion {
         // Pick one escape direction when the panic starts and floor it that way.
         let mut new_flight = false;
         if ship.flight.is_none() {
@@ -321,7 +317,7 @@ pub fn steer(
                 (waypoint_x, waypoint_y),
                 (ship_x, ship_y),
                 missile,
-                ship.side,
+                ship.dodge_side,
                 1.0,
             )
             .and_then(|(x, y)| normalized(x - ship_x, y - ship_y))
@@ -333,7 +329,7 @@ pub fn steer(
         };
         let length = normalized(waypoint_x - ship_x, waypoint_y - ship_y)
             .map_or(EVASION_FALLBACK_LENGTH, |(_, _, length)| length.max(1.0));
-        SteerOutcome {
+        EvasionOutcome {
             waypoint: Some((ship_x + flight_x * length, ship_y + flight_y * length)),
             new_flight,
         }
@@ -342,20 +338,20 @@ pub fn steer(
             (waypoint_x, waypoint_y),
             (ship_x, ship_y),
             missile,
-            ship.side,
+            ship.dodge_side,
             p.evasion_strength,
         ) else {
             return none;
         };
-        SteerOutcome { waypoint: Some(new_waypoint), new_flight: false }
+        EvasionOutcome { waypoint: Some(new_waypoint), new_flight: false }
     }
 }
 
-/// The ship lookup of the original `on_engine_commands`: `Some((roll, side))` while the ship is in a panic
+/// The ship lookup of the original `on_engine_commands`: `Some((barrel_roll, dodge_side))` while the ship is in a panic
 /// evasion or a barrel roll.
-pub fn engine_mode(ship: &Ship, now: f64) -> Option<(bool, f32)> {
-    if (ship.panic || ship.roll) && now < ship.evade_until {
-        Some((ship.roll, ship.side))
+pub fn engine_mode(ship: &PanicState, now: f64) -> Option<(bool, f32)> {
+    if (ship.panic_evasion || ship.barrel_roll) && now < ship.maneuver_until {
+        Some((ship.barrel_roll, ship.dodge_side))
     } else {
         None
     }

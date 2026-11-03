@@ -1,4 +1,4 @@
-# hf_ai v0.10.7
+# hf_ai v0.10.10
 
 A tactical AI layer for **HighFleet Steam 1.163**, loaded as a standalone DLL by
 logdot's Modloader v4. The stock AI still selects targets and computes movement;
@@ -33,6 +33,10 @@ player profile and is not a vanilla/off configuration.
   `plane_group_launch_delay_seconds` space ready aircraft launches. Enemy and
   allied AI carriers only, normal `Combat.seria`; strategic/manual paths keep
   stock behavior. Size 1 restores stock cadence.
+- **Debug overlay feed:** v0.10.9 publishes each AI ship's tactics/flare state to
+  the `Local\hf_ai_debug_state_v1` shared-memory table, which hf_ally's
+  `debug_overlay` reads for its second label line. This has no gameplay effect
+  and the mapping is absent/unused when hf_ally's overlay is off.
 
 The top-level `twr_cutoff` is the sole maneuver capability threshold. Since v0.10.8
 it uses live strategic TWR (`creature +0x160c`), as displayed in the shipbuilder
