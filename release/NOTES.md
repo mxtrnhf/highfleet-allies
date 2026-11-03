@@ -2,26 +2,18 @@
 
 For **HighFleet Steam 1.163**.
 
-## Changes
+## Changes since v0.14.5
 
-- Added **ship switching** to ally (config **ship_switching**, default **on**): press **1** or **2** to take the ship actually shown in the top or bottom ally panel, or **TAB** to cycle deployed friendly ships. The selected ship becomes player-controlled at the next combat tick; your former ship drops to the game's native AI (driven by hf_ai when installed), keeps ally tracking and takes over the freed panel slot. Held gun/flare/boost input moves to the new ship. Retreat keys and low-fuel retreat then apply to the new ship. Retreating, destroyed, inactive and non-flying ships are never selected; keys are ignored during pre-combat, pause, dialogs or when another window has focus. Set `ship_switching: false` to free the keys for other mods.
-- Fixed the ally ship panels for real this time: the game rebuilds its HUD marker table every frame, and a ship the mod deploys outside the stock spawn path is never entered into it, so the v0.14.9 native initialisation call registered nothing. The panel now writes the same per-part marker records itself, using the game's own layer and scale rules, so the whole hull is drawn with the stock palette and draw order instead of a dark silhouette with only the modules standing out. The panels still clear when the battle ends.
+- **New: combat ship switching** (config **ship_switching**, default **on**). **TAB** cycles the deployed friendly ships, **1** takes the ship shown in the top ally panel and **2** the ship in the bottom panel. The selected ship becomes player-controlled on the next combat tick; your former ship drops to the game's native AI (driven by hf_ai when installed), keeps ally tracking and takes over the freed panel slot. Held gun/flare/boost input moves to the new ship, and retreat keys plus the low-fuel retreat rule then apply to it. Retreating, destroyed, inactive and non-flying ships are never selected, and the keys are ignored during pre-combat, pause, dialogs or when another window has focus. Set `ship_switching: false` to free the keys for other mods. Details: docs/ship-switching.md.
+- **Improved ally ship panels.** The panel now draws the complete hull with the game's own palette, layer and draw order, so an ally panel looks like an enemy panel instead of a dark silhouette with only the modules visible. The panel had been relying on a marker table the game rebuilds every frame, which never contains a mod-deployed ship; it now writes the same per-part records itself for the duration of its own render, using the game's layer and scale rules.
+- **Ally panels no longer stop rendering an off-screen ally.** The schematic is independent of the camera and keeps updating while the ally is outside the view, and an ally that leaves the roster (destroyed, retreated, handover) loses its panel instead of leaving a stale picture. Panels still disappear with the stock panels at the end of a battle.
+- **Ally target boxes** are drawn at 80% of the native square so several stay readable next to your own box, and the size is configurable with **ally_reticle_scale** (default `0.8`, `1.0` = native size).
+- **Fixed an access violation after a battle or scene change** in the retained pre-combat ALLY / plane buttons: cached button pointers are validated against the current native GUI registry before their names or fields are read, and a damaged button sprite is repaired in place instead of appending another background.
+- Split panel bookkeeping so a handoff or a retreat cannot leave one ally's schematic in another ally's panel slot.
 
-- Added **ally_panels** to ally (default **on**): draws a half-size copy of the battle ship panel for each ally beside your own bottom-left panel, showing that ally's name, speed, counters and live module schematic. Two fit in the column; they appear only while an ally is in the battle.
-- Added **ally_reticles** to ally (default **on**): draws the game's native target box around the enemy each ally is currently targeting, in the ally colour (`ally_damage_color`). Your own lime target box is unchanged.
-- Added **ally_bombers** to ally (default **off**): bomb-carrying wingmen now perform a player-like bombing run against landed, non-prize enemies. The dive is governed so the ship can pull out, aiming uses the game's own ballistic prediction, the whole payload is released at 0.05 s intervals below 1000 units with real downward speed, flares fire every 0.5 s while armed, ship-missile launches are suppressed during the run, and the ship climbs away afterwards. See docs/ship-bombers.md.
-- Adjusted default `launch_flares_evade_range` to **700.0** to stop AI from overusing the afterburner.
-- Fixed a crash in diagnostic logging after restarting a battle. Cached ally/enemy probes are reset and validated before reading ship data.
-- Moved the stock aircraft AI crash fix and null-fleet/vector crash guards from ally into bundled QoL. Both remain enabled by default, now controlled by **fix_plane_ai_crash** and **fix_merge_crash** in **qol.json**. The fleet guards are defensive, not a confirmed fix for every merge crash. Update both DLLs together; stock upstream QoL does not include these additions.
-- Removed ship/battle CSV recording, steering/obstacle CSV capture, capture markers and replay-analysis tools.
-- Kept megalog, crash reports and other text diagnostics.
-- Grouped logging options under **logging** in ally and AI configs. Old logging-key locations remain supported; explicit nested settings take precedence.
-- Retained the optional dead-node crash diagnostic as **logging.dead_node**, disabled by default.
-- Added **elevation_rules** to the bundled QoL build, ported from our separate QoL fork:
-  - **vanilla** (default) and **modern** leave Steam 1.163 firing-arc rules unchanged.
-  - **classic** restores the older same-floor gun-blocking and KAZ target-cone/coverage rules.
-  - **classic_kaz** adds a KAZ truss exemption to classic rules; hull blocks, hardpoints, armour and modules still block it.
-- Firing-arc rules are independent of manual ship-editor elevation. Existing **qol.json** files are not overwritten.
+## Pack contents
+
+hf_ally @ALLY_VERSION@, hf_ai @AI_VERSION@ (unchanged since v0.14.5), and the bundled QoL build (unchanged).
 
 ## Installation
 

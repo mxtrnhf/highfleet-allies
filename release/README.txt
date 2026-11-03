@@ -4,35 +4,23 @@ Source: https://github.com/mxtrnhf/highfleet-allies
 Research notes: https://github.com/mxtrnhf/hf_notes
 
 WHAT CHANGED SINCE PACK v0.14.5
-- Added ship switching (config ship_switching, default on): 1 and 2 take the ship
-  shown in the top/bottom ally panel, TAB cycles deployed friendly ships. The
-  selected ship becomes player-controlled at the next combat tick; your former
-  ship drops to native AI (hf_ai drives it) and takes over the freed panel slot.
-  Held gun/flare/boost input moves to the new ship; retreat and low-fuel retreat
-  then apply to it. Set ship_switching:false to free the keys for other mods.
-- Fixed the ally ship panels: a deployed ally is never entered into the game's
-  per-frame HUD marker table, so the panel now writes the same per-part records
-  itself with the game's layer and scale rules. The whole hull now draws with the
-  stock palette and draw order, off-screen too, instead of a dark silhouette with
-  only the modules visible. Panels still clear when the battle ends.
-- Added ally ship panels: a half-size battle ship panel beside your own panel for
-  each ally (name, speed, counters and live module schematic). Config ally_panels.
-- Added ally target boxes: the native target square around each ally's current
-  target, drawn in the ally colour. Config ally_reticles.
-- Adjusted default launch_flares_evade_range to 700.0 to stop AI from overusing
-  the afterburner.
-- Fixed stale diagnostic probes after restarting a battle.
-- Moved the stock aircraft AI fix and null-fleet/vector crash guards into bundled
-  QoL. fix_plane_ai_crash and fix_merge_crash now belong in qol.json (default true).
-  Update both DLLs together. Upstream QoL does not include these two additions.
-  The fleet guards are defensive, not a confirmed fix for every merge crash.
-- Removed ship/battle, steering and obstacle CSV capture and replay-analysis tools.
-- Kept megalog/crash reports and text diagnostics; settings now live under logging.
-  Old logging-key locations remain readable. Dead-node text logging is optional.
-- Bundled QoL now supports elevation_rules: vanilla (default), modern, classic,
-  classic_kaz. Vanilla/modern preserve 1.163 firing-arc rules; classic restores
-  older gun/KAZ rules; classic_kaz additionally exempts trusses from KAZ scans.
-  This is independent of manual editor elevation. See NOTES.md and docs/qol-guide.md.
+- NEW: combat ship switching (config ship_switching, default on). TAB cycles the
+  deployed friendly ships, 1 takes the ship in the top ally panel and 2 the one
+  in the bottom panel. The chosen ship becomes player-controlled at the next
+  combat tick; your former ship drops to native AI (hf_ai drives it) and takes
+  over the freed panel slot. Held gun/flare/boost input moves to the new ship,
+  and retreat plus the low-fuel retreat rule then apply to it. Set
+  ship_switching:false to free the keys for other mods.
+- Improved ally ship panels: the whole hull now draws with the game's own
+  palette, layer and draw order (previously a dark silhouette with only the
+  modules visible). The panel writes the same per-part records the game uses,
+  for its own render only.
+- Ally panels no longer stop rendering an ally that is off-screen, and a ship
+  that leaves the roster loses its panel instead of leaving a stale picture.
+- Ally target boxes are 80% of the native square and configurable with
+  ally_reticle_scale (default 0.8; 1.0 = native size).
+- Fixed an access violation in the retained pre-combat ALLY/plane buttons after
+  a scene change; cached button pointers are validated before use.
 
 INSTALL
 1. Back up Saves and your current ally.json/hf_ai.json before extracting. These
