@@ -12,14 +12,13 @@ use crate::{plausible, rd, Ctx};
 
 const OFF_AI_FLAG: usize = 0xbd4; // u8: 0 = flown by a player
 const OFF_MODE: usize = 0xb48; // i32: 1 airborne combat, 3 landed, 0 takeoff (telemetry column `mode`; NOT +0xd70, that is the role)
-/// Fire byte of main-gun group 0 (the player's left mouse button). The AI weapon controller never uses it; CreatureUpdate
-/// calls FireGuns for every gun of the group while it is set (each gun obeys its own reload).
+/// Player fire buttons, sampled read-only for hostile aim awareness.
 const OFF_FIRE0: usize = 0xbbc;
+const OFF_NODE_ID: usize = 0x18;
 const OFF_ACTIVE: usize = 0x48; // i32
 const OFF_STATE: usize = 0xbdc; // i32 driver state, 6 / 7 = dead or gone
 const OFF_CODE: usize = 0x28;
 const OFF_REACH: usize = 0x1838; // f32 gun reach, +0x183c second fire group (read as a pair)
-const OFF_RADIUS: usize = 0x1850; // f32 bounding radius
 const OFF_AI_AIM: usize = 0xbf8; // [f32; 2] unit aim vector from AiWeaponController
 const OFF_GUNS0_BEGIN: usize = 0x13a8;
 const OFF_GUNS0_END: usize = 0x13b0;
@@ -39,7 +38,7 @@ const CREATURE_STRIDE: usize = 0x18;
 const CREATURE_PTR_OFF: usize = 0x8;
 const MAX_LIVE_SHIPS: usize = 128;
 const SHIP_SCAN_INTERVAL_S: f64 = 0.05;
-/// Hold-over after the player's fire byte clears so single-click volleys register during an awareness window.
+/// Hold-over after a sampled player fire-button state (not confirmed shots).
 const PLAYER_FIRE_HOLD_S: f64 = 0.6;
 /// Arena extents the stock AI's map-edge push and the deploy code use: x max, y max, x min, y min (f32 each).
 const BOUNDS_ADDRESS: usize = 0x1_403c_2bc0;
@@ -92,14 +91,15 @@ fn note_boost(creature: usize, now: f64, factor: f32) {
 }
 
 struct Entry {
+    node_id: u32,
     st: ShipState,
     rng: Rng,
     next_refresh: f64,
     boosting: bool,
-    /// Early fire: window number already rolled for, when the fire ends, and whether we set the fire byte.
+    /// Early-fire range permission; never owns or writes a native fire byte.
     fire_rolled: u32,
     fire_until: f64,
-    fire_set: bool,
+    fire_target: Option<(usize, u32)>,
 }
 
 
@@ -108,7 +108,6 @@ struct LiveShip {
     creature: usize,
     side: f32,
     pos: (f32, f32),
-    radius: f32,
     aim_dir: Option<(f32, f32)>,
     shooting: bool,
 }
@@ -161,7 +160,7 @@ pub fn init(config: &TacticsConfig) {
             );
             if params.aim_fire_probability > 0.0 {
                 log::info!(
-                    "hf_ai: early fire ON (chance {} per window, {} s, within {} x reach)",
+                    "hf_ai: early-fire range permission ON (chance {} per window, {} s, within {} x group-0 reach; native firing checks retained)",
                     params.aim_fire_probability,
                     params.aim_fire_s,
                     params.aim_fire_range
@@ -243,7 +242,6 @@ unsafe fn refresh_live_ships(world: &mut World, now: f64) {
         if !(x.is_finite() && y.is_finite()) {
             continue;
         }
-        let radius = rd::<f32>(creature + OFF_RADIUS).filter(|r| r.is_finite() && *r > 0.0).unwrap_or(80.0);
         let Some(ai_flag) = rd::<u8>(creature + OFF_AI_FLAG) else {
             continue;
         };
@@ -264,7 +262,6 @@ unsafe fn refresh_live_ships(world: &mut World, now: f64) {
             creature,
             side,
             pos: (x, y),
-            radius,
             aim_dir,
             shooting,
         });
@@ -285,62 +282,83 @@ fn pick_hostile_aim(live_ships: &[LiveShip], creature: usize, side: f32, ship: (
         .map(|(_, cand)| cand)
 }
 
+/// Called only at the native group-0 range gate, before its alignment/FF checks.
+/// Stale identity, control handoffs, missing targets and stale steering fail closed.
+pub fn early_fire_allowed(creature: usize, distance: f32) -> bool {
+    let Some(p) = PARAMS.get().filter(|p| p.enabled && p.aim_fire_probability > 0.0) else {
+        return false;
+    };
+    // SAFETY: borrowed scalar reads only, all page-checked; no game memory is mutated.
+    let (node_id, now, target, reach) = unsafe {
+        if !live_ship(creature) {
+            return false;
+        }
+        if rd::<u8>(creature + OFF_AI_FLAG).unwrap_or(0) == 0 || rd::<i32>(creature + OFF_MODE) != Some(1) {
+            return false;
+        }
+        if !crate::maneuvers_allowed(creature) {
+            return false;
+        }
+        let Some(side) = rd::<f32>(creature + crate::OFF_SIDE).filter(|s| s.is_finite() && *s != 0.0) else {
+            return false;
+        };
+        if side > 0.0 && !p.allies {
+            return false;
+        }
+        let Some(node_id) = rd::<u32>(creature + OFF_NODE_ID) else { return false };
+        let Some(now) = rd::<f64>(crate::CLOCK).filter(|t| t.is_finite()) else { return false };
+        let Some((target, _)) = rd::<usize>(creature + crate::OFF_TARGET).and_then(|node| crate::target_info(node)) else {
+            return false;
+        };
+        if target == creature || !live_ship(target) {
+            return false;
+        }
+        let Some(target_id) = rd::<u32>(target + OFF_NODE_ID) else { return false };
+        (node_id, now, (target, target_id), rd::<f32>(creature + OFF_REACH))
+    };
+    let Ok(guard) = WORLD.try_lock() else { return false };
+    let Some(entry) = guard.as_ref().and_then(|w| w.ships.get(&creature)) else { return false };
+    entry.node_id == node_id
+        && entry.fire_target == Some(target)
+        && now >= entry.st.last_seen
+        && now - entry.st.last_seen <= BOOST_HOLD_S
+        && now < entry.fire_until
+        && tm::early_fire_in_range(distance, reach, p)
+}
+
 /// The tactics decision for one ship. Returns the waypoint (or `None` = leave the stock one) and the state for the log.
 pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)>, State) {
-    let result = decide_inner(ctx, panicking);
-    if ANY_FIRE.load(Ordering::Relaxed) {
-        release_fire(ctx.creature, ctx.now);
+    if !ENABLED.load(Ordering::Relaxed) {
+        return (None, State::Stock);
     }
-    result
-}
-
-/// True while some ship may have its fire byte set by us (so the cleanup after every decision is skipped otherwise).
-static ANY_FIRE: AtomicBool = AtomicBool::new(false);
-
-/// Clears the fire byte of `creature` (and any other expired ship) when early fire is over, whichever early return
-/// `decide_inner` took (a panic, a failed gate, a lost lock ...), so a ship never keeps shooting after its window.
-fn release_fire(creature: usize, now: f64) {
-    let Ok(mut guard) = WORLD.try_lock() else { return };
-    let Some(world) = guard.as_mut() else { return };
-    for (&ship, entry) in world.ships.iter_mut() {
-        if entry.fire_set && (now >= entry.fire_until || (ship == creature && !live_ship(ship))) {
-            // SAFETY: page-checked read, then a one-byte write into the live creature.
-            unsafe {
-                if rd::<u8>(ship + OFF_FIRE0).is_some() {
-                    std::ptr::write_unaligned((ship + OFF_FIRE0) as *mut u8, 0);
-                }
-            }
-            entry.fire_set = false;
-        }
-    }
-    if !world.ships.values().any(|e| e.fire_set) {
-        ANY_FIRE.store(false, Ordering::Relaxed);
-    }
-}
-
-fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)>, State) {
-    if !ENABLED.load(Ordering::Relaxed) || !crate::maneuvers_allowed(ctx.creature) {
+    if !ctx.now.is_finite() || !live_ship(ctx.creature) || !crate::maneuvers_allowed(ctx.creature) {
         return (None, State::Stock);
     }
     let Some(p) = PARAMS.get() else { return (None, State::Stock) };
-    // cheap gates first: side, then the AI flag and mode (two reads), then the target
+    // Defensive aim awareness does not require the defender to own a target.
     if !ctx.side.is_finite() || ctx.side == 0.0 || (ctx.side > 0.0 && !p.allies) {
         return (None, State::Stock);
     }
     // SAFETY: page-checked reads.
     let (ai_flag, mode) = unsafe { (rd::<u8>(ctx.creature + OFF_AI_FLAG), rd::<i32>(ctx.creature + OFF_MODE)) };
-    let (Some(ai_flag), Some(target), Some(target_creature)) = (ai_flag, ctx.target, ctx.target_creature) else {
-        return (None, State::Stock);
-    };
-    if ai_flag == 0 || mode != Some(1) || target_creature == ctx.creature || !live_ship(target_creature) {
+    if ai_flag.unwrap_or(0) == 0 || mode != Some(1) {
         return (None, State::Stock);
     }
-    if !(ctx.ship.0.is_finite() && ctx.ship.1.is_finite() && target.0.is_finite() && target.1.is_finite()) {
+    if !(ctx.ship.0.is_finite() && ctx.ship.1.is_finite()) {
         return (None, State::Stock);
     }
+    let target = ctx.target.zip(ctx.target_creature)
+        .filter(|(pos, ship)| pos.0.is_finite() && pos.1.is_finite() && *ship != ctx.creature && live_ship(*ship));
+    // SAFETY: page-checked scalar identity, matching plane_group's native node identity.
+    let Some(node_id) = (unsafe { rd::<u32>(ctx.creature + OFF_NODE_ID) }) else { return (None, State::Stock) };
     // The panic query takes the ai_flares lock; it is called before ours and the two are never held together.
     let is_panicking = panicking();
     if is_panicking {
+        if let Ok(mut guard) = WORLD.try_lock() {
+            if let Some(entry) = guard.as_mut().and_then(|w| w.ships.get_mut(&ctx.creature)) {
+                entry.fire_until = 0.0;
+            }
+        }
         return (None, State::Panic);
     }
     let mut guard = match WORLD.try_lock() {
@@ -384,6 +402,9 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
         unsafe { refresh_live_ships(world, now) };
     }
 
+    if world.ships.get(&ctx.creature).is_some_and(|entry| entry.node_id != node_id) {
+        world.ships.remove(&ctx.creature);
+    }
     if !world.ships.contains_key(&ctx.creature) {
         if world.ships.len() >= MAX_ENTRIES {
             return (None, State::Stock);
@@ -396,7 +417,7 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
             ^ now.to_bits();
         let rng = Rng::new(seed);
         let st = ShipState::new(now);
-        world.ships.insert(ctx.creature, Entry { st, rng, next_refresh: f64::NEG_INFINITY, boosting: false, fire_rolled: 0, fire_until: 0.0, fire_set: false });
+        world.ships.insert(ctx.creature, Entry { node_id, st, rng, next_refresh: f64::NEG_INFINITY, boosting: false, fire_rolled: 0, fire_until: 0.0, fire_target: None });
     }
     let live_ships = &world.live_ships;
     let Some(entry) = world.ships.get_mut(&ctx.creature) else { return (None, State::Stock) };
@@ -425,40 +446,24 @@ fn decide_inner(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f3
         p,
         &mut entry.st,
         &bounds,
-        &StepInput { now, aim, ship: ctx.ship, wanted: ctx.wanted, target },
+        &StepInput { now, aim, ship: ctx.ship, wanted: ctx.wanted, target: target.map(|(pos, _)| pos) },
         &mut entry.rng,
     );
-    // Early fire: one offensive roll per awareness window when the target is within `aim_fire_range` x gun reach
-    // and no friendly ship is in the line of fire.
-    if p.aim_fire_probability > 0.0 {
-        let own_aim = live_ships.iter().find(|s| s.creature == ctx.creature).and_then(|s| s.aim_dir);
-        let friendlies: Vec<((f32, f32), f32)> = live_ships
-            .iter()
-            .filter(|s| s.creature != ctx.creature && s.side.signum() == ctx.side.signum())
-            .map(|s| (s.pos, s.radius))
-            .collect();
-        let line_clear = tm::clear_line_of_fire(ctx.ship, target, own_aim, &friendlies);
+    // Grant range permission only. The native weapon controller owns firing and burst latches.
+    let fire_target = target.and_then(|(_, ship)| {
+        // SAFETY: page-checked scalar read from the validated target.
+        unsafe { rd::<u32>(ship + OFF_NODE_ID) }.map(|id| (ship, id))
+    });
+    if entry.fire_target != fire_target {
+        entry.fire_until = 0.0;
+        entry.fire_target = fire_target;
+    }
+    if let Some((target_pos, _)) = target.filter(|_| fire_target.is_some() && p.aim_fire_probability > 0.0) {
         if window_open && entry.fire_rolled != ship_aim_window {
             entry.fire_rolled = ship_aim_window;
-            let dist = (target.0 - ctx.ship.0).hypot(target.1 - ctx.ship.1);
-            if line_clear && tm::early_fire_in_range(dist, entry.st.reach(), p) && entry.rng.unit() < p.aim_fire_probability {
+            let dist = (target_pos.0 - ctx.ship.0).hypot(target_pos.1 - ctx.ship.1);
+            if tm::early_fire_in_range(dist, entry.st.reach(), p) && entry.rng.unit() < p.aim_fire_probability {
                 entry.fire_until = now + f64::from(p.aim_fire_s);
-            }
-        }
-        if !line_clear && now < entry.fire_until {
-            entry.fire_until = 0.0;
-        }
-        let want = line_clear && now < entry.fire_until;
-        if want != entry.fire_set {
-            // SAFETY: page-checked read, then a one-byte write into the live creature (the same byte the player's mouse sets).
-            unsafe {
-                if rd::<u8>(ctx.creature + OFF_FIRE0).is_some() {
-                    std::ptr::write_unaligned((ctx.creature + OFF_FIRE0) as *mut u8, u8::from(want));
-                }
-            }
-            entry.fire_set = want;
-            if want {
-                ANY_FIRE.store(true, Ordering::Relaxed);
             }
         }
     }

@@ -277,13 +277,25 @@ unsafe fn code_matches(module: ProcessModule, rva: usize, expected: &[u8]) -> Re
 pub const OWNERSHIP_HINT: &str =
     "another mod already patched it; qol `ai_flares.enabled` and hf_ai `ai_flares.enabled` must not both be on";
 
-/// Prepares the AI panic hooks (flare site, and the boost site when needed; the steering site is `lib.rs`'s).
+/// Whether missile defense requests the shared engine hook, independently of flare-site validation.
+pub fn wants_engine_boost(config: &AiFlaresConfig) -> bool {
+    let config = config.sanitized();
+    config.enabled && config.evade
+        && ((config.panic_boost > 1.0 && config.panic_evasion_probability > 0.0)
+            || config.barrel_roll_probability > 0.0
+            || (config.launch_flares_probability.max(config.launch_flares_target_probability) > 0.0
+                && config.launch_flares_evade > 0.0
+                && config.launch_flares_boost > 1.0))
+}
+
+/// Prepares the flare site; the caller prepares the shared boost and steering sites independently.
 /// `steering_hook_ok` says whether `lib.rs` found the steering code as expected and prepared its hook.
 /// A site whose game code is not what was analysed is skipped, with the reason in the log.
 pub unsafe fn patch_ai_flares(
     session: &mut PatchSession,
     config: &AiFlaresConfig,
     steering_hook_ok: bool,
+    boost: bool,
 ) -> Result {
     let module = ProcessModule::main()?;
     INCLUDE_ALLIES.store(config.allies, Ordering::Relaxed);
@@ -320,22 +332,9 @@ pub unsafe fn patch_ai_flares(
         config.evade = false;
     }
 
-    let boost_wanted = config.evade
-        && ((config.panic_boost > 1.0 && config.panic_evasion_probability > 0.0)
-            || config.barrel_roll_probability > 0.0
-            || (config.launch_flares_probability.max(config.launch_flares_target_probability) > 0.0
-                && config.launch_flares_evade > 0.0
-                && config.launch_flares_boost > 1.0))
-        || crate::tactics::wants_engine_boost();
-    let boost = if boost_wanted {
-        let ok = prepare_boost_hook(session, module, steer_hook_ok)?;
-        if !ok {
-            config.panic_boost = 1.0;
-        }
-        ok
-    } else {
-        false
-    };
+    if !boost {
+        config.panic_boost = 1.0;
+    }
 
     let runtime = Runtime {
         config: config.clone(),

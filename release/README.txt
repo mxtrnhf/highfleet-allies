@@ -9,26 +9,38 @@ Research notes: https://github.com/mxtrnhf/hf_notes
 Do NOT keep your old hf_ai.json from earlier releases. Overwrite
 Modloader/config/hf_ai.json with the new file from this ZIP (or delete your old
 hf_ai.json so the mod generates a fresh one).
-hf_ai v@AI_VERSION@ trims hf_ai.json from 79 keys to the 38 core settings,
+The preset introduced in hf_ai v0.10.11 trims hf_ai.json from 80 to 49 total leaf
+settings (48 gameplay settings plus logging.log_panic),
 reworks universal aim dodging and early fire, merges dive settings, and updates
 default ranges/boosts (launch_flares_evade_range=400, dive_dwell_s=0.5,
 dive_boost=2.0, aim_boost=2.0). Keeping an old hf_ai.json will feed stale
 values into the new AI.
 ===============================================================================
 
+SOURCE FOLLOW-UP: hf_ai v0.10.12 (no new release pack published yet)
+- Early fire widens only the native group-0 range gate; no player fire-byte
+  writes. Native alignment, friendly-fire, ammo and burst-start checks remain.
+  Native latched bursts skip later checks and can outlast the permission;
+  friendly fire is not guaranteed to be avoided.
+- Aim defense works without an own target; boost-hook preparation is independent
+  of flare-specific byte checks; zero start probability cannot freeze a curtain.
+- In-game combat validation remains pending. The v0.10.11 preset is unchanged.
+
 WHAT CHANGED SINCE PACK v0.14.13
-- UPDATE YOUR hf_ai.json: trimmed from 79 keys to 38 core gameplay settings;
+- UPDATE YOUR hf_ai.json: trimmed from 80 to 49 total leaf settings;
   retired and internal keys are documented in docs/hf-ai-config-reference.md.
 - Universal Aim Dodging (hf_ai v@AI_VERSION@): enemies dodge both player and
   ally gun aim, and allies dodge enemy gun aim. Picks the closest active
-  hostile shooter, adds a 0.6 s player fire hold-over for single-click volleys,
+  hostile shooter, adds a 0.6 s hold-over of sampled player fire-button state
+  (brief clicks can be missed; this is not confirmed shot detection),
   and rolls aim_chance (0.75) per staggered window to prevent endless juking.
 - Reworked Early Fire (hf_ai v@AI_VERSION@): triggers offensively per window
-  within aim_fire_range (1.6x gun reach) and checks gun alignment + friendly-
-  fire corridor so AI ships do not shoot through allies.
-- Flare Curtain & Dive Fixes (hf_ai v@AI_VERSION@): curtains wait until ~4 s
-  before missile arrival before activating (no premature ceiling-flee at
-  launch), check launch_flares_min_rack before every drop, and let ships
+  within aim_fire_range (1.6x reach); v0.10.12 retains native firing checks
+  with the burst limitations noted above.
+- Flare Curtain & Dive Fixes (hf_ai v@AI_VERSION@): a one-time ETA minus 4 s
+  estimate is clamped to a 1-8 s activation wait; arrival is not tracked.
+  launch_flares_min_rack is checked before every salvo (50% remaining is not
+  guaranteed), and ships
   without flare launchers still evade missiles. Declined dive rolls retry after
   dive_cooldown_s (2.0 s); dive_under settings merged into dive_chance/dwell.
 - Engine Boosts & Allied Missile Dump (hf_ai v@AI_VERSION@): dive_boost and

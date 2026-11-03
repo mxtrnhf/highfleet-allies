@@ -1,7 +1,7 @@
-# Tuning hf_ai: a plain-language guide (player defaults: v0.10.11)
+# Tuning hf_ai: a plain-language guide (source: v0.10.12)
 
 > **IMPORTANT — UPDATE YOUR `Modloader/config/hf_ai.json` WHEN UPGRADING TO v0.10.11+**
-> Replace your old `Modloader/config/hf_ai.json` with the new one from this release (or delete your old `hf_ai.json` so the mod generates a fresh one). `v0.10.11` trims the config from 79 keys down to the 38 core gameplay settings, reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering.
+> When upgrading from before v0.10.11, replace your old `Modloader/config/hf_ai.json` with the new preset (or delete it so the mod generates fresh defaults). `v0.10.11` trims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering. v0.10.12 keeps that preset unchanged; no new release pack is published for this follow-up.
 
 Written for the person who tunes the AI, not for the person who reads the code. Every setting below is a key in `Modloader/config/hf_ai.json`; the full key reference (including retired/internal keys) is in [hf-ai-config-reference.md](hf-ai-config-reference.md).
 
@@ -14,7 +14,7 @@ Yes, with two clarifications:
 
 ## 2. What happens every tick
 
-1. **Gates.** `hf_ai` stays out (`STOCK`) unless: the ship is AI-flown (never the ship you fly yourself), it is airborne (mode 1), it has a living target that is not itself, the arena bounds are readable, and the ship's side is enabled (enemies always; allies when `allies: true`).
+1. **Gates.** `hf_ai` stays out (`STOCK`) unless the ship is AI-flown (never the ship you fly yourself), airborne (mode 1), the arena bounds are readable, and its side is enabled (enemies always; allies when `allies: true`). Since v0.10.12, defensive aim dodging needs no own target; dive avoidance and offensive early fire still require a living target other than itself.
 2. **TWR gate.** Top-level `twr_cutoff` (default `2.0`) checks live strategic/Shipworks TWR (`creature +0x160c`, before UI rounding). Ships below the cutoff do not use tactical dodges or missile evasion maneuvers, though they can still drop flares. `0.0` disables the TWR gate.
 3. **Priority order** (first match wins): **missile panic / curtain** > **aim dodge** > **dive avoidance** > **stock**.
 4. **Steering composition.** The active maneuver blends its unit direction with the stock direction, then clamps against the ground (`ground_y`, `ground_clearance`, `ground_hard_y`) and arena walls (`edge_margin`).
@@ -33,9 +33,9 @@ Triggers when a missile locked onto the ship comes within `trigger_range` (`400.
 ### 3.2 Preventive flare curtain (`launch_flares_*` in `ai_flares`)
 When the opposing side launches a missile, eligible AI ships schedule a pre-emptive flare curtain before the missile locks on:
 * **Who reacts:** The ship the missile is aimed at rolls `launch_flares_target_probability` (`1.0`). With `launch_flares_targeted_only: true`, ships within 600 units of the target roll `launch_flares_probability` (`0.6`); with `false`, all ships on that side roll `launch_flares_probability` while the target still uses `launch_flares_target_probability`.
-* **Timing:** Flares last 5 seconds in the air. The curtain waits until the missile is ~4 seconds (~920 units) from arriving before activating (`CURTAIN`), so flares aren't wasted while the missile is still far away.
-* **Flare budget:** Once active, the ship releases flares every `0.5..1.0` s up to `launch_flares_max_drops` (`6`), checking `launch_flares_min_rack` (`0.5`) before **every** drop so at least 50% of its flare capacity is saved for a close-range panic.
-* **Retreat:** While active and within `launch_flares_evade_range` (`400.0`), the ship steers away from the incoming missile (`launch_flares_evade: 0.9`, `launch_flares_boost: 2.0`), even if it has no flare launchers or has reached its 50% reserve.
+* **Timing:** Flares last 5 seconds in the air. At scheduling, a one-time distance / assumed missile speed (`230u/s`) estimate gives a wait of ETA minus 4 s, clamped to **1–8 s** before activation (`CURTAIN`). This does not track the actual impact time; unknown ETA uses a random 1–2 s wait.
+* **Flare budget:** Once active, drops occur every `0.5..1.0` s up to `launch_flares_max_drops` (`6`). `launch_flares_min_rack` (`0.5`) is checked **before every salvo** against observed peak capacity. A salvo can take ammunition below that threshold, so a 50% remainder is not guaranteed.
+* **Retreat:** While active and within `launch_flares_evade_range` (`400.0`), the ship steers away from the incoming missile (`launch_flares_evade: 0.9`, `launch_flares_boost: 2.0`), even without flare launchers or below the reserve threshold. Start probability does not suspend an existing curtain's expiry, panic cancellation or drops.
 
 ### 3.3 Dive avoidance ("deny the dive", `tactics.dive_*`)
 If a ship's target stays within 45° of straight below (`dive_under: true`) or straight above (`dive_over: true`), closer than `dive_range` (`600.0`), for `dive_dwell_s` (`0.5` s), the ship rolls `dive_chance` (`0.8`):
@@ -47,9 +47,9 @@ Reworked in v0.10.11 so **all sides dodge each other's gun aim**:
 * **Staggered per-ship windows:** Each AI ship runs its own awareness clock (`1.5` s window every `2.5..3.5` s) rather than a single global clock.
 * **Universal threat rays:** During an open window, the ship checks all hostile live ships (enemies check the player **and** your allies; your allies check all enemies). For the player, aim comes from the mouse aim vector (`0x1403c0dc8`); for AI ships, aim comes from `AiWeaponController`'s lead vector (`creature +0xbf8/+0xbfc`).
 * **Multiple shooters:** If both you and an ally (or multiple enemies) aim at the same ship within `aim_range` (`1800.0`) and `aim_tolerance` (`200.0`), it dodges the **closest active shooter's** ray.
-* **Firing check (`aim_require_fire: true`):** Only dodges shooters that are actively firing. For the player, a `0.6` s hold-over after each volley ensures single-click large-caliber shots register; for AI shooters, active gun rate timers and burst latches are checked.
+* **Firing check (`aim_require_fire: true`):** Player fire-button state is sampled at 20 Hz and held for `0.6` s after a firing sample. This is not confirmed shot detection; very brief clicks can be missed. AI shooting detection checks active gun rate timers and burst latches.
 * **Anti-juking roll (`aim_chance: 0.75`):** Rolled once per awareness window when a hostile ray crosses the ship, so AI-vs-AI fights don't become endless 100% juking matches.
-* **Offensive early fire (`aim_fire_probability: 0.5`, `aim_fire_range: 1.6`):** Once per awareness window, if the ship's own target is within `1.6x` its gun reach, its guns are aligned within ~20° of the target, and **no friendly ship lies in the firing corridor**, it rolls `aim_fire_probability` to fire a 1-second main-gun burst. If a friendly ship crosses into the line of fire mid-burst, early fire stops immediately.
+* **Offensive early fire (`aim_fire_probability: 0.5`, `aim_fire_range: 1.6`):** Once per awareness window in range, the ship rolls for 1 s of widened **group-0 range permission**. Since v0.10.12, the native weapon controller still requires actual barrel alignment (0.025 radians), its friendly-fire gate, ammunition and normal burst-start eligibility. The native predicted aim-point distance must be within `1.6x` group-0 reach; group 1 and ordinary stock fire are unchanged. No player fire byte is written. **This is not a friendly-fire guarantee:** native already-latched bursts bypass later alignment/corridor checks and may continue past the permission window. Permission is rejected for stale identities, control handoffs, lost/changed targets or stale steering.
 
 ## 4. Ally support (`v0.10.11`)
 
@@ -59,7 +59,7 @@ Reworked in v0.10.11 so **all sides dodge each other's gun aim**:
 | Preventive flare curtain (on enemy launches) | Yes (`ai_flares.allies`) |
 | Dive avoidance | Yes (`tactics.allies`) |
 | Aim dodging (against enemy gun aim) | Yes (`tactics.allies`) |
-| Offensive early fire (with friendly-fire check) | Yes (`tactics.allies`) |
+| Offensive early fire (retains native firing checks; not a no-friendly-fire guarantee) | Yes (`tactics.allies`) |
 | Zenith missile burst dump (`ai_missile_dump_*`) | Yes (`ai_flares.allies` or `tactics.allies`) |
 | The ship you fly yourself | Never touched |
 

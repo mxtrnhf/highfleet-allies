@@ -1,10 +1,10 @@
 # hf_ai settings (`Modloader/config/hf_ai.json`)
 
-The checked-in [player preset](../ai/config/hf_ai.json) and compiled defaults use the same values (hf_ai 0.10.11). The plain-language explanation of how the AI works and what to turn for which effect is in [hf-ai-tuning-guide.md](hf-ai-tuning-guide.md); this file is the complete key list with the code defaults. Edit while the game is closed; `"enabled": false` turns hf_ai off. Older release packs retain their original DLLs.
+The checked-in [player preset](../ai/config/hf_ai.json) and compiled defaults use the same values (hf_ai 0.10.12, unchanged from 0.10.11). The plain-language explanation of how the AI works and what to turn for which effect is in [hf-ai-tuning-guide.md](hf-ai-tuning-guide.md); this file is the complete key list with the code defaults. Edit while the game is closed; `"enabled": false` turns hf_ai off. Older release packs retain their original DLLs.
 
 ## Missing keys and how to revert to vanilla
 
-**You do not have to list every key.** Every top-level key, nested block and key inside a block may be omitted; hf_ai supplies the code default shown below. Since v0.10.11, the shipped `hf_ai.json` lists only the core gameplay knobs (38 keys); internal timing/math parameters use their compiled defaults unless explicitly added. An empty `{}` is also valid. If the file is absent, hf_ai tries to create it with the full defaults; if the JSON is invalid, it logs an error and uses the defaults.
+**You do not have to list every key.** Every top-level key, nested block and key inside a block may be omitted; hf_ai supplies the code default shown below. Since v0.10.11, the shipped `hf_ai.json` lists 48 gameplay settings plus `logging.log_panic` (49 total leaf settings); internal timing/math parameters use their compiled defaults unless explicitly added. An empty `{}` is also valid. If the file is absent, hf_ai tries to create it with the full defaults; if the JSON is invalid, it logs an error and uses the defaults.
 
 **Player default does not mean vanilla.** Missing keys use the active player profile; flares, tactics, early fire and missile dumping are enabled by default. Use the explicit values below when you want stock behaviour. There is no general `-1` disable convention.
 
@@ -104,7 +104,7 @@ removed; old `log_steering`, `log_hz`, `log_scan` and `log_scan_bodies` keys do 
 | `launch_flares_target_probability` | `1.0` | Uses player default `1.0`. | Preventive flare curtain chance for the specific ship the launched missile is aimed at (`0.0..1.0`). Always applies to the target ship regardless of `launch_flares_targeted_only`. |
 | `launch_flares_targeted_only` | `true` | Uses player default `true`. | When `true`, only the targeted ship and ships within `launch_flares_neighbor_range` (`600u`) roll for a curtain. |
 | `launch_flares_max_drops` | `6` | Uses player default `6`. | Maximum flare-release salvos per curtain (reset if a new launch extends the curtain). |
-| `launch_flares_min_rack` | `0.5` | Uses player default `0.5`. | Minimum fraction (`0.0..1.0`) of a ship's peak flare capacity that must remain in its racks to drop curtain flares; checked before every drop so reserve flares are kept for a locked-on panic. Below this reserve (or with no flare launchers), the ship still performs the curtain retreat. |
+| `launch_flares_min_rack` | `0.5` | Uses player default `0.5`. | Minimum fraction (`0.0..1.0`) of observed peak flare capacity required before each curtain salvo. The salvo can cross below the threshold: this does not guarantee 50% remains. Below the threshold (or with no launchers), retreat remains available. |
 | `launch_flares_evade` | `0.9` | Uses player default `0.9`. | How strongly (`0.0..1.0`) an active curtain steers the ship away from the incoming missile once the pre-drop ETA wait has elapsed. |
 | `launch_flares_evade_range` | `400.0` | Uses player default `400.0`. | Maximum distance (game units) at which an active curtain steers away from a launched missile. |
 | `launch_flares_boost` | `2.0` | Uses player default `2.0`. | Engine boost multiplier while curtain retreat steering is active (`1.0..4.0`). |
@@ -128,9 +128,9 @@ removed; old `log_steering`, `log_hz`, `log_scan` and `log_scan_bodies` keys do 
 | `aim_range` | `1800.0` | Uses player default `1800.0`. | Maximum distance (units) along a hostile shooter's aim ray at which a ship reacts (`100..5000`). |
 | `aim_tolerance` | `200.0` | Uses player default `200.0`. | Maximum perpendicular miss distance (units) from a hostile aim ray that counts as aiming at the ship (`10..2000`). |
 | `aim_boost` | `2.0` | Uses player default `2.0`. | Engine boost multiplier while dodging an aim ray (`1.0..4.0`). Independent of `ai_flares.enabled`. |
-| `aim_require_fire` | `true` | Uses player default `true`. | Only dodge hostile aim rays from shooters that are actively firing (for the player, includes a 0.6 s hold-over after each volley so single-click cannon shots register; for AI shooters, checks active gun rate timers and burst latches). |
-| `aim_fire_probability` | `0.5` | Uses player default `0.5`. | Offensive early fire (`0.0` = off): chance rolled once per awareness window when the ship's own target is within `aim_fire_range` x gun reach, its guns are aligned within ~20° of the target, and no friendly ship is in the line of fire. |
-| `aim_fire_range` | `1.6` | Uses player default `1.6`. | Maximum target distance as a multiple of the ship's gun reach (`0.5..4.0`) for early fire. |
+| `aim_require_fire` | `true` | Uses player default `true`. | Only dodge hostile aim rays from firing shooters. Player button state is sampled at 20 Hz with a 0.6 s hold-over, not confirmed shot detection; brief clicks can be missed. AI detection uses gun rate timers and burst latches. |
+| `aim_fire_probability` | `0.5` | Uses player default `0.5`. | Offensive early-fire chance (`0.0` = off), once per awareness window in range. Since v0.10.12 grants group-0 range permission for `aim_fire_s` (1 s), retaining native barrel alignment, friendly-fire, ammunition and burst-start checks. No fire-byte writes. Native latched bursts may continue past the permission and bypass later checks; friendly fire is not impossible. |
+| `aim_fire_range` | `1.6` | Uses player default `1.6`. | Early-fire range limit (`0.5..4.0`) times the native group-0 gun reach, measured against the native predicted aim-point distance. Does not restrict ordinary stock fire or affect group 1. |
 
 ---
 
@@ -180,7 +180,7 @@ The keys below were removed from the default `hf_ai.json` preset in v0.10.11 to 
 | `tactics.aim_gap_min_s` | `2.5` | Shortest start-to-start interval (s) between awareness windows (`aim_window_s..120`). |
 | `tactics.aim_gap_max_s` | `3.5` | Longest start-to-start interval (s) between awareness windows (`aim_gap_min_s..300`). |
 | `tactics.aim_weight` | `12.0` | Steering blend weight of the aim dodge relative to the unit stock direction (`0..20`). |
-| `tactics.aim_fire_s` | `1.0` | Duration (s) of an offensive early-fire burst (`0.1..10`). |
+| `tactics.aim_fire_s` | `1.0` | Duration (s) of widened native group-0 range permission (`0.1..10`), not a forced burst duration. Native latched bursts may continue afterward. |
 
 ### Retired in earlier versions (v0.10.4 – v0.10.6)
 

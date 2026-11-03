@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use crate::tactics_math::TacticsParams;
 
 /// The aim-dodge and dive-avoidance `tactics` block of `hf_ai.json`. Enabled by player default; every key optional.
-/// Distances are game units, times are game seconds. Applies to AI-flown, airborne ships with a living target only.
+/// Distances are game units, times are game seconds. Aim defense needs no own target;
+/// dive avoidance and offensive early fire require a living target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TacticsConfig {
@@ -55,8 +56,9 @@ pub struct TacticsConfig {
     pub aim_boost: f32,
     /// The aim dodge only happens while the shooter is actively firing.
     pub aim_require_fire: bool,
-    /// Early fire (0 = off): chance, rolled once per awareness window when the target is within `aim_fire_range` x
-    /// gun reach and the line of fire is clear, that the ship opens fire with its main guns for `aim_fire_s` seconds.
+    /// Early fire (0 = off): chance per awareness window to widen the native group-0
+    /// range gate for `aim_fire_s` seconds. Native alignment/FF/ammo gates remain;
+    /// native latched bursts can outlive the permission and skip later checks.
     pub aim_fire_probability: f32,
     pub aim_fire_s: f32,
     pub aim_fire_range: f32,

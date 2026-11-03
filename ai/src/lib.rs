@@ -1,7 +1,7 @@
 //! hf_ai: a tactical layer over the stock combat AI (Steam 1.163 only). Standalone DLL for the Highfleet Modloader.
 //!
 //! Plan (see `README.md` and `hf_notes/docs/findings/ai-telemetry.md`): the stock per-ship tick `FUN_140062f90` is kept;
-//! this mod overrides its OUTPUTS (the steering waypoint at `+0xbf0/+0xbf4`, engine command strength, fire bytes,
+//! this mod overrides its OUTPUTS (the steering waypoint at `+0xbf0/+0xbf4`, engine command strength, firing range,
 //! launch gating) from a small set of tactics. Tactic logic is code; the numbers it uses live in `hf_ai.json`.
 //!
 //! The tactics stage retains aim dodging and dive avoidance. Optional strafe/band positioning was retired in v0.10.6.
@@ -27,6 +27,7 @@ use windows_sys::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION}
 mod ai_flares;
 mod curtain_math;
 mod debug_state;
+mod early_fire;
 mod flares_config;
 mod missile_dump;
 mod panic_math;
@@ -434,10 +435,18 @@ unsafe extern "C" fn init() -> bool {
             &mut session, module, config.plane_group_per_launch,
             config.plane_group_launch_delay_seconds,
         )?;
+        if steering_ok && config.tactics.enabled && config.tactics.aim_fire_probability > 0.0 {
+            early_fire::prepare(&mut session, module)?;
+        }
+        let boost_wanted = tactics::wants_engine_boost()
+            || (with_flares && ai_flares::wants_engine_boost(&config.ai_flares));
+        let boost = if boost_wanted {
+            ai_flares::prepare_boost_hook(&mut session, module, steering_ok).map_err(|e| e.to_string())?
+        } else {
+            false
+        };
         if with_flares {
-            ai_flares::patch_ai_flares(&mut session, &config.ai_flares, steering_ok).map_err(|e| e.to_string())?;
-        } else if tactics::wants_engine_boost() {
-            ai_flares::prepare_boost_hook(&mut session, module, steering_ok).map_err(|e| e.to_string())?;
+            ai_flares::patch_ai_flares(&mut session, &config.ai_flares, steering_ok, boost).map_err(|e| e.to_string())?;
         }
         Ok(session)
     };

@@ -8,6 +8,9 @@ The tracked player default profiles for `hf_ally v0.14.15` and `hf_ai v0.10.11` 
 - [ally/config/ally.json](../ally/config/ally.json)
 - [ai/config/hf_ai.json](../ai/config/hf_ai.json)
 
+The source-only hf_ai v0.10.12 follow-up uses the same preset; it is not a new
+published pack. See [the corrective changelog](../ai/CHANGELOG.md).
+
 The release pack copies these files unchanged. Compiled defaults use the same
 values: a missing file is generated with this profile, and missing keys or whole
 blocks in a partial config inherit it. Explicit values in an existing config
@@ -24,10 +27,11 @@ bomb/rocket and AA attack delays of 1 s, and fuel retreat at 30%. The Sprint
 exception is `MDL_MISSILE_03`. Battle `debug_overlay` defaults to `false`. Runtime
 `logging.debug_log` is `true`; set it `false` for quieter play.
 
-AI (`hf_ai v0.10.11`): trimmed 38-key config. Flares, allied reactions, universal
+AI (preset introduced in `hf_ai v0.10.11`): 48 gameplay settings plus `logging.log_panic`
+(49 total leaf settings). Flares, allied reactions, universal
 aim dodging (`aim_chance: 0.75`, `aim_boost: 2.0`), offensive early fire
-(`aim_fire_probability: 0.5`, `aim_fire_range: 1.6`, with friendly-fire corridor
-check), and dive avoidance (`dive_chance: 0.8`, `dive_dwell_s: 0.5`,
+(`aim_fire_probability: 0.5`, `aim_fire_range: 1.6`; v0.10.12 retains native
+firing checks rather than forcing a fire byte), and dive avoidance (`dive_chance: 0.8`, `dive_dwell_s: 0.5`,
 `dive_boost: 2.0`) are on. Top-level `twr_cutoff` is `2.0`. Carrier groups launch
 up to three planes at `0.5` s intervals. Missile-dump chance is `0.4` with
 `0.6..1.5` s spacing (for both enemies and allies). Plain evasion strength is

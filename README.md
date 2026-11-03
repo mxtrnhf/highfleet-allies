@@ -6,12 +6,14 @@ Two mods for **HighFleet (Steam 1.163)**, built on [logdot's Highfleet-Modloader
 |---|---|
 | [`ally/`](ally) (**hf_ally**) | An AI-flown **wingman ship** that fights beside you, pre-combat **ALLY** buttons, radio lines, retreat/fuel logic; **carrier plane armament buttons** (bombs, rockets, optional K-13 AA missiles, charged to your inventory; they follow the game's own plane and loadout tables, so aircraft added by other mods through the QoL `planes` option get a button too); **more enemies per battle** (`max_enemy_ships`, enemy waves); the Sprint-intercept fix. |
 | [`qol/`](qol) (optional) | Logdot's QoL `main` **plus manual editor elevation and optional gun/KAZ firing-arc rules**. **Not required**: logdot's stock QoL release works with `hf_ally`/`hf_ai`. Our build includes refuel/speed settings, manual elevation ([PR #20](https://github.com/logdot/highfleet-qol/pull/20)) and `elevation_rules` ported from our separate fork (vanilla by default). |
-| [`ai/`](ai) (**hf_ai**) | A tactical **AI layer**: enemies and allies dodge each other's and your aim lines, open fire early when the line of fire is clear, deny the dive, drop flare curtains and evade missiles, and **empty their missile racks** in a burst (`ai_missile_dump_*`). Plain-language guide: [docs/hf-ai-tuning-guide.md](docs/hf-ai-tuning-guide.md). |
+| [`ai/`](ai) (**hf_ai**) | A tactical **AI layer**: enemies and allies dodge hostile aim lines, extend main-gun firing range while retaining native firing checks, deny the dive, drop flare curtains and evade missiles, and **empty their missile racks** in a burst (`ai_missile_dump_*`). Plain-language guide: [docs/hf-ai-tuning-guide.md](docs/hf-ai-tuning-guide.md). |
 
 Both are optional, independent DLLs. Everything is reverse-engineered, so **Steam 1.163 only**; they refuse to start on other versions. Back up your `Saves` folder first.
 
 > **UPGRADING TO PACK v0.14.15 / hf_ai v0.10.11+ — UPDATE YOUR `hf_ai.json`!**
-> Replace your old `Modloader/config/hf_ai.json` with the new one in the release pack (or delete your old `hf_ai.json` so a fresh one is generated). `hf_ai v0.10.11` slims `hf_ai.json` from 79 keys to the 38 core settings, reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering.
+> Replace your old `Modloader/config/hf_ai.json` with the new one in the release pack (or delete your old `hf_ai.json` so fresh defaults are generated). `hf_ai v0.10.11` slims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering.
+
+Source now includes **hf_ai v0.10.12** ([corrective changelog](ai/CHANGELOG.md)); no new release pack has been published for it.
 
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).

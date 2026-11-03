@@ -101,9 +101,6 @@ pub fn update(
     rand: &mut dyn FnMut() -> f32,
 ) -> Event {
     let CurtainInput { now, launch_number, launch_time, panicking, can_release, eligible, eta } = *input;
-    if p.probability <= 0.0 {
-        return Event::None;
-    }
     if panicking {
         c.seen_launch = launch_number;
         if c.until > 0.0 {
@@ -123,7 +120,7 @@ pub fn update(
                 c.releases = 0;
                 c.may_release = can_release;
                 event = Event::Extended;
-            } else if now >= c.quiet_until && rand() < p.probability {
+            } else if p.probability > 0.0 && now >= c.quiet_until && rand() < p.probability {
                 let delay = match eta.filter(|e| e.is_finite() && *e > 0.0) {
                     Some(e) => f64::from((e - p.eta_lead).clamp(p.delay_min, p.eta_max_wait.max(p.delay_min))),
                     None => range(p.delay_min, p.delay_max, rand),

@@ -87,8 +87,8 @@ pub struct TacticsParams {
     pub aim_boost: f32,
     /// The dodge only happens while the shooter is actually firing.
     pub aim_require_fire: bool,
-    /// Early fire: once per awareness window, a ship whose target is within `aim_fire_range` x its gun reach (with a
-    /// clear line of fire) rolls this chance to open fire with its main guns (group 0) for `aim_fire_s`.
+    /// Early fire: once per awareness window, a ship with a target in range rolls
+    /// this chance for `aim_fire_s` of native group-0 range permission.
     pub aim_fire_probability: f32,
     pub aim_fire_s: f32,
     pub aim_fire_range: f32,
@@ -481,39 +481,6 @@ pub fn early_fire_in_range(dist: f32, reach: Option<f32>, p: &TacticsParams) -> 
     reach.is_some_and(|r| r.is_finite() && r > 0.0 && dist.is_finite() && dist <= r * p.aim_fire_range)
 }
 
-/// True when the shooter's guns aim towards `target` (within ~20 deg if `aim_dir` is known) and no friendly ship lies
-/// inside the firing corridor between `shooter` and `target`.
-pub fn clear_line_of_fire(
-    shooter: (f32, f32),
-    target: (f32, f32),
-    aim_dir: Option<(f32, f32)>,
-    friendlies: &[((f32, f32), f32)],
-) -> bool {
-    let dx = target.0 - shooter.0;
-    let dy = target.1 - shooter.1;
-    let dist = dx.hypot(dy);
-    let Some(to_target) = normalized(dx, dy).filter(|_| dist > 1.0) else {
-        return false;
-    };
-    if let Some(aim) = aim_dir {
-        if aim.0 * to_target.0 + aim.1 * to_target.1 < 0.94 {
-            return false;
-        }
-    }
-    for &(pos, radius) in friendlies {
-        let rel = (pos.0 - shooter.0, pos.1 - shooter.1);
-        let along = rel.0 * to_target.0 + rel.1 * to_target.1;
-        if along > 0.0 && along < dist {
-            let miss = (rel.0 * to_target.1 - rel.1 * to_target.0).abs();
-            let clearance = radius.clamp(40.0, 400.0) + 80.0;
-            if miss < clearance {
-                return false;
-            }
-        }
-    }
-    true
-}
-
 /// A hostile shooter's aim ray: where the shooter is and the unit direction of its aim.
 #[derive(Clone, Copy, Debug)]
 pub struct AimInput {
@@ -551,7 +518,7 @@ pub struct StepInput {
     pub aim: Option<AimInput>,
     pub ship: (f32, f32),
     pub wanted: (f32, f32),
-    pub target: (f32, f32),
+    pub target: Option<(f32, f32)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -563,8 +530,15 @@ pub struct Step {
 /// One decision for a ship that passed the gates. Updates the side timer and the state.
 pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepInput, rng: &mut Rng) -> Step {
     st.last_seen = inp.now;
-    track_target(st, inp.now, inp.target);
-    let to = (inp.target.0 - inp.ship.0, inp.target.1 - inp.ship.1);
+    if let Some(target) = inp.target {
+        track_target(st, inp.now, target);
+    } else {
+        st.prev_target = None;
+        st.target_vx = 0.0;
+        st.dive = None;
+        st.aligned_since = None;
+        st.declined = false;
+    }
     let stock_vec = (inp.wanted.0 - inp.ship.0, inp.wanted.1 - inp.ship.1);
     let mut skipped = false;
     if let (true, Some(aim)) = (p.aim_enabled, inp.aim) {
@@ -579,7 +553,8 @@ pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepIn
             }
         }
     }
-    if p.dive_enabled {
+    if let (true, Some(target)) = (p.dive_enabled, inp.target) {
+        let to = (target.0 - inp.ship.0, target.1 - inp.ship.1);
         match dive_update(p, st, bounds, inp.now, inp.ship, to, rng) {
             Dive::Active(side) => {
                 // sideways, plus a pull onto the target's altitude (smooth: full strength from 150 u of height difference)

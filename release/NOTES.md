@@ -4,17 +4,27 @@ For **HighFleet Steam 1.163**.
 
 > ## ⚠️ IMPORTANT: UPDATE YOUR `Modloader/config/hf_ai.json`!
 > **Do not keep your old `hf_ai.json` when updating to this release.** Copy the new `Modloader/config/hf_ai.json` from this ZIP over your existing one (or delete your old `Modloader/config/hf_ai.json` so the mod generates a fresh one).
-> `hf_ai v@AI_VERSION@` overhauls `hf_ai.json` (trimmed from 79 keys down to the 38 core settings), reworks aim dodging and early fire across all ships, merges dive settings (`dive_dwell_s: 0.5`, `dive_boost: 2.0`, `aim_boost: 2.0`, `launch_flares_evade_range: 400.0`), and retires flare-curtain sheltering. Keeping an old 79-key `hf_ai.json` will override the new tuned values with stale numbers.
+> The preset introduced in hf_ai v0.10.11 trims `hf_ai.json` from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings (`dive_dwell_s: 0.5`, `dive_boost: 2.0`, `aim_boost: 2.0`, `launch_flares_evade_range: 400.0`), and retires flare-curtain sheltering. Keeping an old preset will override the new tuned values with stale numbers. v0.10.12 uses the same preset.
+
+## Source follow-up: hf_ai v0.10.12
+
+Not yet published as a release pack. Replaces forced fire-byte writes with a
+native group-0 range-gate detour, retaining native barrel alignment, friendly-fire,
+ammo and burst-start checks. Native latched bursts still bypass later checks;
+this is not a guarantee against friendly fire or a fixed-duration burst.
+Defensive aim dodging no longer needs an own target. Shared engine-hook preparation
+survives flare-specific byte mismatches. Zero start probability no longer freezes
+existing curtain state. No in-game combat validation yet.
 
 ## Changes since v0.14.13
 
 ### `hf_ai v@AI_VERSION@` — AI Rework & Config Cleanup
-- **UPDATE YOUR `hf_ai.json`:** `hf_ai.json` has been cleaned up from 79 keys to the 38 core gameplay settings. Old internal math/timing keys are now retired to compiled defaults (and listed under Retired settings in `docs/hf-ai-config-reference.md`).
-- **Universal Aim Dodging (`tactics.aim_*`):** Aim awareness now works across **all ships in battle** — enemies dodge both you and your allies, and your allies dodge enemies. When multiple shooters fire at the same ship, it dodges the closest active shooter's aim ray. Includes a `0.6 s` player fire hold-over so single-click cannon volleys register, and a per-ship staggered window with `aim_chance` (`0.75`) so AI-vs-AI fights don't turn into endless synchronized juking.
-- **Reworked Offensive Early Fire (`tactics.aim_fire_*`):** AI ships now roll early fire offensively on their awareness window when their target is within `aim_fire_range` (`1.6x`) of gun reach (no longer only while being aimed at), with a gun-alignment and **friendly-fire corridor check** so they don't shoot through allies.
+- **UPDATE YOUR `hf_ai.json`:** the preset was cleaned up from 80 to 49 total leaf settings (48 gameplay plus logging). Omitted internal math/timing keys still accept manual overrides (listed under Retired settings in `docs/hf-ai-config-reference.md`).
+- **Universal Aim Dodging (`tactics.aim_*`):** Enemies dodge both you and your allies, and allies dodge enemies. Multiple threats use the closest active shooter's aim ray. Player fire-button state is sampled at 20 Hz with a `0.6 s` hold-over, not confirmed shot detection; brief clicks can be missed. Per-ship staggered windows use `aim_chance` (`0.75`).
+- **Offensive Early Fire (`tactics.aim_fire_*`):** awareness rolls are offensive rather than tied to being aimed at. In v0.10.12 they grant one-second group-0 range permission up to `aim_fire_range` (`1.6x`) reach while preserving native firing checks, subject to the burst limitation above.
 - **Preventive Flare Curtain Fixes (`ai_flares.launch_flares_*`):**
-  - Curtains now wait until the missile is ~4 seconds from arrival before activating (`CURTAIN`), fixing premature cross-map retreats into the arena ceiling right at launch.
-  - `launch_flares_min_rack` (`0.5`) is now checked before **every** flare drop so ships preserve their 50% flare reserve for close-range locked-on panic.
+  - Curtains use a one-time ETA minus 4 s estimate, clamped to a 1–8 s wait before activating (`CURTAIN`), rather than retreating immediately on launch. Actual arrival time is not tracked.
+  - `launch_flares_min_rack` (`0.5`) is checked before **every** salvo; the salvo can cross below the threshold, so retaining 50% is not guaranteed.
   - Ships without flare launchers still evade incoming missiles in all stages (curtain retreat, stray missile evasion, and close-range panic).
   - Retired `launch_flares_shelter` and `launch_flares_shelter_range`.
 - **Dive Avoidance Fixes (`tactics.dive_*`):** Merged `dive_under_chance`/`dive_under_dwell_s` into `dive_chance` (`0.8`) and `dive_dwell_s` (`0.5`). A declined dive roll now retries after `dive_cooldown_s` (`2.0 s`) instead of latching off for the rest of the hover.
