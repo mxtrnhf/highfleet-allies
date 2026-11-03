@@ -3,24 +3,14 @@ hf_ally @ALLY_VERSION@ + hf_ai @AI_VERSION@ + optional QoL build — Steam 1.163
 Source: https://github.com/mxtrnhf/highfleet-allies
 Research notes: https://github.com/mxtrnhf/hf_notes
 
-WHAT CHANGED SINCE PACK v0.14.5
-- NEW: combat ship switching (config ship_switching, default on). TAB cycles the
-  deployed friendly ships, 1 takes the ship in the top ally panel and 2 the one
-  in the bottom panel. The chosen ship becomes player-controlled at the next
-  combat tick; your former ship drops to native AI (hf_ai drives it) and takes
-  over the freed panel slot. Held gun/flare/boost input moves to the new ship,
-  and retreat plus the low-fuel retreat rule then apply to it. Set
-  ship_switching:false to free the keys for other mods.
-- Improved ally ship panels: the whole hull now draws with the game's own
-  palette, layer and draw order (previously a dark silhouette with only the
-  modules visible). The panel writes the same per-part records the game uses,
-  for its own render only.
-- Ally panels no longer stop rendering an ally that is off-screen, and a ship
-  that leaves the roster loses its panel instead of leaving a stale picture.
-- Ally target boxes are 80% of the native square and configurable with
-  ally_reticle_scale (default 0.8; 1.0 = native size).
-- Fixed an access violation in the retained pre-combat ALLY/plane buttons after
-  a scene change; cached button pointers are validated before use.
+WHAT CHANGED SINCE PACK v0.14.10
+- Pre-combat ALLY and carrier plane-loadout buttons now follow the ship cards
+  while dragging or shuffling, instead of staying behind and snapping into
+  place after the cards stop.
+- Plane-loadout columns follow their carrier ship when it swaps slots,
+  including the flagship in slot 1. A click during the short transition changes
+  the loadout of the ship the column displays, not the card underneath it.
+- No configuration changes; existing ally.json files work as-is.
 
 INSTALL
 1. Back up Saves and your current ally.json/hf_ai.json before extracting. These
