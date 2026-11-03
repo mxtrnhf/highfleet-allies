@@ -40,6 +40,7 @@
   "ally_panels": true,
   "ally_reticles": true,
   "ally_reticle_scale": 0.8,
+  "debug_overlay": false,
   "ally_sounds": true,
   "ally_fuel_retreat_percent": 30.0,
   "marker_text": "PLAYER",

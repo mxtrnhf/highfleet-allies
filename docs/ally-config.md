@@ -40,6 +40,7 @@ For individual features, use this table. Settings for an already-disabled parent
 | Prize-ship sparing | `spare_prizes: false` | Restores unmodified ally target selection. |
 | Ally ship bombing runs | `ally_bombers: false` | Default off. Restores vanilla ship bomb use; carrier aircraft are independent. |
 | Allied damage-number colour | `ally_damage_color: "#A8FC00"` | Restores the stock lime **appearance**. There is no separate off switch for the recolour hooks; use the master switch for original code paths. |
+| Battle debug overlay | `debug_overlay: false` | No rings or AI-state labels are drawn. Independent of `spawn_ally` and `ally_reticles`. |
 | Total enemy-ship limit | `max_enemy_ships: 5` | Actual vanilla value; the patch is skipped. |
 | Ships per enemy wave / wave weight budget | `enemy_group_size: 3` | Actual vanilla value; also leaves the vanilla weight budget unchanged. |
 | Initial 30-second enemy-wave delay | `enemy_all_at_once: false` | Vanilla wave timing remains. |
@@ -137,6 +138,7 @@ Normal modloader log messages and the basic crash reporter remain available.
 | `ship_switching` | `true` | Uses player default `true`. | **1** takes the displayed top-panel ally, **2** the bottom-panel ally; **TAB** cycles all deployed friendly ships. Your old ship becomes an AI ally. Needs `spawn_ally`; 1/2 also need visible `ally_panels`. See [ship switching](ship-switching.md) for safeguards and keybinding caveats. |
 | `ally_reticles` | `true` | Uses player default `true`. | Draw the game's native `sign_aim` target box around the enemy each ally is currently targeting, in the ally colour (`ally_damage_color`). The player's own lime box is unchanged and drawn first; every living ally with a valid target gets its own box. Needs `spawn_ally`. |
 | `ally_reticle_scale` | `0.8` | Uses player default `0.8`. | Ally target box size relative to the native 62 × 62 frame: `0.8` is about 50 × 50 pixels, `1.0` is native size. Must be positive and finite; invalid values fall back to `0.8`. Does not affect the player's box. |
+| `debug_overlay` | `false` | Off. | Battle debug overlay: three labelled world-space rings (250u / 500u / 1000u) around every live ship, a ship-following label with the native driver state (`+0xbdc`), and the AI steering waypoint with its distance (`WP ...u`, or `DEST ...u` when off-screen). When hf_ai v0.10.9+ is loaded, a second `AI ...` line shows its tactics decision or active flare/evasion mode. Independent of `spawn_ally`; see [debug overlay](debug-overlay.md). |
 | `ally_sounds` | `true` | Uses player default `true`. | Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed. |
 | `ally_fuel_retreat_percent` | `30.0` | Uses player default `30.0`. | An ally leaves the battle (same order as the retreat key) when its COMBAT fuel (the ship's own tank, the one the battle burns; not the map fuel of the fleet) falls to this percent. 0 = off. Allies only. |
 | `marker_text` | `"PLAYER"` | Uses player default `"PLAYER"`. | Text drawn next to ship number 1 on the pre-combat screen (the flagship, always your own ship); "" = none. |

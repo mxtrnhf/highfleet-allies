@@ -9,6 +9,9 @@
 //! This module wraps that call: after the game's own boxes, it repeats the same projection and draw for
 //! the target (`ally+0xb00`) of every living ally, tinted with the configured ally colour. The ally boxes
 //! default to 80% of the native 62 x 62 pixels; their size is configurable.
+//!
+//! The same post-pass also hosts the debug overlay (`crate::debug_overlay`) so there is only one detour at
+//! this call site: either feature, or both, can use it.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -46,6 +49,8 @@ type RenderExFn = unsafe extern "win64" fn(usize, f32, f32, f32, f32, f32);
 
 static ALLY_COLOR: AtomicU32 = AtomicU32::new(0xff00_e4ff);
 static ALLY_RETICLE_SCALE: AtomicU32 = AtomicU32::new(0.8_f32.to_bits());
+/// This module also hosts the per-frame battle overlay hook when only the debug overlay is enabled.
+static SHOW_RETICLES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 unsafe fn rd<T: Copy>(address: usize) -> T {
     (address as *const T).read_unaligned()
@@ -69,11 +74,19 @@ unsafe fn draw_box(out: &mut [f32; 2], sprite: usize, color: u32) {
     render(sprite, out[0], out[1], 0.0, scale, 0.0);
 }
 
-/// Runs after the game's own target and spawn boxes.
-unsafe extern "C" fn draw_ally_targets() {
-    if !crate::SPAWN_ALLY.load(Ordering::Relaxed) || rd::<u8>(HUD_ENABLED) == 0 {
+/// Runs after the game's own target and spawn boxes. The debug overlay uses the same per-frame seam even when
+/// ally reticles are off, so this hook is the single owner of the battle HUD call site.
+unsafe extern "C" fn draw_battle_overlay() {
+    if rd::<u8>(HUD_ENABLED) == 0 {
         return;
     }
+    if SHOW_RETICLES.load(Ordering::Relaxed) {
+        draw_ally_targets();
+    }
+    crate::debug_overlay::draw();
+}
+
+unsafe fn draw_ally_targets() {
     let sprite = rd::<usize>(SIGN_AIM);
     if sprite == 0 {
         return;
@@ -105,8 +118,12 @@ unsafe extern "C" fn draw_ally_targets() {
     }
 }
 
-pub unsafe fn install(session: &mut PatchSession, argb: u32, scale: f32) {
+/// Installs the single battle HUD post-pass. `reticles` and `overlay` select what it draws; the hook is needed
+/// when either is enabled.
+pub unsafe fn install(session: &mut PatchSession, argb: u32, scale: f32, reticles: bool, overlay: bool) {
     ALLY_COLOR.store(argb & 0x00ff_ffff, Ordering::Relaxed);
+    SHOW_RETICLES.store(reticles, Ordering::Relaxed);
+    crate::debug_overlay::set_enabled(overlay);
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
@@ -117,18 +134,22 @@ pub unsafe fn install(session: &mut PatchSession, argb: u32, scale: f32) {
 
     let found = std::slice::from_raw_parts(CALL_SITE as *const u8, CALL_SITE_BYTES.len());
     if found != CALL_SITE_BYTES {
-        log::warn!("hf_ally: ally target boxes not installed, bytes at {CALL_SITE:#x} differ ({found:02x?})");
+        log::warn!("hf_ally: battle HUD post-pass not installed, bytes at {CALL_SITE:#x} differ ({found:02x?})");
         return;
     }
 
-    // call the game's target/spawn box pass first, then add one box per ally target
+    // call the game's target/spawn box pass first, then the reticle/debug overlay post-pass
     let mut trampoline = Trampoline::new();
     trampoline.absolute_call(TARGET_BOX_PASS as *const ());
-    trampoline.preserved_call(draw_ally_targets as *const (), &[], &[], ReturnType::None);
+    trampoline.preserved_call(draw_battle_overlay as *const (), &[], &[], ReturnType::None);
     trampoline.relative_jump(CALL_RESUME);
     if let Err(error) = session.detour_trampoline(CALL_SITE, CALL_SITE_BYTES.len(), trampoline) {
-        log::warn!("hf_ally: ally target boxes failed: {error}");
+        log::warn!("hf_ally: battle HUD post-pass failed: {error}");
         return;
     }
-    log::info!("hf_ally: ally target boxes installed in {:#010x}", argb | 0xff00_0000);
+    log::info!(
+        "hf_ally: battle HUD post-pass installed (reticles {}, debug overlay {})",
+        reticles,
+        overlay
+    );
 }

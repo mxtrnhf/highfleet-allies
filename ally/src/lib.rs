@@ -38,6 +38,8 @@ mod ally_reticles;
 mod bomber;
 mod bomber_math;
 mod color_probe;
+mod debug_overlay;
+mod debug_state;
 mod diag;
 mod intercept;
 mod max_enemy;
@@ -284,6 +286,9 @@ struct Config {
     /// too). A plain number is still accepted so configs from before v0.14.0 keep working (read as 0xRRGGBB).
     #[serde(deserialize_with = "deserialize_hex_color")]
     ally_damage_color: String,
+    /// Debug overlay in the tactical battle: rings around every ship and its AI driver state above the hull.
+    /// Off by default; independent of `spawn_ally`.
+    debug_overlay: bool,
     logging: LoggingConfig,
     /// Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed.
     ally_sounds: bool,
@@ -326,6 +331,7 @@ impl Default for Config {
             enemy_all_at_once: false,
             plane_loadouts: true,
             ally_damage_color: "#00E4FF".to_string(),
+            debug_overlay: false,
             max_allies: 2,
             ally_panels: true,
             ship_switching: true,
@@ -3681,8 +3687,16 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     if config.spawn_ally && config.ally_panels {
         ally_panels::install(&mut session);
     }
-    if config.spawn_ally && config.ally_reticles {
-        ally_reticles::install(&mut session, ally_damage_color, config.ally_reticle_scale);
+    let reticles = config.spawn_ally && config.ally_reticles;
+    if reticles || config.debug_overlay {
+        // the reticle module owns the single per-frame battle HUD post-pass that both features draw from
+        ally_reticles::install(
+            &mut session,
+            ally_damage_color,
+            config.ally_reticle_scale,
+            reticles,
+            config.debug_overlay,
+        );
     }
     if config.logging.log_colors {
         color_probe::install(&mut session);
