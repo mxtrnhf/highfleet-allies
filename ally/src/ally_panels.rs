@@ -8,6 +8,11 @@
 //! * the panel-composite flush `0x14030915f` draws those targets at half width and half height (a quarter of
 //!   the area) beside the player's panel, where the renderer is already set up for the stock panel sprites.
 //!
+//! The panel draws the ship from the HUD marker table, which the game rebuilds every frame. A ship the
+//! mod deployed outside the stock spawn path is never registered there, so the render hook writes the
+//! same type-2 part records for the duration of the call (native layer and scale rules, see
+//! [`insert_layer_markers`]).
+//!
 //! Rendering one frame before compositing matches the stock panels, which also show the previous frame.
 
 use std::mem::offset_of;
@@ -57,30 +62,34 @@ const GET_PLAYER_CREATURE: usize = 0x1_4029_24b0;
 
 /// `DrawBattleShipPanel` scans HUD marker layers 1..39 by way of the counts at `0x143a51160`
 /// and the layer-1 owner field at `0x144094c88` (exactly `HUD_MARKERS + 40000 * 0x18 + 8`).
-/// Ships spawned through the normal battle path have type-2 part markers there; the temporary
-/// ally deployment path does not, so the panel would show only its text. The native marker
-/// initialisation below is the fix; the fields after it describe the last-resort fallback that
-/// builds markers for one call and removes them immediately afterward.
+/// Only type-2 records are drawn: `Hud_DrawChildMarker` `0x1402e08b0` returns immediately for any
+/// other type. A stock ship gets them from `Body_UpdateHudMarkers` `0x14002d7b0`, which the
+/// per-frame pass calls for every world body; a ship deployed outside the stock spawn path never
+/// had its `+0x910` initialisation byte set, so that pass never reaches its parts and its panel
+/// shows text only.
+///
+/// The panel therefore writes those records itself for one call and removes them again. They must
+/// use the native layer and scale rules: the panel lifts a record's brightness by `layer / 40` and
+/// draws layers in ascending order, so records collected in one low layer leave the hull near-black
+/// and let modules paint over it, which reads as "only parts are visible".
 const HUD_MARKERS: usize = 0x1_43fa_a680;
 const HUD_MARKER_COUNTS: usize = 0x1_43a5_1160;
 const HUD_MARKER_LIMIT: usize = 40_000;
-/// `Body::UpdateHudMarkers` `0x14002d7b0(body, initialise)`. The stock per-frame pass calls this
-/// for every world body with `initialise = 0`, but it leaves bodies alone whose `+0x910` byte is
-/// still clear. That byte is set only by the one-time `initialise = 1` call the normal spawn path
-/// performs; the mod's temporary ally deploy skipped it, so none of the ally's parts ever entered
-/// the HUD marker table. Calling it once with `initialise = 1` registers the whole child subtree
-/// exactly like a stock ship.
-const BODY_UPDATE_HUD_MARKERS: usize = 0x1_4002_d7b0;
-type BodyHudMarkersFn = unsafe extern "C" fn(usize, u8);
+const HUD_MARKER_LAYERS: usize = 0x46;
+const HUD_MARKER_LAYER_MAX: i32 = HUD_MARKER_LAYERS as i32 - 1;
+/// Above this layer a flagged sprite's depth range starts at `HUD_MARKER_DEEP_START` (native
+/// `iVar5`); below it the range starts at layer 0.
+const HUD_MARKER_DEEP_LAYER: i32 = 0x3b;
+const HUD_MARKER_DEEP_START: i32 = 0x3c;
 const HUD_MARKER_STRIDE: usize = 0x18;
 const HUD_MARKER_TYPE_CHILD: i32 = 2;
 const HUD_MARKER_OWNER: usize = 8;
 const HUD_MARKER_INDEX: usize = 0x10;
 const HUD_MARKER_SCALE: usize = 0x14;
-/// The panel applies a brightness lift of `layer / 40`; use the first scanned layer so temporary
-/// markers keep the same dark palette as normal parts instead of becoming washed-out white.
-const SPARE_LAYER: usize = 1;
 const PANEL_LAYER_LAST: usize = 39;
+/// `Body_GetInheritedStage(body, 0)` `0x140033b00`: the body's own stage plus every Body
+/// ancestor's `+0x8d8`, which is what the native layer calculation starts from.
+const BODY_INHERITED_STAGE: usize = 0x1_4003_3b00;
 /// Creature part list (`+0x1330/+0x1338`, 0x18-byte Link entries, part at +8).
 const OFF_PART_LIST: (usize, usize) = (0x1330, 0x1338);
 /// Part `Body` sprite vector (`CVec<*mut Sprite>`).
@@ -91,6 +100,12 @@ const OFF_PART_OWNER: usize = 0xb8;
 const OFF_SPRITE_VISIBLE: usize = 0x128;
 /// Node state; `Hud_DrawChildMarker` draws only parts with state > 1.
 const OFF_NODE_STATE: usize = 0x48;
+/// Layer inputs of the native registration: the part's floor (`+0x9b8`, its stage comes through
+/// `Body_GetInheritedStage`) and the sprite's stage (`+0x114`) plus the flag byte whose bit 0 marks
+/// sprites that span a range of four-layer steps instead of a single layer.
+const OFF_BODY_FLOOR: usize = 0x9b8;
+const OFF_SPRITE_STAGE: usize = 0x114;
+const OFF_SPRITE_FLAGS: usize = 0x50;
 /// Part health and maximum; the panel's palette darkens towards red as `hp / hp_max` drops.
 const OFF_PART_HP: usize = 0x2c8;
 const OFF_PART_HP_MAX: usize = 0x2cc;
@@ -125,6 +140,7 @@ type CreateDepthFn = unsafe extern "win64" fn(usize, u32, u32) -> usize;
 type AllocFn = unsafe extern "win64" fn(u32) -> usize;
 type SpriteCtorFn =
     unsafe extern "win64" fn(usize, usize, f32, f32, f32, f32, f32, f32, f32, f32);
+type InheritedStageFn = unsafe extern "C" fn(usize, i32) -> i32;
 
 #[derive(Clone, Copy)]
 struct NativePanel {
@@ -246,10 +262,9 @@ unsafe fn ensure_panels() -> bool {
     true
 }
 
-/// Temporary part markers appended to the spare layer for one panel call.
+/// Temporary part markers appended for one panel call: the original count of every touched layer.
 struct TemporaryMarkers {
-    original_count: usize,
-    added: usize,
+    layers: Vec<(usize, i32)>,
 }
 
 /// Type-2 markers the native panel can already see for this ally. Do not add duplicates for these:
@@ -332,54 +347,90 @@ unsafe fn part_bodies(ally: usize) -> Vec<usize> {
     bodies
 }
 
-/// Give the ally the same HUD marker initialisation the stock spawn path performs, then return the
-/// type-2 markers the panel can now see. Called before every panel render because the marker table
-/// is rebuilt each frame; it only does work while the ally still has no markers.
-unsafe fn ensure_native_markers(ally: usize) -> Vec<(usize, usize)> {
-    let mut existing = existing_panel_markers(ally);
-    if existing.is_empty() {
-        let update: BodyHudMarkersFn = std::mem::transmute(BODY_UPDATE_HUD_MARKERS);
-        update(ally, 1);
-        existing = existing_panel_markers(ally);
-        if !PANEL_MARKERS_LOGGED.swap(true, Ordering::Relaxed) {
-            log::info!(
-                "ALLY panel c={ally:#x}: native marker initialisation produced {} part markers",
-                existing.len()
-            );
-        }
-    }
-    existing
+/// The stage the native registration starts from: the part's own `+0x8d8` plus those of its Body
+/// ancestors.
+unsafe fn inherited_stage(part: usize) -> i32 {
+    let query: InheritedStageFn = std::mem::transmute(BODY_INHERITED_STAGE);
+    query(part, 0)
 }
 
-/// Build type-2 child markers from the ally's actual part/sprite lists. The normal ally deploy
-/// path does not reliably leave these in the HUD marker table; without them the panel draws its
-/// text but no ship schematic. Markers are appended to [`SPARE_LAYER`] and removed by count restore.
-unsafe fn insert_part_markers(ally: usize) -> Option<TemporaryMarkers> {
-    // The native registration draws the ship exactly like an enemy panel, so only fall back when
-    // it produced nothing at all.
-    let existing = ensure_native_markers(ally);
-    if !existing.is_empty() {
-        return None;
+/// Layers and scales the native registration would write one sprite into.
+///
+/// The top layer is the sprite's stage plus four times the part's floor plus the inherited stage.
+/// A sprite whose `+0x50` bit 0 is set also reaches down into the four-layer depth steps below it,
+/// with the scale shrinking by 0.05 per step; every other sprite gets a single record.
+unsafe fn sprite_marker_layers(part: usize, sprite: usize, stage: i32) -> Vec<(usize, f32)> {
+    let floor = rd::<i32>(part + OFF_BODY_FLOOR);
+    let base = (floor * 4 + stage).clamp(0, HUD_MARKER_LAYER_MAX);
+    let sprite_stage = rd::<i32>(sprite + OFF_SPRITE_STAGE);
+    let top = (sprite_stage + base).clamp(0, HUD_MARKER_LAYER_MAX);
+    let mut layer = top;
+    if rd::<u8>(sprite + OFF_SPRITE_FLAGS) & 1 != 0 {
+        let range_start = if base > HUD_MARKER_DEEP_LAYER { HUD_MARKER_DEEP_START } else { 0 };
+        let bottom = sprite_stage - floor * 4 + base;
+        layer = if bottom >= range_start {
+            bottom.min(HUD_MARKER_LAYER_MAX)
+        } else {
+            range_start
+        };
     }
+    let mut layers = Vec::new();
+    while layer <= top {
+        let scale = (1.0 - 0.05 * (top - layer) as f32).clamp(0.0, 1.0);
+        layers.push((layer as usize, scale));
+        layer += 4;
+    }
+    layers
+}
 
-    let spare_count = rd::<i32>(HUD_MARKER_COUNTS + SPARE_LAYER * 4);
-    if spare_count < 0 || spare_count as usize > HUD_MARKER_LIMIT {
-        return None;
+/// One type-2 record: `{type, 4 bytes pad, owner, sprite index, scale}`.
+fn marker_record(part: usize, index: usize, scale: f32) -> [u8; HUD_MARKER_STRIDE] {
+    let mut marker = [0u8; HUD_MARKER_STRIDE];
+    // SAFETY: the array is a local of exactly `HUD_MARKER_STRIDE` bytes and every write stays
+    // inside it (offsets 0, 8, 0x10 and 0x14, each four or eight bytes wide).
+    unsafe {
+        std::ptr::write_unaligned(marker.as_mut_ptr() as *mut i32, HUD_MARKER_TYPE_CHILD);
+        std::ptr::write_unaligned(
+            marker.as_mut_ptr().byte_add(HUD_MARKER_OWNER) as *mut usize,
+            part,
+        );
+        std::ptr::write_unaligned(
+            marker.as_mut_ptr().byte_add(HUD_MARKER_INDEX) as *mut i32,
+            index as i32,
+        );
+        std::ptr::write_unaligned(
+            marker.as_mut_ptr().byte_add(HUD_MARKER_SCALE) as *mut f32,
+            scale,
+        );
     }
-    let spare_count = spare_count as usize;
+    marker
+}
+
+/// Write the ally's type-2 part markers into the table for one panel call, using the native layer
+/// and scale rules. Records for parts the table already holds are skipped, so a ship that was
+/// registered natively (for example the previous player ship after a control handoff) is never
+/// drawn twice.
+unsafe fn insert_layer_markers(ally: usize) -> Option<TemporaryMarkers> {
     let parts_list = part_bodies(ally);
     if parts_list.is_empty() {
         return None;
     }
+    let already_visible = existing_panel_markers(ally);
 
-    let mut markers = Vec::new();
+    let mut per_layer: Vec<Vec<[u8; HUD_MARKER_STRIDE]>> =
+        (0..HUD_MARKER_LAYERS).map(|_| Vec::new()).collect();
     let parts = parts_list.len();
+    let mut parts_used = 0usize;
     let mut inactive = 0usize;
     let mut hp_low = f32::INFINITY;
     let mut hp_high = 0.0f32;
+
     for part in parts_list {
+        // Both the native registration and `Hud_DrawChildMarker` ignore a part below state 2, so
+        // its records would never be drawn anyway.
         if rd::<i32>(part + OFF_NODE_STATE) <= 1 {
             inactive += 1;
+            continue;
         }
         let hp = rd::<f32>(part + OFF_PART_HP);
         let hp_max = rd::<f32>(part + OFF_PART_HP_MAX);
@@ -388,6 +439,7 @@ unsafe fn insert_part_markers(ally: usize) -> Option<TemporaryMarkers> {
             hp_low = hp_low.min(ratio);
             hp_high = hp_high.max(ratio);
         }
+
         let (sprites_begin, sprites_end): (usize, usize) =
             (rd(part + OFF_PART_SPRITES.0), rd(part + OFF_PART_SPRITES.1));
         if sprites_begin < 0x10000 || sprites_end < sprites_begin {
@@ -397,76 +449,84 @@ unsafe fn insert_part_markers(ally: usize) -> Option<TemporaryMarkers> {
         if !sprite_bytes.is_multiple_of(8) || sprite_bytes / 8 > PART_SPRITE_LIMIT {
             continue;
         }
+        let stage = inherited_stage(part);
+        let mut used = false;
         for index in 0..sprite_bytes / 8 {
+            if already_visible.contains(&(part, index)) {
+                continue;
+            }
             let sprite = rd::<usize>(sprites_begin + index * 8);
             if !crate::plausible(sprite) {
                 continue;
             }
-            let Some(visible) = crate::diag::rd::<f32>(sprite + OFF_SPRITE_VISIBLE) else {
+            let Some(opacity) = crate::diag::rd::<f32>(sprite + OFF_SPRITE_VISIBLE) else {
                 continue;
             };
-            if visible == 0.0 {
+            if opacity == 0.0 {
                 continue;
             }
-            let mut marker = [0u8; HUD_MARKER_STRIDE];
-            std::ptr::write_unaligned(marker.as_mut_ptr() as *mut i32, HUD_MARKER_TYPE_CHILD);
-            std::ptr::write_unaligned(
-                marker.as_mut_ptr().byte_add(HUD_MARKER_OWNER) as *mut usize,
-                part,
-            );
-            std::ptr::write_unaligned(
-                marker.as_mut_ptr().byte_add(HUD_MARKER_INDEX) as *mut i32,
-                index as i32,
-            );
-            std::ptr::write_unaligned(
-                marker.as_mut_ptr().byte_add(HUD_MARKER_SCALE) as *mut f32,
-                1.0,
-            );
-            markers.push(marker);
+            for (layer, scale) in sprite_marker_layers(part, sprite, stage) {
+                per_layer[layer].push(marker_record(part, index, scale));
+                used = true;
+            }
+        }
+        if used {
+            parts_used += 1;
         }
     }
 
-    if markers.is_empty() {
-        return None;
-    }
-    if spare_count + markers.len() > HUD_MARKER_LIMIT {
-        if !PANEL_MARKERS_LOGGED.swap(true, Ordering::Relaxed) {
-            log::warn!(
-                "ALLY panel c={ally:#x}: spare marker layer full ({spare_count} + {})",
-                markers.len()
-            );
+    let mut touched = Vec::new();
+    let mut added = 0usize;
+    let mut lowest = usize::MAX;
+    let mut highest = 0usize;
+    for (layer, records) in per_layer.iter().enumerate() {
+        if records.is_empty() {
+            continue;
         }
+        let count = rd::<i32>(HUD_MARKER_COUNTS + layer * 4);
+        if count < 0 || count as usize > HUD_MARKER_LIMIT {
+            continue;
+        }
+        let count = count as usize;
+        if count + records.len() > HUD_MARKER_LIMIT {
+            log::warn!(
+                "ALLY panel c={ally:#x}: marker layer {layer} full ({count} + {})",
+                records.len()
+            );
+            continue;
+        }
+        let base = HUD_MARKERS + layer * HUD_MARKER_LIMIT * HUD_MARKER_STRIDE;
+        for (offset, record) in records.iter().enumerate() {
+            let destination = base + (count + offset) * HUD_MARKER_STRIDE;
+            std::ptr::copy_nonoverlapping(record.as_ptr(), destination as *mut u8, HUD_MARKER_STRIDE);
+        }
+        (HUD_MARKER_COUNTS as *mut i32)
+            .byte_add(layer * 4)
+            .write_unaligned((count + records.len()) as i32);
+        touched.push((layer, count as i32));
+        added += records.len();
+        lowest = lowest.min(layer);
+        highest = highest.max(layer);
+    }
+
+    if added == 0 {
         return None;
     }
-    let spare_base = HUD_MARKERS + SPARE_LAYER * HUD_MARKER_LIMIT * HUD_MARKER_STRIDE;
-    for (offset, marker) in markers.iter().enumerate() {
-        let destination = spare_base + (spare_count + offset) * HUD_MARKER_STRIDE;
-        std::ptr::copy_nonoverlapping(marker.as_ptr(), destination as *mut u8, HUD_MARKER_STRIDE);
-    }
-    (HUD_MARKER_COUNTS as *mut i32)
-        .byte_add(SPARE_LAYER * 4)
-        .write_unaligned((spare_count + markers.len()) as i32);
     if !PANEL_MARKERS_LOGGED.swap(true, Ordering::Relaxed) {
         let hp_low = if hp_low.is_finite() { hp_low } else { 1.0 };
         log::info!(
-            "ALLY panel c={ally:#x}: built {} fallback part markers from {parts} parts ({inactive} inactive, hp {hp_low:.2}..{hp_high:.2})",
-            markers.len()
+            "ALLY panel c={ally:#x}: {parts_used} parts -> {added} part markers in layers {lowest}..{highest} ({parts} parts, {inactive} inactive, hp {hp_low:.2}..{hp_high:.2}, {} already visible)",
+            already_visible.len()
         );
     }
-    Some(TemporaryMarkers {
-        original_count: spare_count,
-        added: markers.len(),
-    })
+    Some(TemporaryMarkers { layers: touched })
 }
 
 /// Hide the temporary part markers again; the native panel has already consumed them.
 unsafe fn restore_temporary_markers(temporary: TemporaryMarkers) {
-    if temporary.added == 0 {
-        return;
+    for (layer, count) in temporary.layers {
+        (HUD_MARKER_COUNTS as *mut i32).byte_add(layer * 4).write_unaligned(count);
     }
-    (HUD_MARKER_COUNTS as *mut i32)
-        .byte_add(SPARE_LAYER * 4)
-        .write_unaligned(temporary.original_count as i32);
 }
 
 /// Render each live ally into its private target for the next frame's composite.
@@ -503,7 +563,7 @@ unsafe extern "C" fn render_allies() {
         let Some(native) = panels[slot].as_mut() else { continue };
         // Use the native link operation: a raw +0xb00 write leaves the link registered on the old
         // target's link list and its saved id stale.
-        let temporary = insert_part_markers(ally);
+        let temporary = insert_layer_markers(ally);
         set_link(target_link, ally);
         panel(native.surface_a, native.surface_b, PANEL_MODE_TARGET);
         set_link(target_link, saved_target);

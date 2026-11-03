@@ -10,10 +10,11 @@ WHAT CHANGED SINCE PACK v0.14.5
   ship drops to native AI (hf_ai drives it) and takes over the freed panel slot.
   Held gun/flare/boost input moves to the new ship; retreat and low-fuel retreat
   then apply to it. Set ship_switching:false to free the keys for other mods.
-- Fixed the ally ship panels: the schematic now initialises the same native HUD
-  markers as a stock enemy ship, so an ally renders fully even when it is
-  off-screen, with the normal palette and brightness. Panels still clear when the
-  battle ends.
+- Fixed the ally ship panels: a deployed ally is never entered into the game's
+  per-frame HUD marker table, so the panel now writes the same per-part records
+  itself with the game's layer and scale rules. The whole hull now draws with the
+  stock palette and draw order, off-screen too, instead of a dark silhouette with
+  only the modules visible. Panels still clear when the battle ends.
 - Added ally ship panels: a half-size battle ship panel beside your own panel for
   each ally (name, speed, counters and live module schematic). Config ally_panels.
 - Added ally target boxes: the native target square around each ally's current
