@@ -1155,6 +1155,9 @@ const LOADOUT_NAMES: [&[u8]; 54] = [
     b"PLANE_ARM_54\0",
 ];
 static LOADOUT_GUIS: [std::sync::atomic::AtomicUsize; 54] = [const { std::sync::atomic::AtomicUsize::new(0) }; 54];
+/// The ship each card slot's plane buttons were painted for. While cards move, a column follows the card that
+/// holds this ship, not the slot number it is named after.
+static PAINTED_PLANE_SHIPS: [std::sync::atomic::AtomicUsize; 9] = [const { std::sync::atomic::AtomicUsize::new(0) }; 9];
 /// Gap (GUI units) between the ALLY button and the plane button above it.
 const LOADOUT_GAP: f32 = 3.0;
 /// The plane buttons are smaller than the ALLY button so both rows stay in the part of the screen that takes clicks.
@@ -1775,11 +1778,11 @@ fn layout_signature(cards: &[(f32, f32, f32, f32)]) -> u64 {
 
 /// A signature of the card layout and the ships behind the cards: two cards swapping places keep the same x
 /// positions, so the ship links count too when the plane buttons (which belong to the ship) are shown.
-unsafe fn card_signature(cards: &[(f32, f32, f32, f32)], listed: &[usize]) -> u64 {
+fn card_signature(cards: &[(f32, f32, f32, f32)], ships: &[(f32, usize)]) -> u64 {
     let mut h = layout_signature(cards);
     if PLANE_BUTTONS.load(Ordering::Relaxed) {
-        for (_, ship) in card_ships_from(listed) {
-            h = (h ^ ship as u64).wrapping_mul(0x100_0000_01b3);
+        for (_, ship) in ships {
+            h = (h ^ *ship as u64).wrapping_mul(0x100_0000_01b3);
         }
     }
     h
@@ -1855,7 +1858,8 @@ unsafe fn ensure_toggles() {
         cards = grid_cards(&cards);
         toggle_line("ALLY cards report no layout: using the screenshot grid".to_string());
     }
-    let signature = card_signature(&cards, &scan.elements);
+    let ships = if PLANE_BUTTONS.load(Ordering::Relaxed) { card_ships_from(&scan.elements) } else { Vec::new() };
+    let signature = card_signature(&cards, &ships);
     let mut layout = Vec::new();
     // slot 1 (the flagship, always the player's ship) gets the marker, slots 2.. the toggles
     for slot in 1..=9usize {
@@ -1911,7 +1915,6 @@ unsafe fn ensure_toggles() {
     if PLANE_BUTTONS.load(Ordering::Relaxed) {
         // Reuse still-live plane buttons without abandoning hidden elements. Scene teardown may also have
         // freed them, in which case get_or_make discards the stale address before creating a replacement.
-        let ships = card_ships_from(&scan.elements);
         let mut shown: Vec<usize> = Vec::new();
         for slot in 1..=9usize {
             let Some((x, dx, size)) = slot_geometry(&cards, slot) else {
@@ -1920,6 +1923,7 @@ unsafe fn ensure_toggles() {
                         place_loadout(slot, craft, None, [0.0, 0.0], 0.0, &scan.elements, scan.complete);
                     }
                 }
+                PAINTED_PLANE_SHIPS[slot - 1].store(0, Ordering::Relaxed);
                 continue;
             };
             // plane buttons per card: ONE column right of the ALLY button, one row per plane type the ship carries (in the
@@ -1936,6 +1940,7 @@ unsafe fn ensure_toggles() {
                     row += 1;
                 }
             }
+            PAINTED_PLANE_SHIPS[slot - 1].store(ship.unwrap_or(0), Ordering::Relaxed);
         }
         if scan.complete {
             hide_plane_buttons(&shown);
@@ -1978,20 +1983,37 @@ unsafe fn follow_plane_buttons(listed: &[usize], slot: usize, x: f32, dx: f32, s
     }
 }
 
+/// Moves each plane column with the card that holds the ship it was painted for. The column keeps the slot-based
+/// button name it was built with; the full placement re-keys it to the new slot after the cards rest. Following
+/// the ship (not the slot) keeps the column attached to the carrier while two cards cross.
+unsafe fn follow_plane_columns(cards: &[(f32, f32, f32, f32)], listed: &[usize], ships: &[(f32, usize)]) {
+    if !PLANE_BUTTONS.load(Ordering::Relaxed) {
+        return;
+    }
+    for (index, &(_, ship)) in ships.iter().enumerate() {
+        if ship == 0 {
+            continue;
+        }
+        let Some(painted_slot) = (1..=9usize).find(|&slot| PAINTED_PLANE_SHIPS[slot - 1].load(Ordering::Relaxed) == ship) else {
+            continue;
+        };
+        let Some((x, dx, size)) = slot_geometry(cards, index + 1) else {
+            continue;
+        };
+        follow_plane_buttons(listed, painted_slot, x, dx, size);
+    }
+}
+
 /// Moves the buttons that already exist to where the cards are now. Runs on every frame while the cards move
 /// (dragged or animating to their new slots), so the buttons travel with them instead of jumping into place after
 /// the cards settle. Does not create, paint or log; false means a button is missing and a full placement is needed.
-unsafe fn follow_toggles(cards: &[(f32, f32, f32, f32)], listed: &[usize], layout: u64) -> bool {
+unsafe fn follow_toggles(cards: &[(f32, f32, f32, f32)], listed: &[usize], ships: &[(f32, usize)], layout: u64) -> bool {
+    follow_plane_columns(cards, listed, ships);
     let mut complete = true;
     for slot in 1..=9usize {
         let Some((x, dx, size)) = slot_geometry(cards, slot) else {
             break;
         };
-        // plane buttons belong to the card, not to the ALLY toggle: slot 1 has no toggle, and a missing toggle
-        // must not stop its card's plane buttons from following
-        if PLANE_BUTTONS.load(Ordering::Relaxed) {
-            follow_plane_buttons(listed, slot, x, dx, size);
-        }
         if slot == 1 {
             MARKER_X.store((x + dx + MARKER_DX).to_bits(), Ordering::Relaxed);
             continue;
@@ -2197,7 +2219,8 @@ unsafe fn precombat_tick(source: usize) {
         &scan.cards
     };
     let layout = layout_signature(cards);
-    let sig = card_signature(cards, &scan.elements);
+    let ships = if PLANE_BUTTONS.load(Ordering::Relaxed) { card_ships_from(&scan.elements) } else { Vec::new() };
+    let sig = card_signature(cards, &ships);
     let now = now_ms();
     if layout != TICK_SIG.swap(layout, Ordering::Relaxed) {
         TICK_CHANGED_MS.store(now, Ordering::Relaxed);
@@ -2210,7 +2233,7 @@ unsafe fn precombat_tick(source: usize) {
     }
     if layout != PLACED_LAYOUT_SIG.load(Ordering::Relaxed) {
         // the cards are somewhere else than the buttons: move the buttons with them on this and every frame
-        if !follow_toggles(cards, &scan.elements, layout) {
+        if !follow_toggles(cards, &scan.elements, &ships, layout) {
             ensure_toggles();
         }
         return;
@@ -2556,7 +2579,16 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
         let slot = number; // the label key
         if button as u32 == 1 && (1..=54).contains(&number) && now.wrapping_sub(LAST_TOGGLE_MS.load(Ordering::Relaxed)) > 350 {
             LAST_TOGGLE_MS.store(now, Ordering::Relaxed);
-            if let Some(&(_, ship)) = card_ship_list().get(card - 1) {
+            let ships = card_ship_list();
+            // a column follows its ship while cards move: the button may sit over another card for a moment, but
+            // it still changes the loadout of the ship it was painted for
+            let painted = PAINTED_PLANE_SHIPS[card - 1].load(Ordering::Relaxed);
+            let ship = if painted != 0 && ships.iter().any(|&(_, ship)| ship == painted) {
+                Some(painted)
+            } else {
+                ships.get(card - 1).map(|&(_, ship)| ship)
+            };
+            if let Some(ship) = ship {
                 let next = plane_loadouts::next_choice(ship, craft);
                 plane_loadouts::set_choice(ship, craft, next);
                 // the state changed: retarget the button's existing sprite (no new Sprite per click)
