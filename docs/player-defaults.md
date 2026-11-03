@@ -1,7 +1,9 @@
-# Player defaults — release pack v0.14.4
+# Player defaults — release pack v0.14.15
 
-The player's installed configs were captured on 2026-10-30 as the reference
-profile for hf_ally 0.14.4 and hf_ai 0.10.8:
+> **IMPORTANT — UPDATE YOUR `Modloader/config/hf_ai.json`!**
+> When upgrading to pack v0.14.15 (`hf_ai v0.10.11`), replace your old `Modloader/config/hf_ai.json` with the new preset from the pack (or delete your old `hf_ai.json` so `hf_ai` generates a fresh copy).
+
+The tracked player default profiles for `hf_ally v0.14.15` and `hf_ai v0.10.11` live in:
 
 - [ally/config/ally.json](../ally/config/ally.json)
 - [ai/config/hf_ai.json](../ai/config/hf_ai.json)
@@ -15,49 +17,31 @@ guides to disable specific behavior.
 
 ## Profile highlights
 
-Allies: two wingmen, 1.5 s arrival delay, eight enemies, vanilla three-ship waves,
-K-13/loadout buttons on, ally ship panels and ally target boxes on, bomb/rocket and
-AA attack delays of 1 s, and fuel retreat at 30%. The Sprint exception is `MDL_MISSILE_03`. Runtime `logging.debug_log` is **true**, as
-in the captured player config. That enables detailed logs, the watchdog and crash
-dumps, and can force diagnostic probe/pre-combat output despite their individual
-keys being false. Set it false for quieter play. Ship/battle CSV capture is removed;
-player release DLLs are compiled without the forced megalog feature.
+Allies (`hf_ally v0.14.15`): up to four wingmen, 1.5 s arrival delay, eight enemies,
+vanilla three-ship waves, K-13/loadout buttons on, ally ship panels and ally target
+boxes on (`ally_reticle_scale: 0.6`), ship switching on, ally ship bombers on,
+bomb/rocket and AA attack delays of 1 s, and fuel retreat at 30%. The Sprint
+exception is `MDL_MISSILE_03`. Battle `debug_overlay` defaults to `false`. Runtime
+`logging.debug_log` is `true`; set it `false` for quieter play.
 
-AI: flares, allied reactions, aim and dive dodges are on; the top-level TWR cutoff
-is 2.0. Carrier groups launch up to three planes at 0.5 s intervals. Missile-dump
-chance is 0.4 with 0.6..1.5 s spacing. Plain evasion strength is 0.5, roll chance
-0.001, panic-evasion chance 0.1 and panic duration 5 s. Early-fire chance is 0.5.
-Steering/scan CSV capture is removed; `logging.log_panic` is off. Optional band/circling/close-retreat
-positioning and its settings remain removed.
-
-The ally preset retains the player's numeric colour `58623`, equivalent to
-`"#00E4FF"`. The typed config normalizes this to HEX when generating a new file;
-the colour is unchanged. JSON key order is irrelevant.
+AI (`hf_ai v0.10.11`): trimmed 38-key config. Flares, allied reactions, universal
+aim dodging (`aim_chance: 0.75`, `aim_boost: 2.0`), offensive early fire
+(`aim_fire_probability: 0.5`, `aim_fire_range: 1.6`, with friendly-fire corridor
+check), and dive avoidance (`dive_chance: 0.8`, `dive_dwell_s: 0.5`,
+`dive_boost: 2.0`) are on. Top-level `twr_cutoff` is `2.0`. Carrier groups launch
+up to three planes at `0.5` s intervals. Missile-dump chance is `0.4` with
+`0.6..1.5` s spacing (for both enemies and allies). Plain evasion strength is
+`0.5`, roll chance `0.001`, panic-evasion chance `0.1` and panic duration `5` s.
+Preventive curtain retreat range (`launch_flares_evade_range`) is `400.0`.
+`logging.log_panic` is off. Internal math/timing keys are omitted from the preset
+and documented under Retired settings in [hf-ai-config-reference.md](hf-ai-config-reference.md).
 
 ## Maintaining the reference
 
-Update the tracked preset and corresponding Rust defaults together. Regression
-tests compare the typed preset with `Config::default()` and an empty `{}`. Run
-`python3 tools/check_player_defaults.py --offline` for host-only validation; this
-runs Rust tests on configuration/math code and never loads a mod DLL or the game.
+Update the tracked preset and corresponding Rust defaults together.
 
 Build the three DLLs with `cargo xwin build --release --locked --no-default-features
 --target x86_64-pc-windows-msvc` in `ally/`, `ai/` and `qol/`. Commit the source and
-presets, then run `python3 tools/package_release.py --version 0.14.2 --output
+presets, then run `python3 tools/package_release.py --version 0.14.15 --output
 ../release_packs`. The packager checks a clean tracked source tree and includes a
-manifest with the source commit, versions and per-file SHA256 hashes. It does not
-publish a release or modify the game installation.
-
-The optional QoL build and its `qol.full.json` reference are unchanged in scope.
-The pack does not ship an active `qol.json`, so it does not replace existing QoL
-settings. The voice asset and logging/QoL reference files live under `release/`.
-Old local snapshots under the workspace's `config_references/` remain untouched.
-
-## GitHub-built releases
-
-Use the **Build and publish release** workflow (`.github/workflows/release.yml`)
-with the pack version. GitHub Windows runners build all three DLLs with locked
-dependencies and no forced megalog feature; Ubuntu
-assembles the ZIP. Only artifacts from those Windows jobs are used in the public
-release. `manifest.json` records the source commit and GitHub Actions run URL.
-No game or mod DLL is executed by the workflow.
+manifest with the source commit, versions and per-file SHA256 hashes.

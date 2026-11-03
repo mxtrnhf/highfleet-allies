@@ -118,19 +118,12 @@ pub struct AiFlaresConfig {
     /// Limited to `0.0` through `1.0`.
     pub launch_flares_min_rack: f32,
     /// Preventive defence only: a curtain starts only for the ship the launched missile is aimed at, or a ship within
-    /// `launch_flares_neighbor_range` of it. `false` = every enemy ship rolls (the v0.5.0 behaviour).
+    /// `launch_flares_neighbor_range` of it. `false` = every ship of that side rolls.
     pub launch_flares_targeted_only: bool,
     /// How close (game units) a ship must be to the targeted ship to join its curtain. `0` = only the targeted ship.
     ///
     /// Limited to `0` through `5000`.
     pub launch_flares_neighbor_range: f32,
-    /// A curtain ship that has no flares at all (no launcher) heads for an ally that is dropping flares (so the flares
-    /// sit between the missile and it) instead of just running away from the missile.
-    pub launch_flares_shelter: bool,
-    /// Only allies closer than this (game units) count as shelter.
-    ///
-    /// Limited to `0` through `5000`.
-    pub launch_flares_shelter_range: f32,
     /// A curtain waits a random time in this range (seconds) after the launch before its first drop, so the flares
     /// are still in the air when the missile arrives (they disappear after a short time).
     ///
@@ -179,13 +172,11 @@ impl Default for AiFlaresConfig {
             launch_flares_max_drops: 6,
             launch_flares_cooldown: 6.0,
             launch_flares_evade: 0.9,
-            launch_flares_evade_range: 700.0,
+            launch_flares_evade_range: 400.0,
             launch_flares_boost: 2.0,
             launch_flares_min_rack: 0.5,
             launch_flares_targeted_only: true,
             launch_flares_neighbor_range: 600.0,
-            launch_flares_shelter: true,
-            launch_flares_shelter_range: 1200.0,
             launch_flares_delay_min: 1.0,
             launch_flares_delay_max: 2.0,
             launch_flares_eta_lead: 4.0,
@@ -295,8 +286,6 @@ impl AiFlaresConfig {
             launch_flares_min_rack: pick(self.launch_flares_min_rack, default.launch_flares_min_rack, 0.0, 1.0),
             launch_flares_targeted_only: self.launch_flares_targeted_only,
             launch_flares_neighbor_range: pick(self.launch_flares_neighbor_range, default.launch_flares_neighbor_range, 0.0, MAX_TRIGGER_RANGE),
-            launch_flares_shelter: self.launch_flares_shelter,
-            launch_flares_shelter_range: pick(self.launch_flares_shelter_range, default.launch_flares_shelter_range, 0.0, MAX_TRIGGER_RANGE),
             launch_flares_delay_min: pick(self.launch_flares_delay_min, default.launch_flares_delay_min, 0.0, 30.0),
             launch_flares_delay_max: pick(self.launch_flares_delay_max, default.launch_flares_delay_max, 0.0, 30.0)
                 .max(pick(self.launch_flares_delay_min, default.launch_flares_delay_min, 0.0, 30.0)),

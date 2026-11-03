@@ -37,6 +37,8 @@ impl Default for CurtainParams {
 pub struct Curtain {
     /// The last launch number this ship looked at.
     pub seen_launch: u64,
+    /// The curtain starts acting at this game time (after the pre-drop ETA delay).
+    pub active_from: f64,
     /// The curtain runs until this game time (0 = none).
     pub until: f64,
     pub next_drop: f64,
@@ -50,8 +52,13 @@ pub struct Curtain {
     pub may_release: bool,
     /// Most flares ever seen loaded in this ship's racks (the rack's capacity).
     pub rack_capacity: f32,
-    /// The ship never had a flare (no launcher): it may shelter in an ally's flares instead of running.
-    pub has_no_launcher: bool,
+}
+
+impl Curtain {
+    /// True once the initial ETA delay has elapsed and the curtain window is still open.
+    pub fn is_active(&self, now: f64) -> bool {
+        self.until > now && now >= self.active_from
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +107,7 @@ pub fn update(
     if panicking {
         c.seen_launch = launch_number;
         if c.until > 0.0 {
+            c.active_from = 0.0;
             c.until = 0.0;
             c.quiet_until = now + f64::from(p.cooldown);
             return Event::Ended;
@@ -112,23 +120,28 @@ pub fn update(
         if eligible && now - launch_time <= FRESH_LAUNCH_S {
             if c.until > 0.0 {
                 c.until = c.until.max(now + f64::from(p.seconds));
+                c.releases = 0;
+                c.may_release = can_release;
                 event = Event::Extended;
             } else if now >= c.quiet_until && rand() < p.probability {
                 let delay = match eta.filter(|e| e.is_finite() && *e > 0.0) {
                     Some(e) => f64::from((e - p.eta_lead).clamp(p.delay_min, p.eta_max_wait.max(p.delay_min))),
                     None => range(p.delay_min, p.delay_max, rand),
                 };
-                c.until = now + delay + f64::from(p.seconds);
+                c.active_from = now + delay;
+                c.until = c.active_from + f64::from(p.seconds);
                 c.releases = 0;
                 c.may_release = can_release;
                 c.side = if rand() < 0.5 { -1.0 } else { 1.0 };
-                c.next_drop = now + delay;
+                c.next_drop = c.active_from;
                 event = Event::Started;
             }
         }
     }
     if c.until > 0.0 {
+        c.may_release = can_release;
         if now >= c.until || (c.may_release && c.releases >= p.max_drops) {
+            c.active_from = 0.0;
             c.until = 0.0;
             c.quiet_until = now + f64::from(p.cooldown);
             return Event::Ended;
@@ -140,35 +153,6 @@ pub fn update(
         }
     }
     event
-}
-
-/// How far behind the dropping ally (seen from the missile) a sheltering ship aims, in game units.
-pub const SHELTER_OFFSET: f32 = 250.0;
-
-/// A ship without flares "passes through the curtain" of an ally that drops them ("I got you, brother"): it heads for the
-/// point `SHELTER_OFFSET` behind the dropping ship as seen from the missile, so the flares are between the missile and
-/// the sheltering ship. Blended with its own course by `strength`. `None` on unusable numbers or when the missile sits on
-/// the dropper.
-pub fn shelter_waypoint(
-    waypoint: (f32, f32),
-    ship: (f32, f32),
-    dropper: (f32, f32),
-    missile: (f32, f32),
-    strength: f32,
-) -> Option<(f32, f32)> {
-    let norm = |x: f32, y: f32| {
-        let l = (x * x + y * y).sqrt();
-        (l.is_finite() && l > 1.0e-4).then(|| (x / l, y / l, l))
-    };
-    let (ux, uy, _) = norm(dropper.0 - missile.0, dropper.1 - missile.1)?;
-    let goal = (dropper.0 + ux * SHELTER_OFFSET, dropper.1 + uy * SHELTER_OFFSET);
-    let (gx, gy, _) = norm(goal.0 - ship.0, goal.1 - ship.1)?;
-    let (cx, cy, clen) = norm(waypoint.0 - ship.0, waypoint.1 - ship.1).unwrap_or((0.0, 0.0, 200.0));
-    let strength = strength.clamp(0.0, 1.0);
-    let (dx, dy, _) = norm(cx + (gx - cx) * strength, cy + (gy - cy) * strength)?;
-    let len = if clen > 1.0 { clen } else { 200.0 };
-    let out = (ship.0 + dx * len, ship.1 + dy * len);
-    (out.0.is_finite() && out.1.is_finite()).then_some(out)
 }
 
 /// Ground guard of the retreat: below this y (y grows downward, so larger y is lower) the retreat may not point

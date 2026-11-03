@@ -426,6 +426,7 @@ unsafe extern "C" fn init() -> bool {
                 config.ai_missile_dump_chance,
                 config.ai_missile_dump_min_delay,
                 config.ai_missile_dump_max_delay,
+                config.ai_flares.allies || config.tactics.allies,
             )
             .map_err(|e| e.to_string())?;
         }
@@ -435,6 +436,8 @@ unsafe extern "C" fn init() -> bool {
         )?;
         if with_flares {
             ai_flares::patch_ai_flares(&mut session, &config.ai_flares, steering_ok).map_err(|e| e.to_string())?;
+        } else if tactics::wants_engine_boost() {
+            ai_flares::prepare_boost_hook(&mut session, module, steering_ok).map_err(|e| e.to_string())?;
         }
         Ok(session)
     };

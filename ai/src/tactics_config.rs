@@ -35,19 +35,17 @@ pub struct TacticsConfig {
     /// React to a target below us and / or above us.
     pub dive_under: bool,
     pub dive_over: bool,
-    /// Engine boost while dodging (1.0 = off, 2.0 = like Shift). Needs `ai_flares.enabled` (its engine hook carries it).
+    /// Engine boost while dodging (1.0 = off, 2.0 = like Shift).
     pub dive_boost: f32,
     /// Wrong-foot speed (u/s): a target moving sideways faster than this makes the dodge go the other way (0 = random side).
     pub dive_wrongfoot_speed: f32,
-    /// Own chance and dwell for a target BELOW us (the damaging case); `dive_chance` / `dive_dwell_s` apply to a target above.
-    pub dive_under_chance: f32,
-    pub dive_under_dwell_s: f32,
     /// Vertical pull onto the target's altitude mixed into the dodge (0 = purely sideways).
     pub dive_level_weight: f32,
-    /// "Aim awareness" (enabled by player default): in shared awareness windows the enemies that target the player see the
-    /// player's aim line and slip off it. Window length, random time from the start of one window to the start of the next, hit tolerance
-    /// (miss distance from the aim ray), range along the ray, sidestep weight and engine boost.
+    /// "Aim awareness" (enabled by player default): in per-ship awareness windows ships see hostile aim rays and
+    /// slip off them.
     pub aim_enabled: bool,
+    /// Chance (0..1), rolled once per awareness window when a hostile aim ray crosses the ship, that it dodges.
+    pub aim_chance: f32,
     pub aim_window_s: f32,
     pub aim_gap_min_s: f32,
     pub aim_gap_max_s: f32,
@@ -55,10 +53,10 @@ pub struct TacticsConfig {
     pub aim_range: f32,
     pub aim_weight: f32,
     pub aim_boost: f32,
-    /// The aim dodge only happens while the player is actually shooting (either gun group's fire byte set).
+    /// The aim dodge only happens while the shooter is actively firing.
     pub aim_require_fire: bool,
-    /// Early fire (0 = off): chance, rolled once per awareness window for a ship on the aim line, that it opens fire
-    /// with its main guns for `aim_fire_s` seconds while the player is within `aim_fire_range` x its gun reach.
+    /// Early fire (0 = off): chance, rolled once per awareness window when the target is within `aim_fire_range` x
+    /// gun reach and the line of fire is clear, that the ship opens fire with its main guns for `aim_fire_s` seconds.
     pub aim_fire_probability: f32,
     pub aim_fire_s: f32,
     pub aim_fire_range: f32,
@@ -87,10 +85,9 @@ impl Default for TacticsConfig {
             dive_over: p.dive_over,
             dive_boost: p.dive_boost,
             dive_wrongfoot_speed: p.dive_wrongfoot_speed,
-            dive_under_chance: p.dive_under_chance,
-            dive_under_dwell_s: p.dive_under_dwell_s,
             dive_level_weight: p.dive_level_weight,
             aim_enabled: p.aim_enabled,
+            aim_chance: p.aim_chance,
             aim_window_s: p.aim_window_s,
             aim_gap_min_s: p.aim_gap_min_s,
             aim_gap_max_s: p.aim_gap_max_s,
@@ -134,10 +131,9 @@ impl TacticsConfig {
             dive_over: self.dive_over,
             dive_boost: pick(self.dive_boost, d.dive_boost, 1.0, 4.0),
             dive_wrongfoot_speed: pick(self.dive_wrongfoot_speed, d.dive_wrongfoot_speed, 0.0, 1000.0),
-            dive_under_chance: pick(self.dive_under_chance, d.dive_under_chance, 0.0, 1.0),
-            dive_under_dwell_s: pick(self.dive_under_dwell_s, d.dive_under_dwell_s, 0.0, 30.0),
             dive_level_weight: pick(self.dive_level_weight, d.dive_level_weight, 0.0, 3.0),
             aim_enabled: self.aim_enabled,
+            aim_chance: pick(self.aim_chance, d.aim_chance, 0.0, 1.0),
             aim_window_s,
             aim_gap_min_s,
             aim_gap_max_s: pick(self.aim_gap_max_s, d.aim_gap_max_s, aim_gap_min_s, 300.0),
@@ -174,10 +170,9 @@ impl TacticsConfig {
             dive_over: s.dive_over,
             dive_boost: s.dive_boost,
             dive_wrongfoot_speed: s.dive_wrongfoot_speed,
-            dive_under_chance: s.dive_under_chance,
-            dive_under_dwell_s: s.dive_under_dwell_s,
             dive_level_weight: s.dive_level_weight,
             aim_enabled: s.aim_enabled,
+            aim_chance: s.aim_chance,
             aim_window_s: s.aim_window_s,
             aim_gap_min_s: s.aim_gap_min_s,
             aim_gap_max_s: s.aim_gap_max_s,

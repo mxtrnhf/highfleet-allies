@@ -68,16 +68,13 @@ pub struct TacticsParams {
     pub dive_boost: f32,
     /// Wrong-foot: when the target moves sideways faster than this (u/s), the dodge goes the opposite way (0 = off).
     pub dive_wrongfoot_speed: f32,
-    /// The target BELOW us ("under", the damaging case) has its own chance and dwell; `dive_chance` / `dive_dwell_s`
-    /// apply to a target above us.
-    pub dive_under_chance: f32,
-    pub dive_under_dwell_s: f32,
     /// Share of vertical motion towards the target's altitude mixed into the dodge (0 = purely sideways): the ship
     /// tries to get onto the target's level so it cannot be shot in the belly.
     pub dive_level_weight: f32,
-    /// "Aim awareness": during shared awareness windows the enemies that target the player see where the player aims
-    /// and slip off the aim line.
+    /// "Aim awareness": during per-ship awareness windows ships see where hostile shooters aim and slip off the aim line.
     pub aim_enabled: bool,
+    /// Chance (0..1), rolled once per awareness window when a hostile aim ray crosses the ship, that it dodges.
+    pub aim_chance: f32,
     /// Length of one awareness window and the random time from the START of one window to the start of the next.
     pub aim_window_s: f32,
     pub aim_gap_min_s: f32,
@@ -88,10 +85,10 @@ pub struct TacticsParams {
     pub aim_range: f32,
     pub aim_weight: f32,
     pub aim_boost: f32,
-    /// The dodge only happens while the player is actually shooting (fire byte of either gun group set).
+    /// The dodge only happens while the shooter is actually firing.
     pub aim_require_fire: bool,
-    /// Early fire: once per awareness window, a ship that is on the aim line rolls this chance to open fire with its
-    /// main guns (group 0) for `aim_fire_s`, as long as the player is within `aim_fire_range` x its gun reach.
+    /// Early fire: once per awareness window, a ship whose target is within `aim_fire_range` x its gun reach (with a
+    /// clear line of fire) rolls this chance to open fire with its main guns (group 0) for `aim_fire_s`.
     pub aim_fire_probability: f32,
     pub aim_fire_s: f32,
     pub aim_fire_range: f32,
@@ -110,26 +107,25 @@ impl Default for TacticsParams {
             dive_chance: 0.8,
             dive_cone_deg: 45.0,
             dive_range: 600.0,
-            dive_dwell_s: 1.0,
+            dive_dwell_s: 0.5,
             dive_min_s: 1.5,
             dive_max_s: 3.0,
             dive_cooldown_s: 2.0,
             dive_weight: 8.0,
             dive_under: true,
             dive_over: true,
-            dive_boost: 2.5,
+            dive_boost: 2.0,
             dive_wrongfoot_speed: 40.0,
-            dive_under_chance: 1.0,
-            dive_under_dwell_s: 0.5,
             dive_level_weight: 0.7,
             aim_enabled: true,
+            aim_chance: 0.75,
             aim_window_s: 1.5,
             aim_gap_min_s: 2.5,
             aim_gap_max_s: 3.5,
             aim_tolerance: 200.0,
             aim_range: 1800.0,
             aim_weight: 12.0,
-            aim_boost: 2.5,
+            aim_boost: 2.0,
             aim_require_fire: true,
             aim_fire_probability: 0.5,
             aim_fire_s: 1.0,
@@ -204,7 +200,7 @@ pub struct ShipState {
     pub reach_self: f32,
     /// Target in the dive cone since this time.
     pub aligned_since: Option<f64>,
-    /// The roll for the current alignment said no.
+    /// The roll for the current alignment said no (held until `dive_cooldown_until`).
     pub declined: bool,
     /// A dodge in progress: (until, side) with side +1 = towards +x.
     pub dive: Option<(f64, f32)>,
@@ -212,13 +208,27 @@ pub struct ShipState {
     /// Last target position and time, and its smoothed sideways velocity (u/s).
     pub prev_target: Option<(f64, (f32, f32))>,
     pub target_vx: f32,
+    /// Per-ship awareness window clock.
+    pub aim_clock: AimClock,
+    /// Window number for which `aim_chance` was already rolled, and whether the roll succeeded.
+    pub aim_rolled_window: u32,
+    pub aim_dodging: bool,
 }
 
 impl ShipState {
     pub fn new(now: f64) -> Self {
         Self {
-            last_seen: now, reach_self: 0.0, aligned_since: None, declined: false,
-            dive: None, dive_cooldown_until: 0.0, prev_target: None, target_vx: 0.0,
+            last_seen: now,
+            reach_self: 0.0,
+            aligned_since: None,
+            declined: false,
+            dive: None,
+            dive_cooldown_until: 0.0,
+            prev_target: None,
+            target_vx: 0.0,
+            aim_clock: AimClock::default(),
+            aim_rolled_window: 0,
+            aim_dodging: false,
         }
     }
 
@@ -390,30 +400,33 @@ fn dive_update(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, now: f64,
         st.aligned_since = None;
         st.declined = false;
     }
-    if now < st.dive_cooldown_until {
-        return Dive::Idle;
-    }
     let widen = if st.aligned_since.is_some() { 1.15 } else { 1.0 };
     if !in_dive_cone(to, p, widen) {
         st.aligned_since = None;
         st.declined = false;
         return Dive::Idle;
     }
-    let since = *st.aligned_since.get_or_insert(now);
     if st.declined {
-        return Dive::Skip;
+        if now < st.dive_cooldown_until {
+            return Dive::Skip;
+        }
+        st.declined = false;
+        st.aligned_since = Some(now);
     }
-    let under = to.1 > 0.0;
-    let (dwell, chance) = if under { (p.dive_under_dwell_s, p.dive_under_chance) } else { (p.dive_dwell_s, p.dive_chance) };
-    if now - since < f64::from(dwell) {
+    if now < st.dive_cooldown_until {
         return Dive::Idle;
     }
-    if rng.unit() < chance {
+    let since = *st.aligned_since.get_or_insert(now);
+    if now - since < f64::from(p.dive_dwell_s) {
+        return Dive::Idle;
+    }
+    if rng.unit() < p.dive_chance {
         let side = dive_side(ship.0, bounds, p, rng, st.target_vx);
         st.dive = Some((now + f64::from(rng.range(p.dive_min_s, p.dive_max_s)), side));
         Dive::Active(side)
     } else {
         st.declined = true;
+        st.dive_cooldown_until = now + f64::from(p.dive_cooldown_s);
         Dive::Skip
     }
 }
@@ -463,27 +476,67 @@ impl AimClock {
     }
 }
 
-/// Early fire is allowed while the player is inside `aim_fire_range` x the ship's gun reach (reach unknown: never).
+/// Early fire is allowed while the target is inside `aim_fire_range` x the ship's gun reach (reach unknown: never).
 pub fn early_fire_in_range(dist: f32, reach: Option<f32>, p: &TacticsParams) -> bool {
     reach.is_some_and(|r| r.is_finite() && r > 0.0 && dist.is_finite() && dist <= r * p.aim_fire_range)
 }
 
-/// The player's aim as the AI would "see" it: where the player is and the unit direction of the aim.
+/// True when the shooter's guns aim towards `target` (within ~20 deg if `aim_dir` is known) and no friendly ship lies
+/// inside the firing corridor between `shooter` and `target`.
+pub fn clear_line_of_fire(
+    shooter: (f32, f32),
+    target: (f32, f32),
+    aim_dir: Option<(f32, f32)>,
+    friendlies: &[((f32, f32), f32)],
+) -> bool {
+    let dx = target.0 - shooter.0;
+    let dy = target.1 - shooter.1;
+    let dist = dx.hypot(dy);
+    let Some(to_target) = normalized(dx, dy).filter(|_| dist > 1.0) else {
+        return false;
+    };
+    if let Some(aim) = aim_dir {
+        if aim.0 * to_target.0 + aim.1 * to_target.1 < 0.94 {
+            return false;
+        }
+    }
+    for &(pos, radius) in friendlies {
+        let rel = (pos.0 - shooter.0, pos.1 - shooter.1);
+        let along = rel.0 * to_target.0 + rel.1 * to_target.1;
+        if along > 0.0 && along < dist {
+            let miss = (rel.0 * to_target.1 - rel.1 * to_target.0).abs();
+            let clearance = radius.clamp(40.0, 400.0) + 80.0;
+            if miss < clearance {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// A hostile shooter's aim ray: where the shooter is and the unit direction of its aim.
 #[derive(Clone, Copy, Debug)]
 pub struct AimInput {
     pub player: (f32, f32),
     pub dir: (f32, f32),
 }
 
-/// Is `ship` on the aim ray? Returns the unit direction that slips off the line (perpendicular to the aim, on the side
-/// the ship already is). `None` when the ship is behind the player, too far along the ray, or off the line.
-pub fn aim_dodge_dir(aim: &AimInput, ship: (f32, f32), p: &TacticsParams, rng: &mut Rng) -> Option<(f32, f32)> {
+/// True when `ship` lies inside the `aim` ray corridor (`aim_range` along, `aim_tolerance` across).
+pub fn aim_ray_hits(aim: &AimInput, ship: (f32, f32), p: &TacticsParams) -> bool {
     let v = (ship.0 - aim.player.0, ship.1 - aim.player.1);
     let along = v.0 * aim.dir.0 + v.1 * aim.dir.1;
     let cross = aim.dir.0 * v.1 - aim.dir.1 * v.0;
-    if !(along.is_finite() && cross.is_finite()) || along <= 0.0 || along > p.aim_range || cross.abs() > p.aim_tolerance {
+    along.is_finite() && cross.is_finite() && along > 0.0 && along <= p.aim_range && cross.abs() <= p.aim_tolerance
+}
+
+/// Is `ship` on the aim ray? Returns the unit direction that slips off the line (perpendicular to the aim, on the side
+/// the ship already is). `None` when the ship is behind the shooter, too far along the ray, or off the line.
+pub fn aim_dodge_dir(aim: &AimInput, ship: (f32, f32), p: &TacticsParams, rng: &mut Rng) -> Option<(f32, f32)> {
+    if !aim_ray_hits(aim, ship, p) {
         return None;
     }
+    let v = (ship.0 - aim.player.0, ship.1 - aim.player.1);
+    let cross = aim.dir.0 * v.1 - aim.dir.1 * v.0;
     let sign = if cross.abs() < 1.0 {
         if rng.unit() < 0.5 { -1.0 } else { 1.0 }
     } else {
@@ -516,8 +569,14 @@ pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepIn
     let mut skipped = false;
     if let (true, Some(aim)) = (p.aim_enabled, inp.aim) {
         if let Some(dir) = aim_dodge_dir(&aim, inp.ship, p, rng) {
-            let waypoint = compose(inp.ship, stock_vec, dir, p.aim_weight, bounds, p);
-            return Step { state: State::Aim, waypoint };
+            if st.aim_rolled_window != st.aim_clock.window {
+                st.aim_rolled_window = st.aim_clock.window;
+                st.aim_dodging = rng.unit() < p.aim_chance;
+            }
+            if st.aim_dodging {
+                let waypoint = compose(inp.ship, stock_vec, dir, p.aim_weight, bounds, p);
+                return Step { state: State::Aim, waypoint };
+            }
         }
     }
     if p.dive_enabled {

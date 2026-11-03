@@ -1,176 +1,89 @@
-# Tuning hf_ai: a plain-language guide (player defaults: v0.10.8)
+# Tuning hf_ai: a plain-language guide (player defaults: v0.10.11)
 
-Written 2026-10-24 for the person who tunes the AI, not for the person who reads the code. Every number below is a key in `Modloader/config/hf_ai.json`; the code defaults are in `hf_ai/src/tactics_math.rs` (`Params::default`) and `hf_ai/src/flares_config.rs`. Where I only know something from reading the code and not from playing, it says so.
+> **IMPORTANT — UPDATE YOUR `Modloader/config/hf_ai.json` WHEN UPGRADING TO v0.10.11+**
+> Replace your old `Modloader/config/hf_ai.json` with the new one from this release (or delete your old `hf_ai.json` so the mod generates a fresh one). `v0.10.11` trims the config from 79 keys down to the 38 core gameplay settings, reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering.
+
+Written for the person who tunes the AI, not for the person who reads the code. Every setting below is a key in `Modloader/config/hf_ai.json`; the full key reference (including retired/internal keys) is in [hf-ai-config-reference.md](hf-ai-config-reference.md).
 
 ## 1. Is "state machine" the right word?
 
-Yes, with two corrections.
+Yes, with two clarifications:
 
-* **Each AI ship has its own small state machine.** At any moment it is in exactly one state (`stock`, `dive`, `dive_skip`, `aim`, `panic`). It moves between states on conditions (target in the dive cone for long enough, an aim window opens, a missile locks on) and on timers (dwell, cooldown, duration).
-* **It is not the game's AI.** The game's own AI runs every tick and computes a *waypoint* (where to fly next). hf_ai sits on that one point: it reads the waypoint the game wanted and either leaves it (`stock`) or replaces it. It never touches guns, targets or missiles, except the optional early fire. So "the state machine" is a steering override on top of vanilla, not a replacement brain.
-* **There are really two machines.** (a) The *steering* machine above (file `tactics_math.rs`, `tactics.rs`). (b) The *flare curtain* machine (`curtain_math.rs`, `ai_flares.rs`): wait, drop, cooldown, driven by missile launches. They share the ship and the panic, but have separate settings (`tactics` block vs `ai_flares` block).
+* **Each AI ship has its own small state machine.** At any moment its tactical steering is in one state (`STOCK`, `DIVE`, `DIVE-SKIP`, `AIM`, `PANIC`), and its missile-defense layer is in `NONE`, `CURTAIN`, `FLARES`, `EVADE`, `PANIC`, or `ROLL` (visible live in battle if you turn on `"debug_overlay": true` in `ally.json`).
+* **It is not a replacement brain.** The game's own AI runs every tick, picks targets, aims guns, and computes a desired *waypoint*. `hf_ai` sits on that output: it either leaves the stock waypoint alone (`STOCK`) or blends/replaces it when a maneuver triggers.
 
 ## 2. What happens every tick
 
-1. **Gates** (cheap checks first). hf_ai stays out (`stock`) unless: the ship is AI-flown (never the ship you fly), it is airborne (mode 1), it has a living target that is not itself, the arena bounds are readable, and the ship is on a side that is allowed (enemy always; your allies only with `allies`).
-2. **TWR gate.** The top-level `twr_cutoff` is the sole capability threshold. `0.0` admits every ship; a positive value admits strategic/Shipworks TWR at or above that value (before UI rounding, since v0.10.8). Individual tactic switches and safety checks still apply. The former strafe/dive acceleration settings are deprecated and ignored.
-3. **Priority order** (first match wins): **panic** > **aim** > **dive** > stock.
-4. The winning state produces a direction. It is mixed with the game's own direction as `stock_direction + weight * tactic_direction` and re-normalised, so a large weight means "mostly my direction", weight 0 means stock. Ground, arena edges and "never steer down when low" limits are applied after.
-5. Some states ask for an engine boost (like holding Shift). **The boost is applied by the `ai_flares` engine hook, so `dive_boost` / `aim_boost` do nothing unless `ai_flares.enabled` is true.**
+1. **Gates.** `hf_ai` stays out (`STOCK`) unless: the ship is AI-flown (never the ship you fly yourself), it is airborne (mode 1), it has a living target that is not itself, the arena bounds are readable, and the ship's side is enabled (enemies always; allies when `allies: true`).
+2. **TWR gate.** Top-level `twr_cutoff` (default `2.0`) checks live strategic/Shipworks TWR (`creature +0x160c`, before UI rounding). Ships below the cutoff do not use tactical dodges or missile evasion maneuvers, though they can still drop flares. `0.0` disables the TWR gate.
+3. **Priority order** (first match wins): **missile panic / curtain** > **aim dodge** > **dive avoidance** > **stock**.
+4. **Steering composition.** The active maneuver blends its unit direction with the stock direction, then clamps against the ground (`ground_y`, `ground_clearance`, `ground_hard_y`) and arena walls (`edge_margin`).
+5. **Engine boost.** Maneuvers with a boost above `1.0` (`panic_boost`, `launch_flares_boost`, `dive_boost`, `aim_boost`) raise the AI's engine thrust commands like holding Shift. Since v0.10.11, the engine-boost hook is installed whenever *any* boost is enabled, so `tactics` boosts work even if `ai_flares.enabled` is `false`.
 
 ## 3. The states and what each knob does
 
-### 3.1 Panic (the `ai_flares` block): incoming missile
-Triggers when a missile that has locked on to the ship comes within `trigger_range` (400), or—with `stray_missiles`—when a loose one's straight-line path passes close. A locked missile starts flares and evasion; a stray starts evasion only, and a later lock can add one flare burst. Each check (about 10 per second) rolls `reaction_probability` (0.6): a failed roll means no reaction yet, so lower values make the AI slower and sloppier.
-* It drops flares for `burst_seconds` (1.5 s, about 10 flares per launcher), then waits `min_interval_seconds` before the next panic.
-* `evade` true: it also steers sideways (perpendicular to the missile's line of approach) for `evasion_seconds`, `evasion_strength` 0..1 = how much of its course is taken over. Extended by 1 s each time a locked missile is still inside the range.
-* With `panic_evasion_probability` (rolled once per panic) it instead commits to one escape direction at `panic_boost` x thrust for `panic_evasion_seconds` (extended 2.5 s at a time). It prefers the higher sidestep and never dives toward the ground when low.
-* `barrel_roll_probability`: the "panic spin" (engines on one side up, other side down). Spectacular, rarely useful; keep near 0 to 0.02.
-* `stray_missile_*`: radius / ETA / range for loose missiles. Raise the radius for a more nervous AI.
+### 3.1 Missile panic (`ai_flares` block)
+Triggers when a missile locked onto the ship comes within `trigger_range` (`400.0`), or — with `stray_missiles: true` — when an unguided/other-target missile's straight-line trajectory passes close within 3 seconds.
+* A locked missile starts both a flare burst and evasion; a stray missile starts evasion only (a later lock adds a flare burst).
+* Checked 10 times per second, rolling `reaction_probability` (`0.6`).
+* Drops flares for `burst_seconds` (`1.5` s, ~10 flares per launcher), then enforces `min_interval_seconds` (`1.5` s) of cooldown after the panic ends.
+* With `evade: true`, the ship steers sideways/upward away from the missile's approach line for `evasion_seconds` (`3.0` s) with blend `evasion_strength` (`0.5`). Ships **without** flare launchers still execute full evasion maneuvers.
+* Rolled once per panic: `panic_evasion_probability` (`0.1`) triggers a full-course escape at `panic_boost` (`2.0`) for `panic_evasion_seconds` (`5.0` s); `barrel_roll_probability` (`0.001`) triggers a `barrel_roll_seconds` (`2.0` s) spin.
 
-*Tuning feel:* difficulty goes up with `reaction_probability`, down with `min_interval_seconds` and up with `trigger_range`. The measured fact behind the defaults: enemy missiles hit only 2 to 5 percent of the time, so do not make panic perfect or missiles become useless.
+### 3.2 Preventive flare curtain (`launch_flares_*` in `ai_flares`)
+When the opposing side launches a missile, eligible AI ships schedule a pre-emptive flare curtain before the missile locks on:
+* **Who reacts:** The ship the missile is aimed at rolls `launch_flares_target_probability` (`1.0`). With `launch_flares_targeted_only: true`, ships within 600 units of the target roll `launch_flares_probability` (`0.6`); with `false`, all ships on that side roll `launch_flares_probability` while the target still uses `launch_flares_target_probability`.
+* **Timing:** Flares last 5 seconds in the air. The curtain waits until the missile is ~4 seconds (~920 units) from arriving before activating (`CURTAIN`), so flares aren't wasted while the missile is still far away.
+* **Flare budget:** Once active, the ship releases flares every `0.5..1.0` s up to `launch_flares_max_drops` (`6`), checking `launch_flares_min_rack` (`0.5`) before **every** drop so at least 50% of its flare capacity is saved for a close-range panic.
+* **Retreat:** While active and within `launch_flares_evade_range` (`400.0`), the ship steers away from the incoming missile (`launch_flares_evade: 0.9`, `launch_flares_boost: 2.0`), even if it has no flare launchers or has reached its 50% reserve.
 
-### 3.2 Flare curtain (preventive flares)
-When the **other camp** launches a missile, an AI ship rolls once whether to start dropping flares at random intervals *before* any lock. For enemy ships the trigger is your missile; **for allies (v0.9.0) it is an enemy missile aimed at you or at an ally.** Allies need `ai_flares.allies` true.
-* `launch_flares_probability` (release: 0.6) for ships near the target; `launch_flares_target_probability` (1.0) for the ship the missile is aimed at. `launch_flares_targeted_only` true: only the targeted ship and ships within `launch_flares_neighbor_range` (600) join; false: every ship rolls.
-* **Timing.** Flares live exactly 5 s. The first drop is timed from the missile's ETA (distance / `launch_flares_missile_speed` 230) minus `launch_flares_eta_lead` (4 s), clamped to `launch_flares_delay_min` (1) .. `launch_flares_eta_max_wait` (8). If the cloud is dropped too early it is gone when the missile arrives (this was the main v0.7.0 defect: 48 percent of drops were wasted). Keep the lead near 4.
-* **Budget.** `launch_flares_max_drops` (6) per curtain, `launch_flares_interval_min/max` (0.5..1.0) between drops, `launch_flares_min_rack` (0.5): the ship stops dropping when the racks are below that share, so some flares stay for a real panic. `launch_flares_cooldown` (6) between curtains.
-* **Movement.** While the curtain runs the ship moves away from the missile (`launch_flares_evade` 0.9, `launch_flares_boost` 2.0, within `launch_flares_evade_range` 700). A ship with no flare launcher shelters 250 u *behind* a dropping friend (`launch_flares_shelter`, range 1200).
+### 3.3 Dive avoidance ("deny the dive", `tactics.dive_*`)
+If a ship's target stays within 45° of straight below (`dive_under: true`) or straight above (`dive_over: true`), closer than `dive_range` (`600.0`), for `dive_dwell_s` (`0.5` s), the ship rolls `dive_chance` (`0.8`):
+* **Success (`DIVE`):** Sidesteps horizontally (picking the wrong-foot direction against a fast-moving target, or away from a nearby arena wall) while pulling toward the target's altitude, boosted by `dive_boost` (`2.0`), for `1.5..3.0` s, followed by `dive_cooldown_s` (`2.0` s).
+* **Declined (`DIVE-SKIP`):** Since v0.10.11, a failed roll pauses for `dive_cooldown_s` (`2.0` s) and then re-evaluates if the target is still hovering in the cone, instead of latching off forever.
 
-*Tuning feel:* to make missiles more dangerous, lower the probabilities or raise `launch_flares_eta_lead` away from 4 (mis-timed flares). To make the AI feel smart, raise `launch_flares_target_probability` and keep `shelter` on.
+### 3.4 Universal aim dodging & offensive early fire (`tactics.aim_*`)
+Reworked in v0.10.11 so **all sides dodge each other's gun aim**:
+* **Staggered per-ship windows:** Each AI ship runs its own awareness clock (`1.5` s window every `2.5..3.5` s) rather than a single global clock.
+* **Universal threat rays:** During an open window, the ship checks all hostile live ships (enemies check the player **and** your allies; your allies check all enemies). For the player, aim comes from the mouse aim vector (`0x1403c0dc8`); for AI ships, aim comes from `AiWeaponController`'s lead vector (`creature +0xbf8/+0xbfc`).
+* **Multiple shooters:** If both you and an ally (or multiple enemies) aim at the same ship within `aim_range` (`1800.0`) and `aim_tolerance` (`200.0`), it dodges the **closest active shooter's** ray.
+* **Firing check (`aim_require_fire: true`):** Only dodges shooters that are actively firing. For the player, a `0.6` s hold-over after each volley ensures single-click large-caliber shots register; for AI shooters, active gun rate timers and burst latches are checked.
+* **Anti-juking roll (`aim_chance: 0.75`):** Rolled once per awareness window when a hostile ray crosses the ship, so AI-vs-AI fights don't become endless 100% juking matches.
+* **Offensive early fire (`aim_fire_probability: 0.5`, `aim_fire_range: 1.6`):** Once per awareness window, if the ship's own target is within `1.6x` its gun reach, its guns are aligned within ~20° of the target, and **no friendly ship lies in the firing corridor**, it rolls `aim_fire_probability` to fire a 1-second main-gun burst. If a friendly ship crosses into the line of fire mid-burst, early fire stops immediately.
 
-### 3.3 Dive ("deny the dive")
-If the target hangs within `dive_cone_deg` (45) of straight below ("under") or above ("over") the ship, closer than `dive_range` (600), for the dwell time, the ship rolls once per time the target enters the cone. On success it sidesteps horizontally for `dive_min_s..dive_max_s` (1.5..3), then pauses `dive_cooldown_s` (2). On a failed roll it is `dive_skip` and stays stock until the target leaves the cone.
-* Why it exists: a target straight below you is the one that can hit your keel. Sidestepping and pulling to its altitude (`dive_level_weight` 0.7, full strength from 150 u of height difference) takes that shot away.
-* Under vs over have separate odds: `dive_under_chance` (1.0) and `dive_under_dwell_s` (0.5) for a target below; `dive_chance` (0.8) and `dive_dwell_s` (1.0) for one above. `dive_under` / `dive_over` switch either off.
-* `dive_wrongfoot_speed` (40 u/s): if the target is moving sideways faster than this, the ship dodges the *other* way, so you must reverse your momentum to follow. 0 means a random side. A near arena wall always wins over the choice.
-* Strength: `dive_weight` (8) and `dive_boost` (2.5, needs ai_flares on).
+## 4. Ally support (`v0.10.11`)
 
-*Tuning feel:* "too passive / still gets shot from below": `dive_under_chance` is already 1.0, so lower `dive_under_dwell_s`, raise `dive_weight` / `dive_boost`, widen `dive_cone_deg`. "Looks like it is dancing": lengthen `dive_cooldown_s`, lower the chances.
-
-### 3.4 Aim awareness (enemies only so far)
-Every `aim_gap_min_s..aim_gap_max_s` (2.5..3.5 s) an *awareness window* of `aim_window_s` (1.5 s) opens for all ships at once. During it, enemies that target **you** look at the line your guns point along. A ship whose position is within `aim_tolerance` (200 u) of that ray, closer than `aim_range` (1800 u), slips off the line sideways (`aim_weight` 12, `aim_boost` 2.5).
-* `aim_require_fire` true: only while you are actually pressing fire (either gun group). This was added because 24 percent of on-line time you were not shooting.
-* **Early fire:** `aim_fire_probability` (release 0.5): once per window a ship that is on the line rolls this chance and opens fire with its main guns for `aim_fire_s` (1 s) if you are within `aim_fire_range` (1.6) x its gun reach. Bypasses the stock range, angle and friendly-fire tests, so allies near the line of fire can be hit. Set 0 to turn it off.
-* **Allies do not get aim awareness in v0.9.0.** It needs each enemy's gun direction, which hf_ai does not read yet (only the player's aim is known, at game address `0x1403c0dc8`).
-
-*Tuning feel:* "too hard to hit": raise `aim_gap_*` (longer pauses between windows) or lower `aim_weight`/`aim_boost`; narrow `aim_tolerance`. The effect is small by design: the measured displacement was only about 17 u/s before the weights were raised.
-
-### 3.5 Positioning is stock (since v0.10.6)
-
-The optional strafe/band/close-retreat routine was removed. Without an active
-reactive dodge, hf_ai leaves the stock waypoint unchanged at any target distance.
-Aim dodging and dive avoidance retain their own weights and shared safety checks.
-The removed settings are listed as deprecated below.
-
-## 4. Ally differences (v0.9.0)
-
-| Feature | Allies |
+| Feature | Allies (`allies: true`) |
 |---|---|
-| Panic and flares, stray missiles | yes (`ai_flares.allies` true) |
-| Flare curtain | yes, triggered by **enemy** launches at the player's side |
-| Dive | yes (`tactics.allies` true), against the ally's own target |
-| Aim awareness / early fire | no |
-| The ship you fly | never touched |
+| Locked & stray missile panic / flares | Yes (`ai_flares.allies`) |
+| Preventive flare curtain (on enemy launches) | Yes (`ai_flares.allies`) |
+| Dive avoidance | Yes (`tactics.allies`) |
+| Aim dodging (against enemy gun aim) | Yes (`tactics.allies`) |
+| Offensive early fire (with friendly-fire check) | Yes (`tactics.allies`) |
+| Zenith missile burst dump (`ai_missile_dump_*`) | Yes (`ai_flares.allies` or `tactics.allies`) |
+| The ship you fly yourself | Never touched |
 
-Unconfirmed in play: whether allies really dodge as intended. The ally curtain and dive are new and were checked only by unit tests (80 pass), not in a battle. Look for `CURTAIN_START` lines whose ship pointer is an ally in `hf_ai_panic_*.log`.
+## 5. Quick tuning recipes
 
-## 5. How to tune without guessing
-
-1. **Change one thing at a time**, keep a `.bak` of `hf_ai.json`, and change `enabled` (master) or one block's `enabled` to A/B. A fight against the same enemy design (say Intrepid) is the comparison unit.
-2. **Turn text logging on for the test only:** set `"logging": { "log_panic": true }` in `hf_ai.json` for panic and curtain events with timestamps. This does not require hf_ally.
-3. **Observe the fight directly.** Ship/battle CSV capture and telemetry replay support have been removed.
-4. **Measure, then judge.** Useful numbers: share of enemy missiles that hit; share of curtain drops still in the air when the missile arrives (target: most); how often each `state` appears; time under your keel before the ship moves (dive); damage taken per minute. Do not judge from one fight: dice are rolled per ship.
-5. **Safe order for a "harder" AI:** raise `reaction_probability`, then the dive weights, then the aim window frequency, last the early fire. For an "easier" one reverse it. Early fire is the one that makes the AI visibly dangerous, so move it in steps of 0.1.
-6. **Pitfalls.** (a) Boosts need `ai_flares.enabled` true. (b) Qol's own `ai_flares` must be false while hf_ai's is true: both patch the same sites. (c) A ship under 30 thrust/mass never does anything, so heavies feel "stock". (d) Settings are read at game start (no hot reload that I know of; restart the game after editing). (e) Wrong key names are silently ignored (every key is optional), so check the `hf_ai: tactics ON (...)` log line shows your numbers.
-
-## 6. Player defaults (hf_ai v0.10.8)
-
-The exact [player preset](../ai/config/hf_ai.json) is shipped in the release and
-matches compiled defaults, including defaults for omitted fields. Flares,
-allied flares, tactics, allied tactics, dive and aim dodging are enabled.
-Early-fire probability is 0.5. Missile-dump chance is 0.4 with a 0.6..1.5 s delay.
-Missile evasion strength is 0.5, roll chance 0.001, panic-evasion chance 0.1 and
-panic duration 5 s. The top-level TWR cutoff is 2.0; carrier groups are 3 planes
-at 0.5 s intervals. Steering, scan and panic logging are off. Existing full
-configs keep their explicit values; partial configs inherit this player profile.
-
-## 7. Recipes: "I see X, so I change Y"
-
-All keys live in `Modloader/config/hf_ai.json`. Keep a `.bak`, change one line, restart the game, fight the same enemy again. Unlisted keys keep the defaults in sections 3.1 to 3.4.
-
-| What you see in battle | What to change |
+| What you see in battle | What to change in `Modloader/config/hf_ai.json` |
 |---|---|
-| Too many flares around the targeted ship; neighbours dump for nothing | `ai_flares.launch_flares_neighbor_range` to `0`: only the ship the missile is aimed at joins the curtain. Lower `launch_flares_probability` (0.6) to thin it out further. |
-| Enemies dump flares every time I (or my allies) fire anything | They react to any missile launched by your side. Lower `launch_flares_probability`, or set `launch_flares_targeted_only` true (it is the default) so only the target reacts. |
-| Flares are gone before the missile arrives | `launch_flares_eta_lead` is the head start in seconds (4). Flares last 5 s, so keep it near 4. |
-| My allies dump flares too often | `ai_flares.allies` false turns allies' flares off completely. Otherwise lower `launch_flares_probability` (it applies to everyone). |
-| Ships with no flare launchers just sit there when a Zenith comes | Shelter and running away already exist (section 3.2). Make them braver or more nervous with `launch_flares_evade` (0.9), `launch_flares_boost` (2.0) and `launch_flares_evade_range` (700). `launch_flares_shelter` must stay true. |
-| The AI is too good at dodging missiles | Lower `reaction_probability` (0.6) and `panic_evasion_probability` (0.3); raise `min_interval_seconds`. |
-| The AI is too easy to hit with missiles | The opposite: raise `reaction_probability`, `trigger_range` (400) and `stray_missile_*` radius. |
-| Ships keep shooting at me from below | Section 3.3: lower `dive_under_dwell_s`, raise `dive_weight` / `dive_boost`. |
-| Enemies hit me too early or from far away | `aim_fire_probability` to `0` turns off early fire. |
-| Heavy ships never dodge | Check `twr_cutoff` and the individual tactic switches. Since v0.10.4 there is no separate acceleration gate; `0.0` removes the TWR restriction. |
+| Neighbouring ships drop too many preventive flares | Keep `launch_flares_targeted_only: true` and lower `launch_flares_probability` (e.g. `0.3` or `0.0`), leaving `launch_flares_target_probability: 1.0` so only the targeted ship drops a curtain. |
+| AI ships dodge my cannon shots too often | Lower `tactics.aim_chance` (default `0.75` -> `0.4`) or narrow `tactics.aim_tolerance` (`200.0` -> `120.0`). |
+| AI ships never dodge until I'm already shooting | Set `tactics.aim_require_fire: false` so they react to hostile aim lines even before the trigger is pulled. |
+| Ships still let me camp directly underneath them | Lower `tactics.dive_dwell_s` (`0.5` -> `0.25`) or raise `tactics.dive_chance` (`0.8` -> `1.0`). |
+| Enemies or allies open fire from too far away | Lower `tactics.aim_fire_range` (`1.6` -> `1.25`) or set `tactics.aim_fire_probability: 0.0`. |
+| Heavy ships never dodge | Lower top-level `twr_cutoff` (`2.0` -> `1.5`, or `0.0` to allow all ships). |
 
-## 8. Why flares start at "wrong" times (what the code does)
+## 6. Retired settings
 
-* **Missile locked on a ship** (panic, section 3.1): flares start only when the missile is closer than `trigger_range` (400 units) and the reaction roll passed. This is the "late" flare burst.
-* **Missile launched by the other camp** (curtain, section 3.2): flares start before any lock, a few seconds before the missile's estimated arrival. This is the "early" one, and it is the reason a ship can dump flares when nothing is yet aimed at *it*: it is the target or stands within `launch_flares_neighbor_range` of the target. The trigger is the launch, not the danger to that particular ship.
-* **Allies** run the same logic mirrored: they dump on an **enemy** launch aimed at you or at an ally.
-* **K-13 (carrier planes' air-to-air missile):** checked in the 2026-10-25 test logs (6 K-13 launches with hf_ai loaded): no launch was detected and no curtain started, so the K-13 does not set off flare dumps. Not checked: enemy planes firing K-13 at your allies.
-* **Shells:** nothing in hf_ai dodges shells. Only the dive and aim tactics (3.3, 3.4) affect where ships fly relative to your guns.
-* **Zeniths and ships without flares:** they use the panic evasion and the curtain's shelter / run-away. How good that is has not been measured separately; enemy missiles hit only 2 to 5 percent overall.
+Moved out of the default `hf_ai.json` in v0.10.11 (see [hf-ai-config-reference.md](hf-ai-config-reference.md#retired-settings) for full details and ranges):
 
-## 9. A one-battle test routine
-
-1. Set `"log_panic": true` inside `logging`.
-2. Fight, then open the newest `Modloader/logs/hf_ai_panic_*.log`. `CURTAIN_START` is a preventive dump (the line says which launch triggered it), `START` is a panic, `CURTAIN_DROP` is each flare drop.
-3. Count: how many `CURTAIN_START` lines happened without you or an ally launching anything? If zero, nothing is "wrong", you are seeing the design. If not zero, send the log.
-4. Change one value from section 7 and repeat.
-
-## Missile dump (v0.10.0)
-Enemy ships normally launch one Zenith, then wait 2 s. With `ai_missile_dump_chance` above 0 an enemy that just launched keeps launching with that chance, so a rack empties in a burst; `ai_missile_dump_min_delay` / `ai_missile_dump_max_delay` (seconds) are the random wait between launches (a delay of 0.6 to 1.5 stops missiles blowing up their neighbours at the rack). `0` is vanilla. This used to be a setting of the QoL fork (`qol.json`); keep that one at 0.
-
-## Tactical carrier groups
-
-`plane_group_per_launch` (default 3) groups AI carrier launches in normal tactical
-combat, including allied AI. `plane_group_launch_delay_seconds` (default 0.5)
-spaces the ready planes in game time. The stock six-second cooldown returns
-after the group. Set group size to 1 for stock one-at-a-time launches. Size is
-clamped to 1..64 and delay to 0.05..60 seconds. Stock deck-clearance and readiness
-checks remain; blocked attempts cancel a partial group. Strategic air strikes
-and manual launches keep their existing behavior. Restart after editing.
-
-## TWR cutoff for dodging and tactics
-
-Set `"twr_cutoff": 3.5` at the top level of `Modloader/config/hf_ai.json`,
-alongside `ai_flares` and `tactics`, then restart the game. The player default is `2.0`; `0.0` means no TWR restriction. A positive value suppresses tactics and missile
-maneuvers for ships below that strategic TWR; a ship exactly at the cutoff remains
-eligible. Individual feature switches and normal target, timing and safety checks still apply; there are no separate acceleration gates.
-
-Below the cutoff, ships do not sidestep missiles, roll, boost for evasion, retreat
-or shelter during flare curtains, or react to stray missiles. They can still
-deploy flares against locked-on missiles and during preventive curtains. Carrier
-plane groups are independent of this setting.
-
-## Deprecated settings
-
-| Former key | Status since v0.10.4 | Use instead |
-|---|---|---|
-| `tactics.min_accel` | Ignored; remove from your JSON. Positioning was removed in v0.10.6. | Top-level `twr_cutoff`. |
-| `tactics.dive_min_accel` | Ignored; remove from your JSON. Dive avoidance and aim dodging remain available. | Top-level `twr_cutoff`. |
-
-### Removed positioning settings (v0.10.6)
-
-| Former key | Status |
-|---|---|
-| `tactics.k_center` | Ignored; remove from your JSON. Stock positioning is used. |
-| `tactics.band_min` | Ignored; remove from your JSON. Stock positioning is used. |
-| `tactics.band_max` | Ignored; remove from your JSON. Stock positioning is used. |
-| `tactics.half_width` | Ignored; remove from your JSON. Stock positioning is used. |
-| `tactics.outrange_extra` | Ignored; remove from your JSON. Stock positioning is used. |
-| `tactics.blend_weight` | Ignored; remove from your JSON. Stock positioning is used. |
-| `tactics.strafe_min_s` | Ignored; remove from your JSON. Stock positioning is used. |
-| `tactics.strafe_max_s` | Ignored; remove from your JSON. Stock positioning is used. |
-| `tactics.retreat_tangent` | Ignored; remove from your JSON. Stock positioning is used. |
-| `tactics.strafe_enabled` | Ignored; remove from your JSON. Stock positioning is used. |
+* **Retired feature keys (ignored):**
+  * `ai_flares.launch_flares_shelter`, `ai_flares.launch_flares_shelter_range` — sheltering behind another ship's flare curtain was removed; ships without flares still evade/retreat from the missile directly.
+  * `tactics.dive_under_chance`, `tactics.dive_under_dwell_s` — merged into `tactics.dive_chance` (`0.8`) and `tactics.dive_dwell_s` (`0.5`).
+* **Internal tuning keys (omitted from `hf_ai.json` for clarity, but still accepted if added manually):**
+  * `ai_flares`: `launch_flares_interval_min` (`0.5`), `launch_flares_interval_max` (`1.0`), `launch_flares_seconds` (`5.0`), `launch_flares_cooldown` (`6.0`), `launch_flares_neighbor_range` (`600.0`), `launch_flares_delay_min` (`1.0`), `launch_flares_delay_max` (`2.0`), `launch_flares_eta_lead` (`4.0`), `launch_flares_eta_max_wait` (`8.0`), `launch_flares_missile_speed` (`230.0`), `stray_missile_radius` (`150.0`), `stray_missile_eta_s` (`3.0`), `stray_missile_range` (`1200.0`).
+  * `tactics`: `ground_y` (`200.0`), `ground_clearance` (`450.0`), `ground_hard_y` (`120.0`), `edge_margin` (`300.0`), `dive_cone_deg` (`45.0`), `dive_min_s` (`1.5`), `dive_max_s` (`3.0`), `dive_weight` (`8.0`), `dive_wrongfoot_speed` (`40.0`), `dive_level_weight` (`0.7`), `aim_window_s` (`1.5`), `aim_gap_min_s` (`2.5`), `aim_gap_max_s` (`3.5`), `aim_weight` (`12.0`), `aim_fire_s` (`1.0`).
+* **Retired in v0.10.4–v0.10.6 (ignored):**
+  * `tactics.min_accel`, `tactics.dive_min_accel` (replaced by top-level `twr_cutoff`).
+  * `tactics.k_center`, `band_min`, `band_max`, `half_width`, `outrange_extra`, `blend_weight`, `strafe_min_s`, `strafe_max_s`, `retreat_tangent`, `strafe_enabled` (optional positioning removed in v0.10.6).

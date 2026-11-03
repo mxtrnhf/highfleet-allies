@@ -320,21 +320,22 @@ pub unsafe fn patch_ai_flares(
         config.evade = false;
     }
 
-    let boost_hook_ok = steer_hook_ok
-        && code_matches(module, BOOST_RVA, &BOOST_BYTES)?
-        && code_matches(module, BOOST_COMMAND_RVA, &BOOST_COMMAND_BYTES)?;
-    let boost = config.evade
+    let boost_wanted = config.evade
         && ((config.panic_boost > 1.0 && config.panic_evasion_probability > 0.0)
-            || config.barrel_roll_probability > 0.0)
-        || crate::tactics::wants_engine_boost()
-        || (config.evade && config.launch_flares_probability > 0.0 && config.launch_flares_evade > 0.0 && config.launch_flares_boost > 1.0);
-    if boost && !boost_hook_ok {
-        log::error!(
-            "hf_ai ai_flares: the engine command code at {BOOST_RVA:#x} has other bytes ({OWNERSHIP_HINT}), the panic boost stays off"
-        );
-        config.panic_boost = 1.0;
-    }
-    let boost = boost && boost_hook_ok;
+            || config.barrel_roll_probability > 0.0
+            || (config.launch_flares_probability.max(config.launch_flares_target_probability) > 0.0
+                && config.launch_flares_evade > 0.0
+                && config.launch_flares_boost > 1.0))
+        || crate::tactics::wants_engine_boost();
+    let boost = if boost_wanted {
+        let ok = prepare_boost_hook(session, module, steer_hook_ok)?;
+        if !ok {
+            config.panic_boost = 1.0;
+        }
+        ok
+    } else {
+        false
+    };
 
     let runtime = Runtime {
         config: config.clone(),
@@ -383,13 +384,6 @@ pub unsafe fn patch_ai_flares(
         STOLEN_LEN,
         build_trampoline(module)?,
     )?;
-    if boost {
-        session.detour_trampoline(
-            module.resolve_rva(BOOST_RVA)?,
-            BOOST_STOLEN_LEN,
-            build_boost_trampoline(module)?,
-        )?;
-    }
 
     log::info!(
         "hf_ai ai_flares prepared: range {}, reaction {}, flares {} s, interval {} s, evasion {} (strength {}, {} s), panic evasion {} x{} for {} s, barrel roll {} for {} s, allies {}, trace {}",
@@ -408,10 +402,11 @@ pub unsafe fn patch_ai_flares(
         config.allies,
         config.log_panic
     );
-    if config.launch_flares_probability > 0.0 {
+    if config.launch_flares_probability.max(config.launch_flares_target_probability) > 0.0 {
         log::info!(
-            "hf_ai ai_flares: flare curtain ON (chance {}, every {}..{} s for {} s, at most {} drops, cooldown {} s)",
+            "hf_ai ai_flares: flare curtain ON (chance {} / target {}, every {}..{} s for {} s, at most {} drops, cooldown {} s)",
             config.launch_flares_probability,
+            config.launch_flares_target_probability,
             config.launch_flares_interval_min,
             config.launch_flares_interval_max,
             config.launch_flares_seconds,
@@ -420,6 +415,29 @@ pub unsafe fn patch_ai_flares(
         );
     }
     Ok(())
+}
+
+/// Installs the engine-command boost detour at `0x140065744` when either `ai_flares` or `tactics` needs engine boost.
+pub unsafe fn prepare_boost_hook(
+    session: &mut PatchSession,
+    module: ProcessModule,
+    steering_hook_ok: bool,
+) -> Result<bool> {
+    let boost_hook_ok = steering_hook_ok
+        && code_matches(module, BOOST_RVA, &BOOST_BYTES)?
+        && code_matches(module, BOOST_COMMAND_RVA, &BOOST_COMMAND_BYTES)?;
+    if !boost_hook_ok {
+        log::error!(
+            "hf_ai: the engine command code at {BOOST_RVA:#x} has other bytes ({OWNERSHIP_HINT}), engine boost stays off"
+        );
+        return Ok(false);
+    }
+    session.detour_trampoline(
+        module.resolve_rva(BOOST_RVA)?,
+        BOOST_STOLEN_LEN,
+        build_boost_trampoline(module)?,
+    )?;
+    Ok(true)
 }
 
 fn build_trampoline(module: ProcessModule) -> Result<Trampoline> {
@@ -765,7 +783,7 @@ unsafe fn creature_update(creature: usize) {
     }
     curtain_step(runtime, creature, now);
     if flare_code == crate::debug_state::FLARES_NONE {
-        let curtain_active = lock_ships().curtains.get(&creature).is_some_and(|curtain| curtain.until > now);
+        let curtain_active = lock_ships().curtains.get(&creature).is_some_and(|curtain| curtain.is_active(now));
         if curtain_active {
             crate::debug_state::set_flares(creature, now, crate::debug_state::FLARES_CURTAIN);
         }
@@ -784,10 +802,10 @@ unsafe fn creature_update(creature: usize) {
     }
 }
 
-/// The flare curtain for one ship: drops flares on a random clock after the player's side launched a missile.
+/// The flare curtain for one ship: drops flares on a random clock after the other camp launched a missile.
 unsafe fn curtain_step(runtime: &Runtime, creature: usize, now: f64) {
-    let params = runtime.curtain;
-    if params.probability <= 0.0 {
+    let mut params = runtime.curtain;
+    if params.probability <= 0.0 && runtime.config.launch_flares_target_probability <= 0.0 {
         return;
     }
     // enemy ships react to the player side's launches; allied AI ships (config `allies`) to the enemy's
@@ -796,7 +814,6 @@ unsafe fn curtain_step(runtime: &Runtime, creature: usize, now: f64) {
     let loaded = flares_loaded(creature);
     let role = curtain_role(runtime, creature, camp);
     let eligible = role != CurtainRole::None;
-    let mut params = params;
     if role == CurtainRole::Target {
         params.probability = runtime.config.launch_flares_target_probability;
     }
@@ -810,7 +827,6 @@ unsafe fn curtain_step(runtime: &Runtime, creature: usize, now: f64) {
         let panicking = ships.by_creature.get(&creature).is_some_and(|ship| ship.is_panicking(now));
         let curtain = ships.curtains.entry(creature).or_default();
         curtain.rack_capacity = curtain.rack_capacity.max(loaded);
-        curtain.has_no_launcher = curtain.rack_capacity <= 0.5;
         // no flares at all, or the racks are below the reserve kept for a real panic: retreat only
         let can_release = loaded > 0.5 && loaded >= runtime.config.launch_flares_min_rack * curtain.rack_capacity;
         let input = curtain_math::CurtainInput {
@@ -862,18 +878,18 @@ enum CurtainRole {
 }
 
 /// The role of `creature` for the newest launch: the ship the missile is aimed at, a ship close to it
-/// (`launch_flares_neighbor_range`), or nothing. Everybody is a `Neighbour` when `launch_flares_targeted_only` is off.
+/// (`launch_flares_neighbor_range`), or nothing. Everybody else is a `Neighbour` when `launch_flares_targeted_only` is off.
 unsafe fn curtain_role(runtime: &Runtime, creature: usize, camp: usize) -> CurtainRole {
+    // The link can point at the ship itself or at a part of it (then the part's owner is the ship): take both.
+    let (target, owner) = LAUNCHES[camp].try_lock().map(|l| (l.last_target, l.last_target_owner)).unwrap_or((0, 0));
+    if target != 0 && (target == creature || owner == creature) {
+        return CurtainRole::Target;
+    }
     if !runtime.config.launch_flares_targeted_only {
         return CurtainRole::Neighbour;
     }
-    // The link can point at the ship itself or at a part of it (then the part's owner is the ship): take both.
-    let (target, owner) = LAUNCHES[camp].try_lock().map(|l| (l.last_target, l.last_target_owner)).unwrap_or((0, 0));
     if target == 0 && owner == 0 {
         return CurtainRole::None;
-    }
-    if target == creature || owner == creature {
-        return CurtainRole::Target;
     }
     let range = runtime.config.launch_flares_neighbor_range;
     if range <= 0.0 {
@@ -1207,19 +1223,10 @@ unsafe fn panic_waypoint_inner(creature: usize, now: f64, wanted: (f32, f32), sh
         let mut outcome = panic_math::evasive_waypoint(state, now, &runtime.params, wanted, ship);
         if outcome.waypoint.is_none() && !state.is_panicking(now) && runtime.config.launch_flares_evade > 0.0 {
             // the curtain runs: get away from the launched missile instead of flying into it
-            let curtain = ships.curtains.get(&creature).filter(|c| c.until > now).map(|c| c.side);
+            let curtain = ships.curtains.get(&creature).filter(|c| c.is_active(now)).map(|c| c.side);
             if let Some(side) = curtain {
-                let cannot_release = ships.curtains.get(&creature).is_some_and(|c| c.has_no_launcher || !c.may_release);
-                outcome.waypoint = nearest_launched_missile(ship, runtime.config.launch_flares_evade_range, curtain_camp(creature).unwrap_or(0)).and_then(|missile| {
-                    // a ship without flares shelters behind a dropping ally; otherwise (or without one) it runs from the missile
-                    let shelter = if cannot_release && runtime.config.launch_flares_shelter {
-                        nearest_dropper(&ships.curtains, creature, ship, now, runtime.config.launch_flares_shelter_range)
-                            .and_then(|dropper| curtain_math::shelter_waypoint(wanted, ship, dropper, missile, runtime.config.launch_flares_evade))
-                    } else {
-                        None
-                    };
-                    shelter.or_else(|| curtain_math::away_waypoint(wanted, ship, missile, side, runtime.config.launch_flares_evade))
-                });
+                outcome.waypoint = nearest_launched_missile(ship, runtime.config.launch_flares_evade_range, curtain_camp(creature).unwrap_or(0))
+                    .and_then(|missile| curtain_math::away_waypoint(wanted, ship, missile, side, runtime.config.launch_flares_evade));
                 outcome.waypoint = outcome.waypoint.map(|wp| crate::tactics::clamp_to_arena(wp, ship));
                 if outcome.waypoint.is_some() {
                     if let Some(c) = ships.curtains.get_mut(&creature) {
@@ -1279,14 +1286,14 @@ unsafe extern "C" fn on_engine_commands(creature: *mut u8, command: *mut f32) {
 }
 
 unsafe fn engine_commands(creature: usize, command: *mut f32) {
-    let Some(runtime) = RUNTIME.get() else {
-        return;
-    };
-    if command.is_null() || !is_ai(creature) || !crate::maneuvers_allowed(creature) {
+    if command.is_null() || !crate::maneuvers_allowed(creature) {
         return;
     }
-
-    let Some(now) = game_time(runtime) else {
+    let Some(now) = rd::<f64>(crate::CLOCK).filter(|t| t.is_finite()) else {
+        return;
+    };
+    let Some(runtime) = RUNTIME.get().filter(|_| is_ai(creature)) else {
+        apply_dodge_boost(creature, command, now);
         return;
     };
     let mode = {
@@ -1345,9 +1352,9 @@ unsafe fn engine_commands(creature: usize, command: *mut f32) {
 /// The tactics' aim/dive boost and the flare-curtain retreat boost: the same strength raise as the panic boost, no roll.
 unsafe fn apply_dodge_boost(creature: usize, command: *mut f32, now: f64) {
     let mut boost = crate::tactics::dodge_boost_for(creature, now);
-    if let Some(runtime) = RUNTIME.get() {
+    if let Some(runtime) = RUNTIME.get().filter(|_| is_ai(creature)) {
         if runtime.config.launch_flares_boost > 1.0
-            && lock_ships().curtains.get(&creature).is_some_and(|c| c.until > now && c.boost_until >= now)
+            && lock_ships().curtains.get(&creature).is_some_and(|c| c.is_active(now) && c.boost_until >= now)
         {
             boost = boost.max(runtime.config.launch_flares_boost);
         }
@@ -1406,25 +1413,6 @@ fn launchers(begin: usize, end: usize) -> impl Iterator<Item = usize> {
             let launcher: usize = unsafe { rd(entry + LAUNCHER_PTR) }?;
             (plausible(launcher) && unsafe { readable(launcher) }).then_some(launcher)
         })
-}
-
-/// The nearest other ship within `range` whose curtain is running and dropping flares: shelter for a ship without flares.
-fn nearest_dropper(
-    curtains: &HashMap<usize, Curtain>,
-    me: usize,
-    ship: (f32, f32),
-    now: f64,
-    range: f32,
-) -> Option<(f32, f32)> {
-    curtains
-        .iter()
-        .filter(|(&c, curtain)| c != me && curtain.until > now && curtain.may_release && curtain.releases > 0)
-        .map(|(&c, _)| ship_position(c))
-        .filter(|p| p.0.is_finite() && p.1.is_finite() && p.0.abs() <= 10_000.0 && p.1.abs() <= 10_000.0)
-        .map(|p| ((p.0 - ship.0).hypot(p.1 - ship.1), p))
-        .filter(|(d, _)| *d <= range)
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, p)| p)
 }
 
 /// The nearest live missile of the player's side to `ship` within `range`, from the last launch scan.
