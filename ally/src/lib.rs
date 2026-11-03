@@ -1087,6 +1087,8 @@ type RenderTextFn = unsafe extern "win64" fn(*mut u8, f32, f32, u32, *const std:
 /// The buttons exist and are shown (set when they are placed, cleared when they are hidden).
 static PRECOMBAT_LIVE: AtomicBool = AtomicBool::new(false);
 static PLACED_SIG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The card positions the buttons were last moved to (a change means "move them with the cards this frame").
+static PLACED_LAYOUT_SIG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TICK_SIG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TICK_CHANGED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TICK_LOGS: AtomicU32 = AtomicU32::new(0);
@@ -1680,6 +1682,17 @@ fn set_plane_label(slot: usize, label: Option<(f32, f32, f32, String)>) {
     }
 }
 
+/// Moves the text beside a plane button; the text itself is kept.
+fn move_plane_label(slot: usize, x: f32, y: f32, size: f32) {
+    if let Ok(mut labels) = PLANE_LABELS.lock() {
+        if let Some(label) = labels.iter_mut().find(|label| label.0 == slot) {
+            label.1 = x;
+            label.2 = y;
+            label.3 = size;
+        }
+    }
+}
+
 /// Paints the plane button with the sprite of its ship's current choice.
 unsafe fn paint_loadout(gui: *mut u8, ship: usize, craft: usize) -> bool {
     let sprite = if plane_loadouts::choice(ship, craft).is_some() { plane_loadouts::SPRITE_CHOSEN } else { plane_loadouts::SPRITE_DEFAULT };
@@ -1743,32 +1756,66 @@ unsafe fn place_loadout(
         }
         kept_slot.store(gui, Ordering::Relaxed);
     }
-    let set_pos: SetPosFn = std::mem::transmute(GUI_SETPOS);
-    set_pos(ptr, pos.as_ptr());
-    // hit box = icon size (creation leaves the 274 x 154 screen-based size from the initializer)
-    (ptr as *mut f32).byte_add(0x218).write_unaligned(size);
-    (ptr as *mut f32).byte_add(0x21c).write_unaligned(size);
-    // a moved or re-shown button must rebuild its picture at the new place (a button dragged to another card
-    // showed its icon offset); Load also restores sprite resources after a screen rebuild
+    move_gui(gui, pos, size);
+    // a re-shown button must reload its sprite resources after a screen rebuild
     load_gui(gui);
     set_plane_label(slot, Some((pos[0], pos[1], size, plane_loadouts::label_for(craft, plane_loadouts::choice(ship, craft)))));
     toggle_line(format!("PLANE button {slot}: ship {ship:#x} {} at ({:.0},{:.0}) size {size:.0}, choice {:?}", plane_loadouts::crafts()[craft].label, pos[0], pos[1], plane_loadouts::choice(ship, craft).map(|a| plane_loadouts::arms()[a].key.clone())));
     true
 }
 
-/// A signature of the card layout: the number of cards and their sorted x positions.
-unsafe fn card_signature(cards: &[(f32, f32, f32, f32)], listed: &[usize]) -> u64 {
+/// A signature of the card positions alone (no ship links): a change here means the cards are moving.
+fn layout_signature(cards: &[(f32, f32, f32, f32)]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ cards.len() as u64;
     for c in cards {
         h = (h ^ c.0.to_bits() as u64).wrapping_mul(0x100_0000_01b3);
     }
+    h
+}
+
+/// A signature of the card layout and the ships behind the cards: two cards swapping places keep the same x
+/// positions, so the ship links count too when the plane buttons (which belong to the ship) are shown.
+unsafe fn card_signature(cards: &[(f32, f32, f32, f32)], listed: &[usize]) -> u64 {
+    let mut h = layout_signature(cards);
     if PLANE_BUTTONS.load(Ordering::Relaxed) {
-        // two cards swapping places keep the same x positions: the ship behind each card counts too
         for (_, ship) in card_ships_from(listed) {
             h = (h ^ ship as u64).wrapping_mul(0x100_0000_01b3);
         }
     }
     h
+}
+
+/// Cards that all report one spot have not been laid out yet. Until they are, the grid read off the screenshots
+/// stands in, so the buttons are not stacked in the middle of the screen.
+fn cards_stacked(cards: &[(f32, f32, f32, f32)]) -> bool {
+    cards.len() > 1 && cards.iter().all(|c| (c.0 - cards[0].0).abs() < 1.0)
+}
+
+fn grid_cards(cards: &[(f32, f32, f32, f32)]) -> Vec<(f32, f32, f32, f32)> {
+    cards
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (GRID_X0 + GRID_STEP * i as f32, GRID_Y - TOGGLE_DY, c.2, c.3))
+        .collect()
+}
+
+/// Where a button of `slot` (1-based) goes: the card's x, its offset to the right and its size. The gap to the
+/// next card decides the offset and size, so a button still fits between two ship numbers when cards are close.
+fn slot_geometry(cards: &[(f32, f32, f32, f32)], slot: usize) -> Option<(f32, f32, f32)> {
+    let &(x, _, _, _) = cards.get(slot - 1)?;
+    let gap = cards.get(slot).map(|next| next.0 - x);
+    let dx = gap.map_or(TOGGLE_DX, |gap| TOGGLE_DX.min(gap * 0.5));
+    let size = gap.map_or(TOGGLE_SIZE, |gap| (gap - NUMBER_WIDTH).clamp(TOGGLE_MIN_SIZE, TOGGLE_SIZE));
+    Some((x, dx, size))
+}
+
+/// Moves an already placed element and resizes its hit box. The sprite is drawn from the element's position every
+/// frame, so no resource reload is needed while following moving cards.
+unsafe fn move_gui(gui: usize, pos: [f32; 2], size: f32) {
+    let set_pos: SetPosFn = std::mem::transmute(GUI_SETPOS);
+    set_pos(gui as *mut u8, pos.as_ptr());
+    (gui as *mut f32).byte_add(0x218).write_unaligned(size);
+    (gui as *mut f32).byte_add(0x21c).write_unaligned(size);
 }
 
 /// Places (creating on first use) the ALLY buttons and the slot-1 marker beside the ship numbers. Slot n is the
@@ -1781,7 +1828,6 @@ unsafe fn ensure_toggles() {
         return;
     }
     let mut cards = scan.cards;
-    let signature = card_signature(&cards, &scan.elements);
     let fresh_visit = !PRECOMBAT_LIVE.load(Ordering::Relaxed);
     let build_epoch = GUI_BUILD_EPOCH.load(Ordering::Relaxed);
     let new_build = build_epoch != GUI_SERVICED_EPOCH.load(Ordering::Relaxed);
@@ -1805,17 +1851,15 @@ unsafe fn ensure_toggles() {
         ));
     }
     // cards stacked on one spot (not laid out yet): fall back to a grid read off the screenshots
-    if cards.len() > 1 && cards.iter().all(|c| (c.0 - cards[0].0).abs() < 1.0) {
-        for (i, c) in cards.iter_mut().enumerate() {
-            *c = (GRID_X0 + GRID_STEP * i as f32, GRID_Y - TOGGLE_DY, c.2, c.3);
-        }
+    if cards_stacked(&cards) {
+        cards = grid_cards(&cards);
         toggle_line("ALLY cards report no layout: using the screenshot grid".to_string());
     }
-    let set_pos: SetPosFn = std::mem::transmute(GUI_SETPOS);
+    let signature = card_signature(&cards, &scan.elements);
     let mut layout = Vec::new();
     // slot 1 (the flagship, always the player's ship) gets the marker, slots 2.. the toggles
     for slot in 1..=9usize {
-        let Some(&(x, _y, _, _)) = cards.get(slot - 1) else {
+        let Some((x, dx, size)) = slot_geometry(&cards, slot) else {
             if slot == 1 {
                 if scan.complete {
                     MARKER_SHOW.store(false, Ordering::Relaxed);
@@ -1835,11 +1879,6 @@ unsafe fn ensure_toggles() {
             }
             continue;
         };
-        // room between this card's number and the next card's: the button sits in the middle of the free span
-        // when the cards are close together (the Grach pair is only 104 apart), else a fixed step right of the number
-        let gap = cards.get(slot).map(|n| n.0 - x);
-        let dx = gap.map_or(TOGGLE_DX, |g| TOGGLE_DX.min(g * 0.5));
-        let size = gap.map_or(TOGGLE_SIZE, |g| (g - NUMBER_WIDTH).clamp(TOGGLE_MIN_SIZE, TOGGLE_SIZE));
         if slot == 1 {
             // the slot-1 label is text drawn from a render seam (`draw_marker`), not a GUI element: it only needs the spot
             MARKER_X.store((x + dx + MARKER_DX).to_bits(), Ordering::Relaxed);
@@ -1864,12 +1903,8 @@ unsafe fn ensure_toggles() {
         }
         kept_slot.store(gui, Ordering::Relaxed);
         // the numbers sit at one height for every card, so the buttons do too (the card height varies per ship class)
-        let pos = [x + dx, GRID_Y];
-        set_pos(ptr, pos.as_ptr());
-        // hit box = icon size (creation leaves the 274 x 154 screen-based size from the initializer)
-        (ptr as *mut f32).byte_add(0x218).write_unaligned(size);
-        (ptr as *mut f32).byte_add(0x21c).write_unaligned(size);
-        // Load after the move: reloads resources after a screen rebuild and rebuilds the picture at the new spot
+        move_gui(gui, [x + dx, GRID_Y], size);
+        // Load after the move: reloads resources after a screen rebuild
         load_gui(gui);
         layout.push(format!("{slot}@{:.0}+{:.0}/{:.0}", x, dx, size));
     }
@@ -1879,7 +1914,7 @@ unsafe fn ensure_toggles() {
         let ships = card_ships_from(&scan.elements);
         let mut shown: Vec<usize> = Vec::new();
         for slot in 1..=9usize {
-            let Some(&(x, _y, _, _)) = cards.get(slot - 1) else {
+            let Some((x, dx, size)) = slot_geometry(&cards, slot) else {
                 if scan.complete {
                     for craft in 0..plane_loadouts::crafts().len() {
                         place_loadout(slot, craft, None, [0.0, 0.0], 0.0, &scan.elements, scan.complete);
@@ -1887,9 +1922,6 @@ unsafe fn ensure_toggles() {
                 }
                 continue;
             };
-            let gap = cards.get(slot).map(|n| n.0 - x);
-            let dx = gap.map_or(TOGGLE_DX, |g| TOGGLE_DX.min(g * 0.5));
-            let size = gap.map_or(TOGGLE_SIZE, |g| (g - NUMBER_WIDTH).clamp(TOGGLE_MIN_SIZE, TOGGLE_SIZE));
             // plane buttons per card: ONE column right of the ALLY button, one row per plane type the ship carries (in the
             // game's craft order), the first row level with the ALLY button and the rest below it, each label to its button's
             // right so no two labels meet. The space under the column is free (user, 2026-10-25), so the buttons keep their
@@ -1910,6 +1942,7 @@ unsafe fn ensure_toggles() {
         }
     }
     PLACED_SIG.store(signature, Ordering::Relaxed);
+    PLACED_LAYOUT_SIG.store(layout_signature(&cards), Ordering::Relaxed);
     if fresh_visit {
         ENTRY_MS.store(now_ms(), Ordering::Relaxed); // a fresh entry: the roller covers are about to play
         ROLL_SEEN.store(false, Ordering::Relaxed);
@@ -1928,9 +1961,53 @@ unsafe fn ensure_toggles() {
     toggle_line(format!("ALLY placed (slot@card x+dx/size): {}", layout.join(" ")));
 }
 
-/// Per-frame check while the pre-combat screen is up (called from the game thread by two hooks): when the cards
-/// have been standing still for a moment and not where the buttons were placed for, place the buttons again.
-/// Waiting for the cards to settle keeps the buttons from jumping while a card is being dragged.
+/// Moves the plane buttons of `slot` that are shown, and their labels. Rows are counted in the same order as the
+/// placement, so a missing type does not collapse the rows into each other while the cards move.
+unsafe fn follow_plane_buttons(listed: &[usize], slot: usize, x: f32, dx: f32, size: f32) {
+    let mut row = 0usize;
+    for craft in 0..plane_loadouts::crafts().len() {
+        let number = craft * 9 + slot;
+        let gui = LOADOUT_GUIS[number - 1].load(Ordering::Relaxed);
+        if !listed.contains(&gui) || !gui_reusable(gui, LOADOUT_NAMES[number - 1]) || read::<i32>(gui + OFF_ACTIVE) != 2 {
+            continue;
+        }
+        let pos = [x + dx + size + LOADOUT_GAP * 2.0, GRID_Y + row as f32 * (size + LOADOUT_GAP)];
+        move_gui(gui, pos, size);
+        move_plane_label(number, pos[0], pos[1], size);
+        row += 1;
+    }
+}
+
+/// Moves the buttons that already exist to where the cards are now. Runs on every frame while the cards move
+/// (dragged or animating to their new slots), so the buttons travel with them instead of jumping into place after
+/// the cards settle. Does not create, paint or log; false means a button is missing and a full placement is needed.
+unsafe fn follow_toggles(cards: &[(f32, f32, f32, f32)], listed: &[usize], layout: u64) -> bool {
+    let mut complete = true;
+    for slot in 1..=9usize {
+        let Some((x, dx, size)) = slot_geometry(cards, slot) else {
+            break;
+        };
+        if slot == 1 {
+            MARKER_X.store((x + dx + MARKER_DX).to_bits(), Ordering::Relaxed);
+            continue;
+        }
+        let name = TOGGLE_NAMES[slot - 2];
+        let gui = TOGGLE_GUIS[slot - 2].load(Ordering::Relaxed);
+        if !listed.contains(&gui) || !gui_reusable(gui, name) || read::<i32>(gui + OFF_ACTIVE) != 2 {
+            complete = false;
+            continue;
+        }
+        move_gui(gui, [x + dx, GRID_Y], size);
+        if PLANE_BUTTONS.load(Ordering::Relaxed) {
+            follow_plane_buttons(listed, slot, x, dx, size);
+        }
+    }
+    PLACED_LAYOUT_SIG.store(layout, Ordering::Relaxed);
+    complete
+}
+
+/// Per-frame check while the pre-combat screen is up (called from the game thread by two hooks): the buttons
+/// follow moving cards immediately; a full placement (repaint) runs once the cards have rested.
 /// How long (ms) the player's cards may be missing before the pre-combat screen counts as gone (a ship swap rebuilds them).
 const SCREEN_GONE_MS: u64 = 1500;
 static CARDS_MISSING_SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2110,15 +2187,29 @@ unsafe fn precombat_tick(source: usize) {
     if scan.cards.is_empty() {
         return;
     }
-    let sig = card_signature(&scan.cards, &scan.elements);
+    let grid;
+    let cards: &[(f32, f32, f32, f32)] = if cards_stacked(&scan.cards) {
+        grid = grid_cards(&scan.cards);
+        &grid
+    } else {
+        &scan.cards
+    };
+    let layout = layout_signature(cards);
+    let sig = card_signature(cards, &scan.elements);
     let now = now_ms();
-    if sig != TICK_SIG.swap(sig, Ordering::Relaxed) {
+    if layout != TICK_SIG.swap(layout, Ordering::Relaxed) {
         TICK_CHANGED_MS.store(now, Ordering::Relaxed);
         if diag::debug() && TICK_LOGS.fetch_add(1, Ordering::Relaxed) < 4000 {
             log::info!(
                 "ALLY card layout moving: {:?}",
-                scan.cards.iter().map(|c| format!("{:.1}", c.0)).collect::<Vec<_>>()
+                cards.iter().map(|c| format!("{:.1}", c.0)).collect::<Vec<_>>()
             );
+        }
+    }
+    if layout != PLACED_LAYOUT_SIG.load(Ordering::Relaxed) {
+        // the cards are somewhere else than the buttons: move the buttons with them on this and every frame
+        if !follow_toggles(cards, &scan.elements, layout) {
+            ensure_toggles();
         }
         return;
     }
