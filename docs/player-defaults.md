@@ -8,8 +8,9 @@ The tracked player default profiles for `hf_ally v0.14.15` and `hf_ai v0.10.11` 
 - [ally/config/ally.json](../ally/config/ally.json)
 - [ai/config/hf_ai.json](../ai/config/hf_ai.json)
 
-The source-only hf_ai v0.10.12 and v0.10.13 follow-ups use the same preset; they
-are not new published packs. See [the changelog](../ai/CHANGELOG.md).
+The source-only hf_ally v0.14.16 and hf_ai v0.10.12 through v0.10.14
+follow-ups use the same presets; they are not new published packs. See the
+[ally changelog](../ally/CHANGELOG.md) and [ai changelog](../ai/CHANGELOG.md).
 
 The release pack copies these files unchanged. Compiled defaults use the same
 values: a missing file is generated with this profile, and missing keys or whole

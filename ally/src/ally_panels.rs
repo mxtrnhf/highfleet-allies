@@ -21,6 +21,8 @@ use std::sync::Mutex;
 
 use patchy::{PatchSession, ReturnType, Trampoline};
 
+use crate::native_layout::{Body, Creature, Link, Node};
+
 /// `DrawBattleShipPanel(surface_a, surface_b, mode)`.
 const PANEL: usize = 0x1_402f_de80;
 const PANEL_MODE_TARGET: u32 = 3;
@@ -91,24 +93,30 @@ const PANEL_LAYER_LAST: usize = 39;
 /// ancestor's `+0x8d8`, which is what the native layer calculation starts from.
 const BODY_INHERITED_STAGE: usize = 0x1_4003_3b00;
 /// Creature part list (`+0x1330/+0x1338`, 0x18-byte Link entries, part at +8).
-const OFF_PART_LIST: (usize, usize) = (0x1330, 0x1338);
+const OFF_PART_LIST: (usize, usize) = (
+    offset_of!(Creature, parts),
+    offset_of!(Creature, parts) + std::mem::size_of::<usize>(),
+);
 /// Part `Body` sprite vector (`CVec<*mut Sprite>`).
-const OFF_PART_SPRITES: (usize, usize) = (0x8c0, 0x8c8);
+const OFF_PART_SPRITES: (usize, usize) = (
+    offset_of!(Body, sprites),
+    offset_of!(Body, sprites) + std::mem::size_of::<usize>(),
+);
 /// Part `Body` owner link target: the ship a part belongs to (`Node.owner + Link.target`).
-const OFF_PART_OWNER: usize = 0xb8;
+const OFF_PART_OWNER: usize = offset_of!(Node, owner) + offset_of!(Link, target);
 /// Registration skips sprites whose `+0x128` float is zero.
 const OFF_SPRITE_VISIBLE: usize = 0x128;
 /// Node state; `Hud_DrawChildMarker` draws only parts with state > 1.
-const OFF_NODE_STATE: usize = 0x48;
-/// Layer inputs of the native registration: the part's floor (`+0x9b8`, its stage comes through
+const OFF_NODE_STATE: usize = offset_of!(Node, state);
+/// Layer inputs of the native registration: the part's floor (`Body::floor`, its stage comes through
 /// `Body_GetInheritedStage`) and the sprite's stage (`+0x114`) plus the flag byte whose bit 0 marks
 /// sprites that span a range of four-layer steps instead of a single layer.
-const OFF_BODY_FLOOR: usize = 0x9b8;
+const OFF_BODY_FLOOR: usize = offset_of!(Body, floor);
 const OFF_SPRITE_STAGE: usize = 0x114;
 const OFF_SPRITE_FLAGS: usize = 0x50;
 /// Part health and maximum; the panel's palette darkens towards red as `hp / hp_max` drops.
-const OFF_PART_HP: usize = 0x2c8;
-const OFF_PART_HP_MAX: usize = 0x2cc;
+const OFF_PART_HP: usize = offset_of!(Body, health);
+const OFF_PART_HP_MAX: usize = offset_of!(Body, health_max);
 const PART_LIST_LIMIT: usize = 512;
 const PART_SPRITE_LIMIT: usize = 64;
 /// Main battle render body grid (`DAT_146449688`, 60 layers x 40000 entries, stride 0x18) and
@@ -333,7 +341,7 @@ unsafe fn part_bodies(ally: usize) -> Vec<usize> {
         return bodies;
     }
     for entry in (begin..end).step_by(crate::LINK_STRIDE) {
-        let part = rd::<usize>(entry + offset_of!(crate::native_layout::Link, target));
+        let part = rd::<usize>(entry + offset_of!(Link, target));
         if !crate::plausible(part) || bodies.contains(&part) {
             continue;
         }

@@ -58,8 +58,9 @@ redeploy machinery” and “Checklist”. Live Ghidra verification used only th
   the only xrefs found are that handler's own read/write: no consumers were found.
   It is not a known active combat action; customized bindings can still conflict.
 - The pinned highfleet-rs revision and current upstream `src/v1_163.rs` were
-  checked: neither provides a Creature layout. No duplicate owning structs or
-  dependency updates were added. Shared Link offsets come from the pinned library.
+  checked: they now provide the Creature, Body and Link layouts. Shared Link,
+  Node and Creature offsets come from the pinned library; the boost and
+  bomb-held words used by the switch are not modeled and stay local.
 - Panel key selection uses the last **composited ship identity**, not a freshly
   recomputed ally index. Cached identities must still be current roster members
   before any dereference. Handoffs exchange ally-list entries in place, preserving

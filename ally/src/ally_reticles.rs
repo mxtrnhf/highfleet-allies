@@ -2,7 +2,7 @@
 //!
 //! The player's yellow square is the `sign_aim` sprite (global `0x14800eab0`, a 62 x 62 white frame with
 //! hotspot 31,31). `afterBattleStars??` `0x14029c5c0` draws it around `playerShip+0xb00` (the target
-//! node) at that node's world point (`+0x1840/44` plus `+0x240/244`), projected by `0x1401adfc0` with
+//! node) at that node's world point (`Creature::bounds_center_x/y` plus `+0x240/244`), projected by `0x1401adfc0` with
 //! the battle-camera globals, and tinted lime. `combatEvents` calls that function once per battle frame
 //! at `0x14029a8c1`.
 //!
@@ -13,9 +13,12 @@
 //! The same post-pass also hosts the debug overlay (`crate::debug_overlay`) so there is only one detour at
 //! this call site: either feature, or both, can use it.
 
+use std::mem::offset_of;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use patchy::{PatchSession, ReturnType, Trampoline};
+
+use crate::native_layout::Creature;
 
 /// `afterBattleStars??(player_ship)` draws the player's target/spawn boxes.
 const TARGET_BOX_PASS: usize = 0x1_4029_c5c0;
@@ -35,8 +38,8 @@ const SPRITE_SCALE: usize = 0x16c;
 /// Battle HUD enable byte; the box pass runs on the combat screen only.
 const HUD_ENABLED: usize = 0x1_43a1_1961;
 /// World offset the game adds to the target's position for the box centre.
-const TARGET_POS_X: usize = 0x1840;
-const TARGET_POS_Y: usize = 0x1844;
+const TARGET_POS_X: usize = offset_of!(Creature, bounds_center_x);
+const TARGET_POS_Y: usize = offset_of!(Creature, bounds_center_y);
 const TARGET_OFFSET_X: usize = 0x240;
 const TARGET_OFFSET_Y: usize = 0x244;
 /// Projection zoom handed to the world-to-screen call; the native box pass uses 1.0.

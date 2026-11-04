@@ -13,7 +13,7 @@ Both are optional, independent DLLs. Everything is reverse-engineered, so **Stea
 > **UPGRADING TO PACK v0.14.15 / hf_ai v0.10.11+ — UPDATE YOUR `hf_ai.json`!**
 > Replace your old `Modloader/config/hf_ai.json` with the new one in the release pack (or delete your old `hf_ai.json` so fresh defaults are generated). `hf_ai v0.10.11` slims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering.
 
-Source now includes **hf_ai v0.10.13** ([changelog](ai/CHANGELOG.md)); no new release pack has been published for it.
+Source now includes **hf_ally v0.14.16** and **hf_ai v0.10.14** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)); no new release pack has been published for them.
 
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).
@@ -65,6 +65,6 @@ The game's addresses, struct layouts and findings are in a separate repo: **[mxt
 ## Credits and legal
 * Built on logdot's [Highfleet-Modloader](https://github.com/logdot/Highfleet-Modloader), [patchy-rs](https://github.com/logdot/patchy-rs), [highfleet-qol](https://github.com/logdot/highfleet-qol) and [highfleet-rs](https://github.com/logdot/highfleet-rs); the `ai_flares` and missile-dump ideas started in the QoL fork.
 * The combat ship-switching idea was inspired by **greatf1y** on Discord.
-* `hf_ally` pins `highfleet-rs` to revision `8a6a8a3` for Steam 1.163 aircraft/loadout and GUI layouts. Compile-time checks preserve the existing field offsets; game-native constructors, string assignment and link operations still manage game-owned objects.
+* `hf_ally` and `hf_ai` pin `highfleet-rs` to revision `05c6207` for the Steam 1.163 aircraft/loadout, Body, AircraftLogic, PartStats, Creature and GUI layouts. Compile-time checks preserve the existing field offsets; game-native constructors, string assignment and link operations still manage game-owned objects. Fields upstream does not model yet stay local with their raw offsets.
 * Much of the code and notes were written with the help of Claude Code (Anthropic); commits carry the co-author line.
 * Unofficial fan project, not affiliated with the HighFleet developers or publisher. No game files are included. MIT licensed, see [LICENSE](LICENSE).

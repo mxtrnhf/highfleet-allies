@@ -10,6 +10,7 @@ use std::sync::{Mutex, OnceLock};
 
 use patchy::{PatchSession, ProcessModule, ReturnType, Trampoline};
 
+use crate::native_layout;
 use crate::plane_group_math::{Config, Group, STOCK_COOLDOWN};
 
 const ARMED_RVA: usize = 0x65bde;
@@ -48,8 +49,8 @@ fn context(carrier: usize) -> Option<(Key, f64)> {
     unsafe {
         if crate::rd::<i32>(AIRCRAFT_SELECTOR) != Some(4)
             || crate::rd::<u8>(SCRIPTED_SCENARIO) != Some(0)
-            || crate::rd::<u8>(carrier + 0xbd4)? == 0
-            || crate::rd::<i32>(carrier + 0x48)? == 0
+            || crate::rd::<u8>(carrier + native_layout::CREATURE_AI_FLAG)? == 0
+            || crate::rd::<i32>(carrier + native_layout::NODE_STATE)? == 0
         {
             return None;
         }
@@ -76,7 +77,7 @@ fn armed(carrier: usize, plane: usize) {
         return;
     };
     // SAFETY: the stock call just armed this selected plane; do not count a failed allocation.
-    if unsafe { crate::rd::<usize>(plane + 0xa20) }.unwrap_or(0) == 0 {
+    if unsafe { crate::rd::<usize>(plane + native_layout::BODY_AIRCRAFT_LOGIC) }.unwrap_or(0) == 0 {
         return;
     }
     let mut guard = GROUPS.lock().unwrap_or_else(|e| e.into_inner());

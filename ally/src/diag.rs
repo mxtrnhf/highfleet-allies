@@ -13,6 +13,7 @@ use std::{
     fmt::Write as _,
     fs::File,
     io::Write as _,
+    mem::offset_of,
     panic,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
@@ -20,6 +21,8 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+use crate::native_layout::Creature;
 
 use windows_sys::Win32::System::{
     Diagnostics::Debug::{
@@ -404,10 +407,10 @@ unsafe fn ships_of(fleet: usize) -> String {
                 " [c={creature:#x} incity={} landing={} ai={} order={} state={} side={}]",
                 rd::<u8>(creature + 0xb6c).map_or(-1, i32::from),
                 rd::<u8>(creature + 0xb6d).map_or(-1, i32::from),
-                rd::<u8>(creature + 0xbd4).map_or(-1, i32::from),
-                rd::<i32>(creature + 0xd70).unwrap_or(-99),
-                rd::<i32>(creature + 0xbdc).unwrap_or(-99),
-                rd::<f32>(creature + 0xad4).unwrap_or(f32::NAN),
+                rd::<u8>(creature + offset_of!(Creature, ai_flag)).map_or(-1, i32::from),
+                rd::<i32>(creature + offset_of!(Creature, order_role)).unwrap_or(-99),
+                rd::<i32>(creature + offset_of!(Creature, driver_state)).unwrap_or(-99),
+                rd::<f32>(creature + offset_of!(Creature, side)).unwrap_or(f32::NAN),
             );
         }
         node = rd::<usize>(node).unwrap_or(sentinel);

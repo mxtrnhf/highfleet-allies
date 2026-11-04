@@ -4,16 +4,23 @@
 //! This gives each ally the same dice (`hf_notes/docs/findings/ai/ai-tick-patch-sites.md` section 3), once, when it has
 //! guns and a rating. Nothing is written for 37/57 mm lead guns (the stock rule).
 
+use std::mem::offset_of;
+
+use crate::native_layout::{Body, Creature, Link, PartStats};
+
 const OFF_C7C: usize = 0xc7c;
 const OFF_C7D: usize = 0xc7d;
 const OFF_RATING: usize = 0x15f8;
-const OFF_GROUP0: (usize, usize) = (0x13a8, 0x13b0);
-const PART_STATS: usize = 0x188;
-const STAT_CAL: usize = 0x144;
+const OFF_GROUP0: (usize, usize) = (
+    offset_of!(Creature, gun_group_0),
+    offset_of!(Creature, gun_group_0) + std::mem::size_of::<usize>(),
+);
+const PART_STATS: usize = offset_of!(Body, part_index);
+const STAT_CAL: usize = offset_of!(PartStats, caliber);
 const STAT_LIST_BASE: usize = 0x1_43a3_3bf0;
 const STAT_LIST_END: usize = 0x1_43a3_3bf8;
 /// Byte stride of one gun link in the group-0 list: the part pointer sits at +8.
-const GUN_LINK_STRIDE: usize = 0x18;
+const GUN_LINK_STRIDE: usize = std::mem::size_of::<Link>();
 /// Ceiling on the gun links read from group 0; a group has far fewer, so a larger count is a corrupt header.
 const GUN_LIST_LIMIT: usize = 64;
 
@@ -31,7 +38,7 @@ unsafe fn first_cal(ship: usize) -> Option<i32> {
     if list_bytes < GUN_LINK_STRIDE || list_bytes / GUN_LINK_STRIDE > GUN_LIST_LIMIT {
         return None;
     }
-    let part: usize = rd(b + 8);
+    let part: usize = rd(b + offset_of!(Link, target));
     if !crate::plausible(part) {
         return None;
     }

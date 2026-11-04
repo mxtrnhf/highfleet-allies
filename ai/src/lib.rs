@@ -30,6 +30,7 @@ mod debug_state;
 mod early_fire;
 mod flares_config;
 mod missile_dump;
+mod native_layout;
 mod panic_math;
 mod plane_group;
 mod plane_group_math;
@@ -59,12 +60,12 @@ const TICK_RVA: usize = 0x62f90;
 const TICK_PROLOGUE: [u8; 12] = [0x48, 0x8b, 0xc4, 0x55, 0x53, 0x41, 0x56, 0x48, 0x8d, 0xa8, 0xa8, 0xfe];
 
 const CLOCK: usize = 0x1_43a1_19c0; // f64 game clock
-const OFF_SIDE: usize = 0xad4; // f32: negative = enemy, positive = player's side
-const OFF_TARGET: usize = 0xb00; // pointer: target node (a ship or a part of one)
-const OFF_POS_X: usize = 0x1840; // f32 centre of mass
-const OFF_POS_Y: usize = 0x1844;
-const OFF_OWNER: usize = 0xb8;
-const OFF_CODE: usize = 0x28;
+const OFF_SIDE: usize = native_layout::CREATURE_SIDE; // f32: negative = enemy, positive = player's side
+const OFF_TARGET: usize = native_layout::CREATURE_TARGET; // pointer: target node (a ship or a part of one)
+const OFF_POS_X: usize = native_layout::CREATURE_POS_X; // f32 bounding-box centre, not a mass centre
+const OFF_POS_Y: usize = native_layout::CREATURE_POS_Y;
+const OFF_OWNER: usize = native_layout::NODE_OWNER;
+const OFF_CODE: usize = native_layout::NODE_CODE;
 
 /// Scratch space shared with the steering trampoline: waypoint x, y and ship x, y.
 static STEER_BUFFER: [AtomicU32; 4] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
@@ -138,7 +139,7 @@ static TWR_CUTOFF: AtomicU32 = AtomicU32::new(0);
 
 /// Steam 1.163 strategic TWR shown in Shipworks, not battle TWR (+0x1604).
 /// Verified displayinShipworks? reads +0x160c at 0x1400d7443 for TWR_STAT.
-/// See hf_notes/docs/findings/ship-profiles.md; highfleet-rs has no Creature layout.
+/// See hf_notes/docs/findings/ship-profiles.md; +0x160c is not modeled by highfleet-rs.
 fn strategic_twr(creature: usize) -> Option<f32> {
     // SAFETY: borrowed scalar only; rd page-checks the game-owned field.
     unsafe { rd::<f32>(creature + 0x160c) }

@@ -122,9 +122,11 @@ the same target/tick and an unchanged final bomber waypoint. The post-`hf_ai`
 steering/engine hooks make that course authoritative while armed; stale or bypassed
 decisions still fail closed. Scalar/vector accesses are bounded and page-checked;
 no owning `Body`, `CVec`, strings or Links are copied.
-Covered Body velocity/angle offsets come from the pinned `highfleet-rs` revision
-`8a6a8a399d89af035adb0087b19ac1021fc9c2f8`, also checked against current upstream;
-Creature fields remain local RE offsets (upstream has no Creature layout).
+Covered Body velocity/angle, Creature radius/mass/thrust/waypoint, bomb/flare
+list and Link offsets come from the pinned `highfleet-rs` revision
+`05c62078c6f896c141713a68b3991663e121b7bf`, also checked against current upstream.
+Fields upstream does not model (engine temperature/lockout, bomb radius) stay
+local with their raw offsets.
 
 ## Validation still required
 

@@ -5,9 +5,11 @@ use patchy::{PatchSession, ReturnType, Trampoline};
 use std::{
     fmt::Write as _,
     io::Write as _,
+    mem::offset_of,
     sync::atomic::{AtomicU32, Ordering},
 };
 
+use crate::native_layout::{Creature, Link, Node};
 use crate::{diag::rd, plausible, read, roster, CLOCK};
 
 // Steam 1.163 collector 0x1401be250: report just before its fatal master-link test.
@@ -16,8 +18,11 @@ const DEAD_NODE_SITE: usize = 0x1_401b_e274;
 const DEAD_NODE_BYTES: [u8; 8] = [0x48, 0x83, 0xbf, 0x88, 0x00, 0x00, 0x00, 0x00];
 const DEAD_JOINT_SITE: usize = 0x1_401b_e2f8;
 const DEAD_JOINT_BYTES: [u8; 5] = [0x48, 0x83, 0x7f, 0x58, 0x00];
-const OFF_PARTS: (usize, usize) = (0x1330, 0x1338);
-const OFF_NAME: usize = 0xa90;
+const OFF_PARTS: (usize, usize) = (
+    offset_of!(Creature, parts),
+    offset_of!(Creature, parts) + std::mem::size_of::<usize>(),
+);
+const OFF_NAME: usize = 0xa90; // Creature ship name; not modeled by highfleet-rs
 static DEAD_REPORTS: AtomicU32 = AtomicU32::new(0);
 
 /// Adds byte-validated detours to the caller's patch session.
@@ -57,8 +62,13 @@ pub unsafe fn install_dead_node_hooks(session: &mut PatchSession) -> Result<(), 
 
 unsafe extern "C" fn on_dead_node(node: usize) {
     let _ = std::panic::catch_unwind(|| {
-        if plausible(node) && rd::<usize>(node + 0x88).unwrap_or(0) != 0 {
-            report_dead("node", node, 0x88, 0x90);
+        if plausible(node) && rd::<usize>(node + offset_of!(Node, master) + offset_of!(Link, target)).unwrap_or(0) != 0 {
+            report_dead(
+                "node",
+                node,
+                offset_of!(Node, master) + offset_of!(Link, target),
+                offset_of!(Node, master) + offset_of!(Link, saved_id),
+            );
         }
     });
 }
@@ -141,8 +151,8 @@ unsafe fn report_dead(kind: &str, node: usize, master_off: usize, master_id_off:
     let _ = writeln!(
         text,
         "  state(+0x48)={:?} m_id(+0x78)={:?} master ptr={master:#x} master id={:?}",
-        rd::<i32>(node + 0x48),
-        rd::<i64>(node + 0x78),
+        rd::<i32>(node + offset_of!(Node, state)),
+        rd::<i64>(node + offset_of!(Node, id)),
         rd::<i64>(node + master_id_off)
     );
     let _ = writeln!(

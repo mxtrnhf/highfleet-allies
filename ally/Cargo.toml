@@ -1,6 +1,6 @@
 [package]
 name = "hf-ally"
-version = "0.14.15"
+version = "0.14.16"
 edition = "2021"
 description = "Prototype: a player-side, AI-run ship in battle. v0.2 can spawn an AI wingman (spawn_ally, default off); the hooks otherwise only log (no behaviour change)."
 
@@ -13,7 +13,7 @@ name = "hf_ally"
 crate-type = ["cdylib"]
 
 [dependencies]
-highfleet = { git = "https://github.com/logdot/highfleet-rs.git", rev = "8a6a8a399d89af035adb0087b19ac1021fc9c2f8" }
+highfleet = { git = "https://github.com/logdot/highfleet-rs.git", rev = "05c62078c6f896c141713a68b3991663e121b7bf" }
 highfleet-mod-api = { git = "https://github.com/logdot/Highfleet-Modloader.git", tag = "v4.0.0" }
 log = "0.4.28"
 patchy = { package = "patchy-rs", git = "https://github.com/logdot/patchy-rs.git", tag = "v0.1.0" }

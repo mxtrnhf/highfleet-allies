@@ -1,6 +1,6 @@
 [package]
 name = "hf-ai"
-version = "0.10.13"
+version = "0.10.14"
 edition = "2021"
 description = "Tactical AI layer for Highfleet 1.163: overrides the outputs of the stock per-ship AI tick (steering waypoint, engine strength, fire, launches). Standalone; not part of QoL."
 
@@ -9,6 +9,7 @@ name = "hf_ai"
 crate-type = ["cdylib"]
 
 [dependencies]
+highfleet = { git = "https://github.com/logdot/highfleet-rs.git", rev = "05c62078c6f896c141713a68b3991663e121b7bf" }
 highfleet-mod-api = { git = "https://github.com/logdot/Highfleet-Modloader.git", tag = "v4.0.0" }
 log = "0.4.28"
 patchy = { package = "patchy-rs", git = "https://github.com/logdot/patchy-rs.git", tag = "v0.1.0" }

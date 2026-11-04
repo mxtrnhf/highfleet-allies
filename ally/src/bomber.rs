@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 use crate::bomber_math::{Flight, Phase, Run, PULL_OUT_S, RELEASE_HEIGHT};
 use crate::diag::rd;
-use crate::native_layout::{Body, Link, Node};
+use crate::native_layout::{Body, Creature, Link, Node};
 use crate::{plausible, PatchSession, ReturnType, Trampoline};
 
 // After hf_ai's waypoint hook: an armed bomber keeps its course instead of evading missiles.
@@ -60,16 +60,16 @@ const FRAME_RATE: usize = 0x1_403c_0de4;
 const OFF_BOMB_RADIUS: usize = 0x20c;
 const OFF_MASTER: usize = offset_of!(Node, master) + offset_of!(Link, target);
 const OFF_OWNER: usize = offset_of!(Node, owner) + offset_of!(Link, target);
-const OFF_BOMBS: usize = 0x1438;
-const OFF_FLARES: usize = 0x1408;
-const FLARE_ENTRY_SIZE: usize = 0x18;
-const FLARE_ENTRY_PART: usize = 0x8;
+const OFF_BOMBS: usize = offset_of!(Creature, bombs);
+const OFF_FLARES: usize = offset_of!(Creature, flare_launchers);
+const FLARE_ENTRY_SIZE: usize = std::mem::size_of::<Link>();
+const FLARE_ENTRY_PART: usize = offset_of!(Link, target);
 /// Ceiling on the flare launchers walked in one pulse; a longer vector means the header is corrupt.
 const FLARE_LIMIT: usize = 256;
-const OFF_RADIUS: usize = 0x1850;
-const OFF_MASS: usize = 0x15b8;
-const OFF_THRUST: usize = 0x1664;
-const OFF_WAYPOINT: usize = 0xbf0;
+const OFF_RADIUS: usize = offset_of!(Creature, bounding_radius);
+const OFF_MASS: usize = offset_of!(Creature, mass);
+const OFF_THRUST: usize = offset_of!(Creature, thrust_group_0);
+const OFF_WAYPOINT: usize = offset_of!(Creature, waypoint_x);
 const DROP_INTERVAL_S: f64 = 0.05;
 const FLARE_INTERVAL_S: f64 = 0.5;
 const MAX_RUNS: usize = 32;

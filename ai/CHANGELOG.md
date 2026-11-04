@@ -1,5 +1,15 @@
 # hf_ai changelog
 
+## v0.10.14 — shared highfleet-rs layouts
+
+- Add `highfleet-rs` at the merged `05c6207` revision. The Creature, Body,
+  PartStats, AircraftLogic and Link offsets used by tactics, missile defense,
+  missile dump and plane groups now come from its 1.163 types; a compile-time
+  block keeps the raw offsets this mod depends on. Fields upstream does not
+  model yet (node identity, gun reload/latch words, strategic TWR) stay local.
+- No behaviour or configuration changes. Cross-build only; in-game verification
+  pending.
+
 ## v0.10.13 — dodge and panic escapes actually dash
 
 - Tactics waypoints are now 400 units (`tactics_math::WAYPOINT_LEN`). The stock AI tick's

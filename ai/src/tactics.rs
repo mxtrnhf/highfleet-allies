@@ -3,39 +3,41 @@
 //! page-checked (`crate::rd`). Own gun reach for early fire is refreshed once a second.
 
 use std::collections::HashMap;
+use std::mem::offset_of;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+use crate::native_layout::{self, Link};
 use crate::tactics_config::TacticsConfig;
 use crate::tactics_math::{self as tm, Bounds, Rng, ShipState, State, StepInput, TacticsParams};
 use crate::{plausible, rd, Ctx};
 
-const OFF_AI_FLAG: usize = 0xbd4; // u8: 0 = flown by a player
-const OFF_MODE: usize = 0xb48; // i32: 1 airborne combat, 3 landed, 0 takeoff (telemetry column `mode`; NOT +0xd70, that is the role)
+const OFF_AI_FLAG: usize = native_layout::CREATURE_AI_FLAG; // u8: 0 = flown by a player
+const OFF_MODE: usize = native_layout::CREATURE_MODE; // i32: 1 airborne combat, 3 landed, 0 takeoff (telemetry column `mode`; NOT +0xd70, that is the role)
 /// Player fire buttons, sampled read-only for hostile aim awareness.
-const OFF_FIRE0: usize = 0xbbc;
-const OFF_NODE_ID: usize = 0x18;
-const OFF_ACTIVE: usize = 0x48; // i32
-const OFF_STATE: usize = 0xbdc; // i32 driver state, 6 / 7 = dead or gone
-const OFF_CODE: usize = 0x28;
-const OFF_REACH: usize = 0x1838; // f32 gun reach, +0x183c second fire group (read as a pair)
-const OFF_AI_AIM: usize = 0xbf8; // [f32; 2] unit aim vector from AiWeaponController
-const OFF_GUNS0_BEGIN: usize = 0x13a8;
-const OFF_GUNS0_END: usize = 0x13b0;
-const OFF_GUNS1_BEGIN: usize = 0x13c0;
-const OFF_GUNS1_END: usize = 0x13c8;
-const GUN_ENTRY_STRIDE: usize = 0x18;
-const GUN_ENTRY_PTR: usize = 0x8;
-const GUN_LOADED: usize = 0x860;
-const GUN_RATE_TIMER: usize = 0x86c;
-const GUN_BLOCK_TIMER: usize = 0x870;
-const GUN_LATCH: usize = 0x874;
+const OFF_FIRE0: usize = native_layout::CREATURE_TRIGGER_GUN_GROUP_0;
+const OFF_NODE_ID: usize = 0x18; // local identity word, not Node::id; not modeled by highfleet-rs
+const OFF_ACTIVE: usize = native_layout::NODE_STATE; // i32
+const OFF_STATE: usize = native_layout::CREATURE_DRIVER_STATE; // i32 driver state, 6 / 7 = dead or gone
+const OFF_CODE: usize = native_layout::NODE_CODE;
+const OFF_REACH: usize = native_layout::CREATURE_WEAPON_REACH_0; // f32 gun reach, +0x183c second fire group (read as a pair)
+const OFF_AI_AIM: usize = 0xbf8; // [f32; 2] unit aim vector from AiWeaponController; Creature unknown_0bf8h
+const OFF_GUNS0_BEGIN: usize = native_layout::CREATURE_GUN_GROUP_0;
+const OFF_GUNS0_END: usize = OFF_GUNS0_BEGIN + std::mem::size_of::<usize>();
+const OFF_GUNS1_BEGIN: usize = native_layout::CREATURE_GUN_GROUP_1;
+const OFF_GUNS1_END: usize = OFF_GUNS1_BEGIN + std::mem::size_of::<usize>();
+const GUN_ENTRY_STRIDE: usize = native_layout::LINK_STRIDE;
+const GUN_ENTRY_PTR: usize = offset_of!(Link, target);
+const GUN_LOADED: usize = native_layout::BODY_AMMO_LOADED;
+const GUN_RATE_TIMER: usize = 0x86c; // Body unknown_086ch: native gun rate timer, not modeled yet
+const GUN_BLOCK_TIMER: usize = 0x870; // Body unknown_086ch region
+const GUN_LATCH: usize = 0x874; // Body unknown_086ch region
 const MAX_GUNS_PER_GROUP: usize = 32;
 /// Global creature list (Steam 1.163), stride 0x18, creature pointer at +8.
 const CREATURES_BEGIN: usize = 0x1_43fa_a5d8;
 const CREATURES_END: usize = 0x1_43fa_a5e0;
-const CREATURE_STRIDE: usize = 0x18;
-const CREATURE_PTR_OFF: usize = 0x8;
+const CREATURE_STRIDE: usize = native_layout::LINK_STRIDE;
+const CREATURE_PTR_OFF: usize = offset_of!(Link, target);
 const MAX_LIVE_SHIPS: usize = 128;
 const SHIP_SCAN_INTERVAL_S: f64 = 0.05;
 /// Hold-over after a sampled player fire-button state (not confirmed shots).

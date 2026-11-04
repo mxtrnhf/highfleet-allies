@@ -73,6 +73,7 @@ use std::{
     ffi::c_void,
     fs::File,
     io::Write as _,
+    mem::offset_of,
     panic::{catch_unwind, AssertUnwindSafe},
     ptr,
     sync::{
@@ -84,6 +85,7 @@ use std::{
 use patchy::{PatchSession, ProcessModule, Result, ReturnType, Trampoline};
 use windows_sys::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION};
 
+use crate::native_layout::{self, Link};
 use crate::{
     flares_config::AiFlaresConfig,
     curtain_math::{self, Curtain},
@@ -122,7 +124,7 @@ const RELEASE_PROLOGUE: [u8; 8] = [0x48, 0x8b, 0xc4, 0x53, 0x55, 0x56, 0x57, 0x4
 const CREATURE_BODY_RVA: usize = 0x48fc0;
 const CREATURE_BODY_PROLOGUE: [u8; 10] = [0x48, 0x8b, 0xd1, 0x48, 0x8b, 0x89, 0x88, 0x00, 0x00, 0x00];
 /// Body heading in radians.
-const BODY_HEADING: usize = 0x138;
+const BODY_HEADING: usize = native_layout::BODY_HEADING;
 /// Offsets from the `0x66` command: the angle of it and of the `0x67` command after it, and the
 /// angles of the `0x64` and `0x65` commands before it.
 const COMMAND_ANGLE: usize = 0x10;
@@ -141,21 +143,21 @@ const BODIES_RVA: usize = 0x3a33c90;
 const BODY_COUNT_RVA: usize = 0x3a51150;
 const CLOCK_RVA: usize = 0x3a119c0;
 
-const CREATURE_SIDE: usize = 0xad4;
+const CREATURE_SIDE: usize = native_layout::CREATURE_SIDE;
 /// Offset in a ship of the AI flag: non-zero when the ship is not flown by the player.
-const CREATURE_AI_FLAG: usize = 0xbd4;
-const CREATURE_LAUNCHERS_BEGIN: usize = 0x1408;
-const CREATURE_LAUNCHERS_END: usize = 0x1410;
-const LAUNCHER_ENTRY_SIZE: usize = 0x18;
-const LAUNCHER_PTR: usize = 0x8;
+const CREATURE_AI_FLAG: usize = native_layout::CREATURE_AI_FLAG;
+const CREATURE_LAUNCHERS_BEGIN: usize = native_layout::CREATURE_FLARE_LAUNCHERS;
+const CREATURE_LAUNCHERS_END: usize = CREATURE_LAUNCHERS_BEGIN + std::mem::size_of::<usize>();
+const LAUNCHER_ENTRY_SIZE: usize = native_layout::LINK_STRIDE;
+const LAUNCHER_PTR: usize = offset_of!(Link, target);
 /// Offset in a launcher of its loaded count (float).
-const LAUNCHER_COUNT: usize = 0x860;
-const BODY_POS_X: usize = 0x128;
-const BODY_POS_Y: usize = 0x12c;
-const BODY_STATS_ID: usize = 0x188;
-const BODY_TARGET: usize = 0x498;
-const NODE_OWNER: usize = 0xb8;
-const STATS_CATEGORY: usize = 0xb0;
+const LAUNCHER_COUNT: usize = native_layout::BODY_AMMO_LOADED;
+const BODY_POS_X: usize = native_layout::BODY_POS_X;
+const BODY_POS_Y: usize = native_layout::BODY_POS_Y;
+const BODY_STATS_ID: usize = native_layout::BODY_PART_INDEX;
+const BODY_TARGET: usize = native_layout::BODY_PROJECTILE_TARGET;
+const NODE_OWNER: usize = native_layout::NODE_OWNER;
+const STATS_CATEGORY: usize = native_layout::STATS_CATEGORY;
 const VTABLE_IS_ACTIVE: usize = 0x78;
 
 /// Stats categories of guided missiles (tactical and strategic).
@@ -170,11 +172,11 @@ const MAX_LAUNCHERS: usize = 256;
 /// Seconds between two trace lines of the same kind for one ship (steering and engine hooks run every frame).
 const TRACE_PERIOD: f64 = 0.5;
 
-/// Creature centre of mass (same fields `lib.rs` reads), for the trace.
-/// Ship bounding radius (`Creature +0x1850`).
-const CREATURE_RADIUS: usize = 0x1850;
-const CREATURE_POS_X: usize = 0x1840;
-const CREATURE_POS_Y: usize = 0x1844;
+/// Creature bounding-box centre (the position the AI uses), for the trace.
+/// Ship bounding radius (`Creature::bounding_radius`).
+const CREATURE_RADIUS: usize = native_layout::CREATURE_RADIUS;
+const CREATURE_POS_X: usize = native_layout::CREATURE_POS_X;
+const CREATURE_POS_Y: usize = native_layout::CREATURE_POS_Y;
 /// qol's flare-crash fix site in `creatureLogic` (`MOV RBX,RAX; MOV RCX,RSI`); still these bytes = not patched.
 const FLARE_CRASH_RVA: usize = 0x36bb5;
 const FLARE_CRASH_ORIGINAL: [u8; 6] = [0x48, 0x8b, 0xd8, 0x48, 0x8b, 0xce];
@@ -656,7 +658,7 @@ unsafe fn describe_threat(creature: usize, body: usize) -> String {
     let target = rd::<usize>(body + BODY_TARGET).unwrap_or(0);
     let locked = target != 0 && (target == creature || rd::<usize>(target + NODE_OWNER) == Some(creature));
     let raw = |node: usize| if plausible(node) { rd::<f32>(node + CREATURE_SIDE).map_or("?".to_string(), |s| format!("{s}")) } else { "?".to_string() };
-    let class = |node: usize| if plausible(node) { rd::<u8>(node + 0x28).map_or("?".to_string(), |c| format!("{c:#x}")) } else { "?".to_string() };
+    let class = |node: usize| if plausible(node) { rd::<u8>(node + native_layout::NODE_CODE).map_or("?".to_string(), |c| format!("{c:#x}")) } else { "?".to_string() };
     format!(
         "ship_side {} launcher_side {} target_side {} (raw {} class {}) locked {} stats {} marker248 {:?} owner {owner:#x} target {target:#x}",
         side(creature),
@@ -1170,8 +1172,8 @@ fn valid_side(side: f32) -> Option<f32> {
     (side.is_finite() && side != 0.0 && side.abs() <= 100.0).then_some(side)
 }
 
-/// Missile owner link node (the link at `+0x4a8`, node pointer 8 bytes in like the target link at `+0x490/+0x498`).
-const MISSILE_OWNER_LINK: usize = 0x4b0;
+/// Missile owner link node (the `Body::projectile_link_2` target).
+const MISSILE_OWNER_LINK: usize = native_layout::BODY_PROJECTILE_OWNER;
 
 unsafe fn launch_signals(memory: &mut Region, body: usize) -> Option<LaunchSignals> {
     let target = memory.read::<usize>(body + BODY_TARGET).filter(|&t| t != 0 && plausible(t))?;
@@ -1503,7 +1505,7 @@ unsafe fn release_all(runtime: &Runtime, begin: usize, end: usize) {
 unsafe fn friendly_stray(memory: &mut Region, creature: usize, body: usize, target: usize) -> bool {
     let side_of = |memory: &mut Region, node: usize| {
         // only a ship (creature class bits 0x2f at +0x28) has a side at +0xad4; a plane or missile body gives garbage there
-        if node == 0 || !plausible(node) || memory.read::<u8>(node + 0x28).map_or(true, |class| class & 0x2f != 0x2f) {
+        if node == 0 || !plausible(node) || memory.read::<u8>(node + native_layout::NODE_CODE).map_or(true, |class| class & 0x2f != 0x2f) {
             return None;
         }
         memory.read::<f32>(node + CREATURE_SIDE).and_then(valid_side)
@@ -1511,7 +1513,7 @@ unsafe fn friendly_stray(memory: &mut Region, creature: usize, body: usize, targ
     let Some(own) = side_of(memory, creature) else { return false };
     // aimed at something that is not a ship (a plane: the K-13; another missile): it is not coming for this ship, whoever
     // launched it (decided first: the log showed a player-side K-13 at a plane passing an enemy ship)
-    if target != 0 && plausible(target) && memory.read::<u8>(target + 0x28).is_some_and(|class| class & 0x2f != 0x2f) {
+    if target != 0 && plausible(target) && memory.read::<u8>(target + native_layout::NODE_CODE).is_some_and(|class| class & 0x2f != 0x2f) {
         return true;
     }
     let owner = memory.read::<usize>(body + MISSILE_OWNER_LINK).unwrap_or(0);

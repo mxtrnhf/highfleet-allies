@@ -1,7 +1,7 @@
-# hf_ai v0.10.13
+# hf_ai v0.10.14
 
 > **IMPORTANT — UPDATE YOUR `Modloader/config/hf_ai.json`!**
-> When upgrading from before `hf_ai v0.10.11`, replace your existing `Modloader/config/hf_ai.json` with the tracked preset (or delete it so the mod writes fresh defaults). `v0.10.11` trims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires curtain sheltering. The preset is unchanged in v0.10.12 and v0.10.13; these follow-ups are not published release packs.
+> When upgrading from before `hf_ai v0.10.11`, replace your existing `Modloader/config/hf_ai.json` with the tracked preset (or delete it so the mod writes fresh defaults). `v0.10.11` trims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires curtain sheltering. The preset is unchanged through v0.10.14; these follow-ups are not published release packs.
 
 A tactical AI layer for **HighFleet Steam 1.163**, loaded as a standalone DLL by
 logdot's Modloader v4. The stock AI still selects targets and computes movement;
@@ -72,7 +72,7 @@ cargo xwin build --release --locked --no-default-features --target x86_64-pc-win
 Use one hf_ai DLL at a time. Keep the QoL flare crash fix enabled. A separate
 QoL `ai_flares` implementation must be off because it patches the same sites.
 
-See [CHANGELOG.md](CHANGELOG.md) for v0.10.13 changes and v0.10.12 corrections. Cross-building is not
+See [CHANGELOG.md](CHANGELOG.md) for v0.10.14 (shared highfleet-rs layouts), v0.10.13 changes and v0.10.12 corrections. Cross-building is not
 combat validation; in-game validation remains pending. Existing host math harnesses
 contain zero tests. Page checks and Rust `catch_unwind` do not catch native access violations.
 

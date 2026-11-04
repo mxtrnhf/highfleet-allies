@@ -7,12 +7,15 @@
 //! The test is `checkShipPartFlagActive(body, 0x8000000)` at `0x140062812`; this hook answers "no" for a body whose
 //! `m_oid` is on the list, so that body is never a candidate and the AI picks the next real threat as it always did.
 
+use std::mem::offset_of;
 use std::sync::{
     atomic::{AtomicU32, AtomicUsize, Ordering},
     Mutex, OnceLock,
 };
 
 use patchy::{PatchSession, Trampoline};
+
+use crate::native_layout::Body;
 
 /// `mov edx,0x8000000; mov rcx,rbx; call checkShipPartFlagActive` (13 bytes); the call is the last 5.
 const SITE: usize = 0x1_4006_280a;
@@ -21,9 +24,10 @@ const CALL_SITE: usize = SITE + 8;
 const CHECK_FN: usize = 0x1_4004_9470;
 
 /// Body: the part's `m_oid`, an MSVC `std::string` (inline up to 15 bytes, else a heap pointer in the first 8).
-const OFF_OID: usize = 0x190;
-const OFF_OID_LEN: usize = 0x1a0;
-const OFF_OID_CAP: usize = 0x1a8;
+/// The string's private length/capacity words follow the `EscadraString` base.
+const OFF_OID: usize = offset_of!(Body, oid);
+const OFF_OID_LEN: usize = OFF_OID + 0x10;
+const OFF_OID_CAP: usize = OFF_OID + 0x18;
 /// No `m_oid` in OL.seria is anywhere near this long; anything longer is not a string we understand.
 const MAX_OID: usize = 96;
 

@@ -68,14 +68,26 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hf-ai"
-version = "0.10.13"
+version = "0.10.14"
 dependencies = [
+ "highfleet",
  "highfleet-mod-api",
  "log",
  "patchy-rs",
  "serde",
  "serde_json",
  "windows-sys",
+]
+
+[[package]]
+name = "highfleet"
+version = "0.1.0"
+source = "git+https://github.com/logdot/highfleet-rs.git?rev=05c62078c6f896c141713a68b3991663e121b7bf#05c62078c6f896c141713a68b3991663e121b7bf"
+dependencies = [
+ "libc",
+ "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

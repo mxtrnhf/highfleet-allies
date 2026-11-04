@@ -57,7 +57,7 @@ use std::{
 
 use std::mem::{offset_of, size_of};
 
-use native_layout::{Body, Gui, Link, Node};
+use native_layout::{Body, Creature, Gui, Link, Node};
 
 use patchy::{PatchSession, ProcessModule, ReturnType, Trampoline};
 use serde::{Deserialize, Serialize};
@@ -79,7 +79,7 @@ const SPAWN_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74
 /// +0x10, capacity at +0x18); written by the level loader `0x14025afd0` through `CopyString`.
 const LEVEL_NAME: usize = 0x1_403c_1390;
 /// Template node: class code (u64).
-const OFF_CODE: usize = 0x28;
+const OFF_CODE: usize = native_layout::NODE_CODE;
 
 /// Per-frame arcade battle manager `FUN_1402cc260` (called from the Combat scenario).
 const BATTLE_RVA: usize = 0x2cc260;
@@ -170,7 +170,7 @@ const TARGET_SITES: [(usize, [u8; 5]); 2] = [
     (0x1_4007_3c73, [0xe8, 0xc8, 0x4e, 0x00, 0x00]),
 ];
 const OFF_PRIZE: usize = 0xc19; // u8: the ship may be captured after the battle (ship names Pollux, Kadesh Mk1, ...)
-const OFF_TARGET_LINK: usize = 0xaf8; // the Link whose node is the target at +0xb00
+const OFF_TARGET_LINK: usize = offset_of!(Creature, target); // the Link whose node is the target at +0xb00
 const RESERVE: usize = 0x1_47fc_73b0;
 const ROSTER_BEGIN: usize = 0x1_47fc_7590;
 const ROSTER_END: usize = 0x1_47fc_7598;
@@ -183,7 +183,7 @@ const DEPLOY_AGGR: usize = 0x1_4035_24d8; // f32, 1.0
 /// Controlled-ship links, one per control slot (0x18 bytes each).
 const CONTROLLED_LINKS: usize = 0x1_43a1_c260;
 const ALLY_SLOT: usize = 1;
-const OFF_MODE_D70: usize = 0xd70; // i32: 1 = flown by the player, 2 = wingman
+const OFF_MODE_D70: usize = offset_of!(Creature, order_role); // i32: 1 = flown by the player, 2 = wingman
 const OFF_ACTIVE: usize = offset_of!(Node, state); // i32: non-zero while the ship is in the level
 
 /// Byte stride of one `Link` entry in the native object vectors below: the pointer sits at +8.
@@ -211,13 +211,13 @@ const CONTROLLED_LINK: usize = 0x1_43a1_c260;
 /// Game clock, `f64` seconds.
 const CLOCK: usize = 0x1_43a1_19c0;
 
-const OFF_SIDE: usize = 0xad4; // f32: negative = AI, positive = player, 0 = neutral
-const OFF_AI_FLAG: usize = 0xbd4; // u8: non-zero = joins the AI vector when added
+const OFF_SIDE: usize = offset_of!(Creature, side); // f32: negative = AI, positive = player, 0 = neutral
+const OFF_AI_FLAG: usize = offset_of!(Creature, ai_flag); // u8: non-zero = joins the AI vector when added
 const OFF_AGGRESSION: usize = 0xbc4; // f32: >= 0.5 makes the driver call FUN_140079b20(ship, 1)
-const OFF_STATE: usize = 0xbdc; // i32: driver state (1/2 run the AI tick)
-const OFF_MODE: usize = 0xb48; // i32
+const OFF_STATE: usize = offset_of!(Creature, driver_state); // i32: driver state (1/2 run the AI tick)
+const OFF_MODE: usize = offset_of!(Creature, mode); // i32
 const OFF_ORDER: usize = 0xc98; // i32: index given by the Missile scenario
-const OFF_TARGET: usize = 0xb00; // pointer: current target (link)
+const OFF_TARGET: usize = offset_of!(Creature, target) + offset_of!(Link, target); // pointer: current target (link)
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
@@ -459,20 +459,26 @@ static TRACK_END: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 /// The player's deploy call site (`0x1402d6f7a` + 5) and the scenario state in which a battle starts.
 const PLAYER_DEPLOY_CALLER_RVA: usize = 0x2d6f7f;
 const BATTLE_START_SELECTOR: u32 = 1;
-const OFF_POS_X: usize = 0x1840; // f32 creature centre
-const OFF_POS_Y: usize = 0x1844;
-const OFF_WAYPOINT_X: usize = 0xbf0; // f32 steering waypoint written by the AI tick
-const OFF_WAYPOINT_Y: usize = 0xbf4;
+const OFF_POS_X: usize = offset_of!(Creature, bounds_center_x); // f32 creature centre
+const OFF_POS_Y: usize = offset_of!(Creature, bounds_center_y);
+const OFF_WAYPOINT_X: usize = offset_of!(Creature, waypoint_x); // f32 steering waypoint written by the AI tick
+const OFF_WAYPOINT_Y: usize = offset_of!(Creature, waypoint_y);
 // --- probe fields (all [code]/guess, see the findings note) ---
-const OFF_RETARGET: usize = 0xb28; // f32 seconds until the next target re-roll
-const OFF_FLAGS: usize = 0xbbc; // 5 control bytes: +0xbbc fires guns group 0 (LMB), +0xbbd group 1 (RMB), +0xbbe bombs, +0xbc0 flares
+const OFF_RETARGET: usize = offset_of!(Creature, retarget_timer); // f32 seconds until the next target re-roll
+const OFF_FLAGS: usize = offset_of!(Creature, trigger_gun_group_0); // 5 control bytes: group 0, group 1, bombs, spare, flares
 const OFF_LAUNCH_CD: usize = 0xd60; // f32 ship launch cooldown
 const OFF_LAUNCH_COUNT: usize = 0xc98; // i32 per-ship launch counter
-const OFF_ZENITH: (usize, usize) = (0x13d8, 0x13e0); // anti-ship launcher list
-const OFF_GUNS: (usize, usize) = (0x1360, 0x1368); // weapon list
-const OFF_PART_COOLDOWN: usize = 0x848; // f32
-const OFF_PART_RESERVE: usize = 0x858; // i32
-const OFF_PART_LOADED: usize = 0x860; // f32
+const OFF_ZENITH: (usize, usize) = (
+    offset_of!(Creature, anti_ship_launchers),
+    offset_of!(Creature, anti_ship_launchers) + size_of::<usize>(),
+); // anti-ship launcher list
+const OFF_GUNS: (usize, usize) = (
+    offset_of!(Creature, ammo_consumers),
+    offset_of!(Creature, ammo_consumers) + size_of::<usize>(),
+); // ammo-consumer list, the guns and launchers that draw rounds
+const OFF_PART_COOLDOWN: usize = 0x848; // f32; highfleet-rs models this word as Body::mdl_covered
+const OFF_PART_RESERVE: usize = offset_of!(Body, weapon_ammo_amount); // i32
+const OFF_PART_LOADED: usize = offset_of!(Body, weapon_ammo_loaded); // f32
 /// Game time (f64 bits) at which the player's ship was first seen in this battle; 0 = not yet.
 static HANDOVER: AtomicBool = AtomicBool::new(false);
 /// The retreat point (x, y as two f32 packed in a u64) the game keeps at 0x147fc7638; zeroed when a ship uses it.
@@ -1212,7 +1218,10 @@ const AMMO_PRESS_STOLEN: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0
 /// 0x14025fa30), so an ally switched to AP / proximity by `ally_ammo` would mint 9999 priced rounds per gun.
 const REFUND: usize = 0x1_4026_98c0;
 const REFUND_STOLEN: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10];
-const REFUND_GUN_LISTS: [usize; 2] = [0x13a8, 0x13c0];
+const REFUND_GUN_LISTS: [usize; 2] = [
+    offset_of!(Creature, gun_group_0),
+    offset_of!(Creature, gun_group_1),
+];
 static PRECOMBAT_BUILDS: AtomicU32 = AtomicU32::new(0);
 
 /// A NUL-terminated ASCII name at `address`, at most 48 bytes, printable only.
@@ -2449,7 +2458,12 @@ unsafe fn record_ammo_funding(creature: usize) -> usize {
             if !plausible(gun) {
                 continue;
             }
-            let entry = (creature, gun, read::<i32>(gun + 0x850), read::<i32>(gun + 0x854));
+            let entry = (
+                creature,
+                gun,
+                read::<i32>(gun + offset_of!(Body, weapon_ammo)),
+                read::<i32>(gun + offset_of!(Body, weapon_ammo_extra)),
+            );
             if let Some(slot) = funding.iter_mut().find(|r| r.1 == gun) {
                 *slot = entry;
             } else {
@@ -2494,15 +2508,19 @@ unsafe extern "C" fn on_refund(creature: usize) {
                 continue;
             }
             if let Some(&(_, _, index, extra)) = funding.iter().find(|r| r.0 == creature && r.1 == gun) {
-                (gun as *mut i32).byte_add(0x850).write_unaligned(index);
-                (gun as *mut i32).byte_add(0x854).write_unaligned(extra);
+                (gun as *mut i32).byte_add(offset_of!(Body, weapon_ammo)).write_unaligned(index);
+                (gun as *mut i32).byte_add(offset_of!(Body, weapon_ammo_extra)).write_unaligned(extra);
                 restored += 1;
             } else {
                 // no funding index (should not happen for an ally we deployed): keep the old safeguard
-                for off in [0x858, 0x85c, 0x868] {
+                for off in [
+                    offset_of!(Body, weapon_ammo_amount),
+                    offset_of!(Body, weapon_ammo_extra_amount),
+                    offset_of!(Body, weapon_reload_step_rounds),
+                ] {
                     ((gun + off) as *mut i32).write_unaligned(0);
                 }
-                ((gun + 0x860) as *mut f32).write_unaligned(0.0);
+                ((gun + offset_of!(Body, weapon_ammo_loaded)) as *mut f32).write_unaligned(0.0);
                 unrecorded += 1;
             }
         }
@@ -2717,7 +2735,7 @@ fn plausible(p: usize) -> bool {
 
 /// A creature that is still part of the battle: plausible pointer, creature class code, active, not dead.
 unsafe fn live_ship(p: usize) -> bool {
-    plausible(p) && read::<u8>(p + 0x28) & 0x2f == 0x2f && read::<i32>(p + OFF_ACTIVE) != 0 && !matches!(read::<i32>(p + OFF_STATE), 6 | 7)
+    plausible(p) && read::<u8>(p + native_layout::NODE_CODE) & 0x2f == 0x2f && read::<i32>(p + OFF_ACTIVE) != 0 && !matches!(read::<i32>(p + OFF_STATE), 6 | 7)
 }
 
 /// Ships the F8 order has put on the bombing role (`+0xd70 = 2`): (ship, order before, checks that did not find it).
@@ -2792,9 +2810,9 @@ unsafe fn order_retreat(ally: usize, why: &str) -> bool {
 
 static FUEL_RETREAT_PERCENT: AtomicU32 = AtomicU32::new(0); // f32 bits
 static FUEL_LOG_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0); // f64 bits of the game clock
-const OFF_FUEL: usize = 0x1638; // f64: combat fuel now (the battle burns it: 0x14007a210)
-const OFF_FUEL_CAPACITY: usize = 0x1640; // f64
-const OFF_FUEL_AT_START: usize = 0xbd0; // f32: written at spawn (0x1402672c0)
+const OFF_FUEL: usize = offset_of!(Creature, fuel); // f64: combat fuel now (the battle burns it: 0x14007a210)
+const OFF_FUEL_CAPACITY: usize = offset_of!(Creature, fuel_capacity); // f64
+const OFF_FUEL_AT_START: usize = 0xbd0; // f32: written at spawn (0x1402672c0), not modeled by highfleet-rs
 
 /// Orders out every ally whose combat fuel is at or below the configured percent. Once per ship: a ship already
 /// ordered out (F8 or fuel) stays in `ORDERED` until it is back in the fleet.
@@ -3042,11 +3060,11 @@ unsafe fn prize_enemies() -> Vec<usize> {
 /// `traverseLinkedListCreature_`, which gives the root PART of a chain, not the ship: it read the prize flag on a
 /// wrong object and re-targeted every ally every tick (log of 2026-10-16, v0.9.0).
 unsafe fn creature_of(node: usize) -> usize {
-    if read::<u8>(node + 0x28) & 0x2f == 0x2f {
+    if read::<u8>(node + native_layout::NODE_CODE) & 0x2f == 0x2f {
         return node;
     }
     let owner: usize = read(node + 0xb8);
-    if owner != 0 && read::<u8>(owner + 0x28) & 0x2f == 0x2f {
+    if owner != 0 && read::<u8>(owner + native_layout::NODE_CODE) & 0x2f == 0x2f {
         owner
     } else {
         node
@@ -3138,7 +3156,7 @@ unsafe fn title_probe() {
         let g: usize = read(node + 0x10);
         if g != 0 && plausible(g) && cstr(g + GUI_NAME) == "TITLE" {
             let linked: usize = read(g + 0x178);
-            let class = if plausible(linked) { read::<u8>(linked + 0x28) } else { 0 };
+            let class = if plausible(linked) { read::<u8>(linked + native_layout::NODE_CODE) } else { 0 };
             let owner: usize = if plausible(linked) { read(linked + 0xb8) } else { 0 };
             let side = |p: usize| if plausible(p) { read::<f32>(p + OFF_SIDE) } else { f32::NAN };
             log::info!(

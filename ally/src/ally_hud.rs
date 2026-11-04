@@ -9,9 +9,12 @@
 //! A ship on the player's side (side float `+0xad4` > 0) that the player does not fly (`+0xd70 != 1`) gets the ally
 //! colour, the module lines keep their alpha.
 
+use std::mem::offset_of;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use patchy::{PatchSession, ReturnType, Trampoline};
+
+use crate::native_layout::{Creature, NODE_CODE};
 
 const HP_SITE: usize = 0x1_402a_2454;
 const HP_BYTES: [u8; 5] = [0xba, 0x00, 0xfc, 0xa8, 0xff];
@@ -27,10 +30,11 @@ unsafe fn rd<T: Copy>(a: usize) -> T {
 
 /// True when `ship` is a creature (ship) on the player's side that the player is not flying.
 unsafe fn friendly_ship(ship: usize) -> bool {
-    if !crate::plausible(ship) || rd::<u8>(ship + 0x28) & 0x2f != 0x2f {
+    if !crate::plausible(ship) || rd::<u8>(ship + NODE_CODE) & 0x2f != 0x2f {
         return false; // shells, missiles and drones keep their colour: +0xad4 is not a side there
     }
-    rd::<f32>(ship + 0xad4) > 0.0 && rd::<i32>(ship + 0xd70) != 1
+    rd::<f32>(ship + offset_of!(Creature, side)) > 0.0
+        && rd::<i32>(ship + offset_of!(Creature, order_role)) != 1
 }
 
 /// True when the popup `entry` belongs to a friendly ship the player is not flying.

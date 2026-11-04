@@ -2,7 +2,8 @@
 //!
 //! Native contracts: hf_notes/docs/findings/battle-ally.md (control links/AI list/roles).
 //! Input fields and TAB were rechecked against live 1.163 on 2026-11-03; see
-//! docs/ship-switching.md. Neither pinned nor current upstream highfleet-rs models Creature.
+//! docs/ship-switching.md. Shared Link, Node and Creature offsets come from
+//! highfleet-rs; the boost and bomb-held words stay local RE offsets.
 
 use std::mem::{offset_of, MaybeUninit};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};

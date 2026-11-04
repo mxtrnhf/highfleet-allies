@@ -8,7 +8,7 @@
 //!
 //! Native details (Steam 1.163):
 //! * ships are the global creature vector `0x143faa5d8..0x143faa5e0`, stride 0x18, pointer at +8;
-//! * `ship + 0x1840/0x1844` is the hull centre of mass used by the AI;
+//! * `Creature::bounds_center_x/y` is the hull bounding-box centre used by the AI;
 //! * `ship + 0xad4` is the side float, `+0xd70` the role (1 = flown by the player) and
 //!   `+0xbdc` the AI driver state (table in `hf_notes/docs/findings/ai/ai-behaviour-states.md`);
 //! * rings use the native screen-space circle drawer `Gfx_DrawCircleClipped` (`0x140244b00`), which
@@ -18,8 +18,11 @@
 use std::{
     ffi::{c_char, CStr},
     fmt::Write as _,
+    mem::offset_of,
     sync::atomic::{AtomicBool, Ordering},
 };
+
+use crate::native_layout::Creature;
 
 const HUD_ENABLED: usize = 0x1_43a1_1961;
 /// `(Vec2* point, bool absolute, float zoom)`.
@@ -54,9 +57,9 @@ const MAX_RING_PIXELS: f32 = 4000.0;
 /// Ring-distance text sits just right of the ring line; tiny rings get no text.
 const RING_LABEL_DX: f32 = 4.0;
 const MIN_RING_LABEL_PIXELS: f32 = 30.0;
-/// The AI waypoint (`+0xbf0/+0xbf4`) marker and its dotted lead-in.
-const OFF_WAYPOINT_X: usize = 0xbf0;
-const OFF_WAYPOINT_Y: usize = 0xbf4;
+/// The AI waypoint (`Creature::waypoint_x/y`) marker and its dotted lead-in.
+const OFF_WAYPOINT_X: usize = offset_of!(Creature, waypoint_x);
+const OFF_WAYPOINT_Y: usize = offset_of!(Creature, waypoint_y);
 const WAYPOINT_COLOR: u32 = 0xffff_aa00;
 const WAYPOINT_LINE_COLOR: u32 = 0x78ff_aa00;
 const WAYPOINT_STEPS: usize = 16;
@@ -309,7 +312,10 @@ unsafe fn draw_waypoint(
 
 /// Draws rings, state labels and the AI waypoint for one live ship. Returns false when off-screen.
 unsafe fn draw_ship(ship: usize, font: *mut u8) -> bool {
-    let world = [rd::<f32>(ship + 0x1840), rd::<f32>(ship + 0x1844)];
+    let world = [
+        rd::<f32>(ship + offset_of!(Creature, bounds_center_x)),
+        rd::<f32>(ship + offset_of!(Creature, bounds_center_y)),
+    ];
     if !world[0].is_finite() || !world[1].is_finite() {
         return false;
     }

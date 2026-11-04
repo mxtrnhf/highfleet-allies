@@ -29,6 +29,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use patchy::{PatchSession, Result, ReturnType};
 
+use crate::native_layout;
 use crate::{plausible, rd, rng};
 
 /// Address of the `CALL [RAX+0x110]` that rolls the dice for a launch attempt.
@@ -43,11 +44,11 @@ const LAUNCH_EXPECTED: [u8; 5] = [0xe8, 0x80, 0xa0, 0xfc, 0xff];
 /// The launch function that is wrapped.
 const LAUNCH: usize = 0x14002ff60;
 /// Offset in a launcher of the ship it belongs to.
-const OWNER_OFFSET: usize = 0xb8;
+const OWNER_OFFSET: usize = native_layout::NODE_OWNER;
 /// Offset in a ship of its side: negative and non-zero for the AI's enemies.
-const SIDE_OFFSET: usize = 0xad4;
+const SIDE_OFFSET: usize = native_layout::CREATURE_SIDE;
 /// Offset in a ship of its AI control flag (0 = player-flown).
-const AI_FLAG_OFFSET: usize = 0xbd4;
+const AI_FLAG_OFFSET: usize = native_layout::CREATURE_AI_FLAG;
 /// Offset in the engine object's function table of the random number function.
 const RANDOM_SLOT: usize = 0x110;
 /// Global with the game time in seconds.
