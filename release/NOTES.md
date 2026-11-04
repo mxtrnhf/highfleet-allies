@@ -4,7 +4,18 @@ For **HighFleet Steam 1.163**.
 
 > ## ⚠️ IMPORTANT: UPDATE YOUR `Modloader/config/hf_ai.json`!
 > **Do not keep your old `hf_ai.json` when updating to this release.** Copy the new `Modloader/config/hf_ai.json` from this ZIP over your existing one (or delete your old `Modloader/config/hf_ai.json` so the mod generates a fresh one).
-> The preset introduced in hf_ai v0.10.11 trims `hf_ai.json` from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings (`dive_dwell_s: 0.5`, `dive_boost: 2.0`, `aim_boost: 2.0`, `launch_flares_evade_range: 400.0`), and retires flare-curtain sheltering. Keeping an old preset will override the new tuned values with stale numbers. v0.10.12 uses the same preset.
+> The preset introduced in hf_ai v0.10.11 trims `hf_ai.json` from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings (`dive_dwell_s: 0.5`, `dive_boost: 2.0`, `aim_boost: 2.0`, `launch_flares_evade_range: 400.0`), and retires flare-curtain sheltering. Keeping an old preset will override the new tuned values with stale numbers. v0.10.12 and v0.10.13 use the same preset.
+
+## Source follow-up: hf_ai v0.10.13
+
+Not yet published as a release pack. Dive/aim dodges and the boosted panic evasion
+now dash: both engine banks and the swivel servos are aimed along the manoeuvre's
+escape direction at the boost, bypassing the stock AI's velocity controller and its
+`throttle x 25 x battle TWR` speed target, so a boosted ship can outrun its own
+speed target like a player holding Shift. Tactic waypoints are 400 units (the
+throttle's saturation point) instead of 200. `panic_boost: 1.0` now really disables
+the panic boost. Static-engine ships still rely on the force-command projection, so
+the dash is strongest on swivel-engine designs. No in-game combat validation yet.
 
 ## Source follow-up: hf_ai v0.10.12
 

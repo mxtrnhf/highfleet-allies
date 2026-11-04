@@ -1,6 +1,6 @@
 # hf_ai settings (`Modloader/config/hf_ai.json`)
 
-The checked-in [player preset](../ai/config/hf_ai.json) and compiled defaults use the same values (hf_ai 0.10.12, unchanged from 0.10.11). The plain-language explanation of how the AI works and what to turn for which effect is in [hf-ai-tuning-guide.md](hf-ai-tuning-guide.md); this file is the complete key list with the code defaults. Edit while the game is closed; `"enabled": false` turns hf_ai off. Older release packs retain their original DLLs.
+The checked-in [player preset](../ai/config/hf_ai.json) and compiled defaults use the same values (hf_ai 0.10.13, preset unchanged since 0.10.11). The plain-language explanation of how the AI works and what to turn for which effect is in [hf-ai-tuning-guide.md](hf-ai-tuning-guide.md); this file is the complete key list with the code defaults. Edit while the game is closed; `"enabled": false` turns hf_ai off. Older release packs retain their original DLLs.
 
 ## Missing keys and how to revert to vanilla
 
@@ -53,9 +53,9 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Both dive directions | `tactics.dive_enabled: false` | Aim awareness and early fire remain. |
 | Dive-under only | `tactics.dive_under: false` | Dive-over remains. |
 | Dive-over only | `tactics.dive_over: false` | Dive-under remains. |
-| Dive engine boost | `tactics.dive_boost: 1.0` | Dive steering remains. Works independently of `ai_flares.enabled`. |
+| Dive engine boost and dash | `tactics.dive_boost: 1.0` | Dive steering remains. Works independently of `ai_flares.enabled`. |
 | Aim awareness (dodging hostile gun aim) | `tactics.aim_enabled: false` | Early fire remains independent and can still roll on its window clock unless `aim_fire_probability: 0.0`. |
-| Aim engine boost | `tactics.aim_boost: 1.0` | Aim steering remains. Works independently of `ai_flares.enabled`. |
+| Aim engine boost and dash | `tactics.aim_boost: 1.0` | Aim steering remains. Works independently of `ai_flares.enabled`. |
 | Early fire | `tactics.aim_fire_probability: 0.0` | Aim-awareness steering remains. |
 | Tactical carrier plane groups | `plane_group_per_launch: 1` | Restores stock one-at-a-time cadence; strategic and manual launch paths are unchanged. |
 | Zenith/missile dumping | `ai_missile_dump_chance: 0.0` | Restores vanilla launch timing for enemies and allies. Delay values do not disable dumping. |
@@ -122,12 +122,12 @@ removed; old `log_steering`, `log_hz`, `log_scan` and `log_scan_bodies` keys do 
 | `dive_range` | `600.0` | Uses player default `600.0`. | Maximum distance (units) at which a target above/below triggers dive avoidance (`100..3000`). |
 | `dive_dwell_s` | `0.5` | Uses player default `0.5`. | Seconds the target must stay in the vertical cone before rolling `dive_chance` (`0..30`). |
 | `dive_cooldown_s` | `2.0` | Uses player default `2.0`. | Pause in seconds after a dive sidestep (or declined roll) before the next roll (`0..120`). |
-| `dive_boost` | `2.0` | Uses player default `2.0`. | Engine boost multiplier while dive-dodging (`1.0..4.0`). Independent of `ai_flares.enabled`. |
+| `dive_boost` | `2.0` | Uses player default `2.0`. | Engine boost multiplier while dive-dodging (`1.0..4.0`). Above `1.0` the ship also dashes along the sidestep: both engine banks and the swivel servos are aimed at the dodge direction and floored at this strength, bypassing the stock velocity controller's speed target. `1.0` disables both. Independent of `ai_flares.enabled`. |
 | `aim_enabled` | `true` | Uses player default `true`. | Universal aim awareness: during each ship's staggered awareness window, it checks all hostile shooters (player and AI) and slips off the closest active aim ray crossing it. |
 | `aim_chance` | `0.75` | Uses player default `0.75`. | Chance (`0.0..1.0`), rolled once per awareness window when a hostile aim ray crosses the ship, that it dodges for that window. Prevents endless synchronized juking in AI-vs-AI fights. |
 | `aim_range` | `1800.0` | Uses player default `1800.0`. | Maximum distance (units) along a hostile shooter's aim ray at which a ship reacts (`100..5000`). |
 | `aim_tolerance` | `200.0` | Uses player default `200.0`. | Maximum perpendicular miss distance (units) from a hostile aim ray that counts as aiming at the ship (`10..2000`). |
-| `aim_boost` | `2.0` | Uses player default `2.0`. | Engine boost multiplier while dodging an aim ray (`1.0..4.0`). Independent of `ai_flares.enabled`. |
+| `aim_boost` | `2.0` | Uses player default `2.0`. | Engine boost multiplier while dodging an aim ray (`1.0..4.0`). Above `1.0` the ship also dashes along the slip direction with both banks and the swivel servos aimed there, bypassing the stock velocity controller's speed target. `1.0` disables both. Independent of `ai_flares.enabled`. |
 | `aim_require_fire` | `true` | Uses player default `true`. | Only dodge hostile aim rays from firing shooters. Player button state is sampled at 20 Hz with a 0.6 s hold-over, not confirmed shot detection; brief clicks can be missed. AI detection uses gun rate timers and burst latches. |
 | `aim_fire_probability` | `0.5` | Uses player default `0.5`. | Offensive early-fire chance (`0.0` = off), once per awareness window in range. Since v0.10.12 grants group-0 range permission for `aim_fire_s` (1 s), retaining native barrel alignment, friendly-fire, ammunition and burst-start checks. No fire-byte writes. Native latched bursts may continue past the permission and bypass later checks; friendly fire is not impossible. |
 | `aim_fire_range` | `1.6` | Uses player default `1.6`. | Early-fire range limit (`0.5..4.0`) times the native group-0 gun reach, measured against the native predicted aim-point distance. Does not restrict ordinary stock fire or affect group 1. |

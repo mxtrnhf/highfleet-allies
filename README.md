@@ -13,7 +13,7 @@ Both are optional, independent DLLs. Everything is reverse-engineered, so **Stea
 > **UPGRADING TO PACK v0.14.15 / hf_ai v0.10.11+ — UPDATE YOUR `hf_ai.json`!**
 > Replace your old `Modloader/config/hf_ai.json` with the new one in the release pack (or delete your old `hf_ai.json` so fresh defaults are generated). `hf_ai v0.10.11` slims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering.
 
-Source now includes **hf_ai v0.10.12** ([corrective changelog](ai/CHANGELOG.md)); no new release pack has been published for it.
+Source now includes **hf_ai v0.10.13** ([changelog](ai/CHANGELOG.md)); no new release pack has been published for it.
 
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).

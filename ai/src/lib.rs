@@ -185,12 +185,17 @@ unsafe fn apply_steering_overrides(creature: usize) {
     // (returns None at once when ai_flares is off: its runtime is never created then)
     let panic = ai_flares::panic_waypoint(creature, now, tactic_waypoint, ship).filter(|(x, y)| x.is_finite() && y.is_finite());
     let chosen = panic.or(tactic);
+    let mut stored = None;
     if let Some((x, y)) = chosen {
         if x.is_finite() && y.is_finite() {
             STEER_BUFFER[0].store(x.to_bits(), Ordering::Relaxed);
             STEER_BUFFER[1].store(y.to_bits(), Ordering::Relaxed);
+            stored = Some((x, y));
         }
     }
+    // The engine hook dashes along the direction the tick is actually given, panic override included.
+    let escape = stored.and_then(|(x, y)| tactics_math::normalized(x - ship.0, y - ship.1));
+    tactics::set_escape(creature, now, escape);
 }
 
 /// `mov rax, imm64` of the scratch buffer's address.

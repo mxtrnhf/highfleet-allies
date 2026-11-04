@@ -5,8 +5,10 @@
 //! Coordinates are the game's: **y points down** (landed ships sit at y +165..+400, airborne fights run up to y -2000).
 //! "Down" is therefore +y, the ground is at large +y, and "up" is -y.
 
-/// Length of the waypoint vector, exactly like the stock AI's (it is not known whether the length feeds thrust).
-pub const WAYPOINT_LEN: f32 = 200.0;
+/// Length of the tactic waypoint vector. The stock AI uses 200, but the AI tick's throttle is
+/// `clamp(sqrt(distance + 0.1) / 20, 0, 1)` (`0x140064b2a..0x140064b79`), which only saturates at 400:
+/// a 400-unit waypoint therefore asks for the full `25 * battle TWR` target speed instead of 71 % of it.
+pub const WAYPOINT_LEN: f32 = 400.0;
 /// A blended direction shorter than this (stock unit vector + weighted tactic) means the two nearly cancel: stock.
 pub const MIN_BLEND_LEN: f32 = 0.2;
 /// The game clock moving forward by more than this between two calls (or backwards at all) means a new battle.
@@ -300,7 +302,7 @@ fn satisfies(d: (f32, f32), l: &Limits) -> bool {
         && l.min_y.map_or(true, |m| d.1 >= m - EPS)
 }
 
-/// `ship + 200 * normalize(stock_unit + w * tactic)`, with the safety limits applied to the FINAL direction (the
+/// `ship + WAYPOINT_LEN * normalize(stock_unit + w * tactic)`, with the safety limits applied to the FINAL direction (the
 /// normalization of a partly opposing sum can be more downward or outward than either input). `None` when the two
 /// nearly cancel, when a limit cannot be met (corner conflicts) or on any non-finite value: the caller leaves stock.
 pub fn compose(ship: (f32, f32), stock_vec: (f32, f32), tactic: (f32, f32), w: f32, bounds: &Bounds, p: &TacticsParams) -> Option<(f32, f32)> {

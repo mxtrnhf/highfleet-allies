@@ -53,8 +53,18 @@ static GATE_LOGS: AtomicU32 = AtomicU32::new(0);
 /// `dive_boost` as f32 bits (1.0 = none).
 static DIVE_BOOST: AtomicU32 = AtomicU32::new(0x3f80_0000);
 static AIM_BOOST: AtomicU32 = AtomicU32::new(0x3f80_0000);
-/// Ships whose dodge boost is valid until the given game time. Written by `decide`, read by the engine-command hook.
-static BOOSTED: Mutex<Vec<(usize, f64, f32)>> = Mutex::new(Vec::new());
+/// A running dodge boost: the factor, and the world direction to dash in (`None` = strength only, e.g. a
+/// flare-curtain retreat). Written by `decide`, read by the engine-command hook.
+#[derive(Clone, Copy)]
+struct Boost {
+    creature: usize,
+    /// The decision tick that wrote this entry (a later stage may re-point it in the same tick).
+    noted_at: f64,
+    until: f64,
+    factor: f32,
+    escape: Option<(f32, f32)>,
+}
+static BOOSTED: Mutex<Vec<Boost>> = Mutex::new(Vec::new());
 /// The player's aim: two adjacent f32, a world-aligned direction (y not flipped), magnitude up to 100 (measured: points
 /// at the target within ~3 deg while firing, see hf_notes findings/ai-telemetry.md).
 const AIM_ADDRESS: usize = 0x1_403c_0dc8;
@@ -63,10 +73,14 @@ const MIN_AIM_LEN: f32 = 5.0;
 /// How long one `dive` decision keeps the boost on (the engine commands go out right after the steering in the same tick).
 const BOOST_HOLD_S: f64 = 0.3;
 
-/// Boost factor the engine-command hook applies to `creature` at `now` because of a dodge (1.0 = none).
-pub fn dodge_boost_for(creature: usize, now: f64) -> f32 {
-    let Ok(list) = BOOSTED.try_lock() else { return 1.0 };
-    list.iter().filter(|&&(c, until, _)| c == creature && now <= until).map(|&(_, _, factor)| factor).fold(1.0, f32::max)
+/// Boost factor and dash direction the engine-command hook applies to `creature` at `now` (`1.0` / `None` = none).
+pub fn dodge_boost_for(creature: usize, now: f64) -> (f32, Option<(f32, f32)>) {
+    let Ok(list) = BOOSTED.try_lock() else { return (1.0, None) };
+    list.iter()
+        .filter(|entry| entry.creature == creature && now <= entry.until)
+        .fold((1.0, None), |best, entry| {
+            if entry.factor > best.0 { (entry.factor, entry.escape) } else { best }
+        })
 }
 
 /// Whether the engine hook must be installed for the dodge boost.
@@ -82,11 +96,27 @@ pub fn clamp_to_arena(waypoint: (f32, f32), ship: (f32, f32)) -> (f32, f32) {
     tm::clamp_waypoint(waypoint, ship, &bounds)
 }
 
-fn note_boost(creature: usize, now: f64, factor: f32) {
+/// Drops the chase boost of `creature` (the panic stage owns the engines from now on).
+fn clear_boost(creature: usize) {
     let Ok(mut list) = BOOSTED.try_lock() else { return };
-    list.retain(|&(c, until, _)| c != creature && until >= now - 5.0 && until <= now + 5.0);
+    list.retain(|entry| entry.creature != creature);
+}
+
+fn note_boost(creature: usize, now: f64, factor: f32, escape: Option<(f32, f32)>) {
+    let Ok(mut list) = BOOSTED.try_lock() else { return };
+    list.retain(|entry| entry.creature != creature && entry.until >= now - 5.0 && entry.until <= now + 5.0);
     if factor > 1.0 {
-        list.push((creature, now + BOOST_HOLD_S, factor));
+        list.push(Boost { creature, noted_at: now, until: now + BOOST_HOLD_S, factor, escape });
+    }
+}
+
+/// Re-points a running boost at the waypoint the steering hook actually stores. The panic stage runs after
+/// `decide` and can override the tactic's waypoint (curtain retreat, missile evasion), so the engine hook must
+/// dash along the final choice, not the tactic's.
+pub fn set_escape(creature: usize, now: f64, escape: Option<(f32, f32)>) {
+    let Ok(mut list) = BOOSTED.try_lock() else { return };
+    if let Some(entry) = list.iter_mut().rev().find(|entry| entry.creature == creature && entry.noted_at == now) {
+        entry.escape = escape;
     }
 }
 
@@ -354,9 +384,11 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
     // The panic query takes the ai_flares lock; it is called before ours and the two are never held together.
     let is_panicking = panicking();
     if is_panicking {
+        clear_boost(ctx.creature);
         if let Ok(mut guard) = WORLD.try_lock() {
             if let Some(entry) = guard.as_mut().and_then(|w| w.ships.get_mut(&ctx.creature)) {
                 entry.fire_until = 0.0;
+                entry.boosting = false;
             }
         }
         return (None, State::Panic);
@@ -467,6 +499,7 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
             }
         }
     }
+    let waypoint = step.waypoint.filter(|(x, y)| x.is_finite() && y.is_finite());
     let factor = match step.state {
         State::DiveDodge => f32::from_bits(DIVE_BOOST.load(Ordering::Relaxed)),
         State::Aim => f32::from_bits(AIM_BOOST.load(Ordering::Relaxed)),
@@ -474,7 +507,9 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
     };
     if factor > 1.0 || entry.boosting {
         entry.boosting = factor > 1.0;
-        note_boost(ctx.creature, now, factor);
+        // The engine hook dashes along the waypoint the tick is about to store, not the stock direction.
+        let escape = waypoint.and_then(|(x, y)| tm::normalized(x - ctx.ship.0, y - ctx.ship.1));
+        note_boost(ctx.creature, now, factor, escape);
     }
-    (step.waypoint.filter(|(x, y)| x.is_finite() && y.is_finite()), step.state)
+    (waypoint, step.state)
 }

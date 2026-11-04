@@ -17,6 +17,18 @@ dive_boost=2.0, aim_boost=2.0). Keeping an old hf_ai.json will feed stale
 values into the new AI.
 ===============================================================================
 
+SOURCE FOLLOW-UP: hf_ai v0.10.13 (no new release pack published yet)
+- Dive/aim dodges and the boosted panic evasion now dash: both engine banks and
+  the swivel servos are aimed along the manoeuvre's escape direction at the
+  boost, bypassing the stock AI's velocity controller and its
+  throttle x 25 x battle TWR speed target.
+- Tactic waypoints are 400 units (the throttle saturation point), so the same
+  dodge asks for the full target speed instead of 71 percent of it.
+- panic_boost 1.0 now really disables the panic boost even when the shared
+  engine hook is installed for tactics.
+- Static-engine ships rely on the force-command projection; the dash is
+  strongest on swivel-engine designs. In-game combat validation remains pending.
+
 SOURCE FOLLOW-UP: hf_ai v0.10.12 (no new release pack published yet)
 - Early fire widens only the native group-0 range gate; no player fire-byte
   writes. Native alignment, friendly-fire, ammo and burst-start checks remain.

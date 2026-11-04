@@ -1,5 +1,28 @@
 # hf_ai changelog
 
+## v0.10.13 — dodge and panic escapes actually dash
+
+- Tactics waypoints are now 400 units (`tactics_math::WAYPOINT_LEN`). The stock AI tick's
+  throttle is `clamp(sqrt(distance + 0.1) / 20, 0, 1)`, which saturates at 400, so the same
+  dodge now asks for the full `25 * battle TWR` target speed instead of 71 % of it. This
+  affects dive and aim dodges (and the panic waypoint, which reuses the tactic course length).
+- Dive/aim boosts and the boosted panic evasion now dash instead of only raising the command
+  strength. The engine hook points both banks' `0x66`/`0x67` force angles and the
+  `0x64`/`0x65` servo angles along the manoeuvre's escape direction and floors the strength
+  at the boost. The stock AI's velocity controller (`s * 25 * TWR`, with braking at the
+  target speed) is bypassed for the duration, so the ship can actually outrun its own speed
+  target the way a player holding Shift does. A boost of `1.0` still disables the boost and
+  the dash; the flare-curtain retreat has no published direction and keeps the strength-only
+  raise.
+- `panic_boost` is only applied when it is above `1.0`, so `panic_boost: 1.0` really is off
+  even when the shared engine hook is installed for tactics.
+- Panic trace gains `ESCAPE` (`boost`, `dir`, strength before/after) next to `BOOST`/`SPIN`.
+
+Validation: Windows release cross-build passes. In-game validation is required: check that
+dive/aim dodges cover more ground and that static-engine ships still thrust sensibly (the
+dash aims the force commands; only swivel engines physically turn to that angle). No new
+regression tests were authorized.
+
 ## v0.10.12 — corrective follow-up (not published as a release)
 
 - Replace forced player-fire-byte bursts with a byte-validated detour of the native

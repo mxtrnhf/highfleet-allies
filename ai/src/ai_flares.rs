@@ -24,7 +24,8 @@
 //!    and on success starts a burst of `burst_seconds`, followed by `min_interval_seconds` of quiet.
 //!
 //! While a panic runs the ship also evades. The AI tick (`0x140062f90`) ends its steering by
-//! storing a desired waypoint, 200 units from the ship along the wanted direction, at
+//! storing a desired waypoint, 200 units from the ship along the wanted direction (the tactic
+//! override uses 400, see `tactics_math::WAYPOINT_LEN`), at
 //! `creature + 0xbf0/0xbf4` (`movss [r14+0xbf0], xmm9` at `0x140064a8d`; `xmm9/xmm10` = waypoint
 //! x/y, `xmm12/xmm14` = ship x/y), and then steers to it. A second hook there pulls that wanted
 //! direction towards a sidestep perpendicular to the missile's line of approach, with some
@@ -35,9 +36,17 @@
 //! A *panic evasion* (a dice roll when the panic starts) also boosts the engines. The player's
 //! Shift key sets `creature + 0xba8` to 2.0, and the player control code copies it into the
 //! strength field (`+4`) of the engine commands `0x66` and `0x67`. The AI tick builds the same
-//! commands on its stack (`rbp + 0x28` and `rbp + 0x48`, 0x20 bytes apart, strength at `+4`,
-//! limited to 1.0), so a third hook at `0x140065744`, just before they are sent to the engines,
-//! raises the strength to the configured boost.
+//! commands on its stack (`rbp + 0x28` and `rbp + 0x48`, 0x20 bytes apart, strength at `+4`), so a
+//! third hook at `0x140065744`, just before they are sent to the engines, can rewrite them.
+//!
+//! Raising the strength is not enough to make an AI ship *run*: the tick's force law is a velocity
+//! controller whose target speed is `clamp(sqrt(distance to waypoint + 0.1) / 20, 0, 1) * 25 * TWR`
+//! (`0x140064b2a..0x140064b7e`), and it brakes as soon as the ship reaches it. Every boost therefore
+//! also carries the direction the manoeuvre steers along (the tactic waypoint, or the committed
+//! panic flight direction), and both banks' `0x66`/`0x67` angles and `0x64`/`0x65` servo angles are
+//! pointed there with the strength floored at the boost: the stock controller is bypassed and the
+//! ship dashes like a player holding Shift. The flare-curtain retreat has no such direction and
+//! raises the strength only.
 //!
 //! Each launcher still obeys its own rate and ammunition gates inside the release routine, so a
 //! burst drops about one flare per launcher per launcher interval.
@@ -550,7 +559,7 @@ fn trace(runtime: &Runtime, now: f64, creature: usize, event: &str, detail: std:
                     "# hf_ai v{} ai_flares trace. t = game clock, ship = creature pointer. \
                      START = a panic began (mode flares/evade/panic/roll, side = +1/-1 of the missile's line of approach, boost = engine factor), \
                      EXTEND = a locked-on missile still inside the range, IGNORED = reaction roll failed, END = panic over, \
-                     FLIGHT = panic evasion committed to a direction, STEER = waypoint replaced (stock -> new), BOOST/SPIN = engine commands changed, CURTAIN_START/DROP/EXTEND/END = the pre-emptive flare curtain.",
+                     FLIGHT = panic evasion committed to a direction, STEER = waypoint replaced (stock -> new), BOOST/SPIN = engine commands changed, ESCAPE = both banks aimed along the escape direction at the boost, CURTAIN_START/DROP/EXTEND/END = the pre-emptive flare curtain.",
                     env!("CARGO_PKG_VERSION")
                 );
                 *guard = Some(file);
@@ -1299,14 +1308,15 @@ unsafe fn engine_commands(creature: usize, command: *mut f32) {
         let mut ships = lock_ships();
         ships.by_creature.get_mut(&creature).and_then(|ship| {
             let (barrel_roll, side) = panic_math::engine_mode(ship, now)?;
+            let flight = ship.flight;
             let trace_engine = runtime.config.log_panic && now - ship.trace_last_engine >= TRACE_PERIOD;
             if trace_engine {
                 ship.trace_last_engine = now;
             }
-            Some((barrel_roll, side, trace_engine))
+            Some((barrel_roll, side, flight, trace_engine))
         })
     };
-    let Some((barrel_roll, side, trace_engine)) = mode else {
+    let Some((barrel_roll, side, flight, trace_engine)) = mode else {
         apply_dodge_boost(creature, command, now);
         return;
     };
@@ -1325,32 +1335,53 @@ unsafe fn engine_commands(creature: usize, command: *mut f32) {
         }
         return;
     }
-    let mut changed = [(0.0f32, 0.0f32); 2];
-    for (slot, offset) in [COMMAND_STRENGTH, COMMAND_NEXT_STRENGTH].into_iter().enumerate() {
-        let strength = command.byte_add(offset);
-        let current = strength.read_unaligned();
-        if let Some(boosted) = panic_math::boosted_strength(current, boost) {
-            strength.write_unaligned(boosted);
-            changed[slot] = (current, boosted);
+    if boost > 1.0 {
+        if let Some(dir) = flight {
+            if let Some(changed) = write_escape(command, dir, boost) {
+                if trace_engine {
+                    trace(
+                        runtime,
+                        now,
+                        creature,
+                        "ESCAPE",
+                        format_args!(
+                            "boost={boost} dir={:.3},{:.3} strength0={:.2}->{:.2} strength1={:.2}->{:.2}",
+                            dir.0, dir.1, changed[0].0, changed[0].1, changed[1].0, changed[1].1
+                        ),
+                    );
+                }
+                return;
+            }
         }
-    }
-    if trace_engine {
-        trace(
-            runtime,
-            now,
-            creature,
-            "BOOST",
-            format_args!(
-                "boost={boost} strength0={:.2}->{:.2} strength1={:.2}->{:.2}",
-                changed[0].0, changed[0].1, changed[1].0, changed[1].1
-            ),
-        );
+        let mut changed = [(0.0f32, 0.0f32); 2];
+        for (slot, offset) in [COMMAND_STRENGTH, COMMAND_NEXT_STRENGTH].into_iter().enumerate() {
+            let strength = command.byte_add(offset);
+            let current = strength.read_unaligned();
+            if let Some(boosted) = panic_math::boosted_strength(current, boost) {
+                strength.write_unaligned(boosted);
+                changed[slot] = (current, boosted);
+            }
+        }
+        if trace_engine {
+            trace(
+                runtime,
+                now,
+                creature,
+                "BOOST",
+                format_args!(
+                    "boost={boost} strength0={:.2}->{:.2} strength1={:.2}->{:.2}",
+                    changed[0].0, changed[0].1, changed[1].0, changed[1].1
+                ),
+            );
+        }
     }
 }
 
-/// The tactics' aim/dive boost and the flare-curtain retreat boost: the same strength raise as the panic boost, no roll.
+/// The tactics' aim/dive boost and the flare-curtain retreat boost. A dodge publishes the direction it steers
+/// along: both engine banks are then pointed there and floored at the boost (a real run, not just a stronger
+/// command inside the stock velocity controller). Without a direction the command strengths are raised only.
 unsafe fn apply_dodge_boost(creature: usize, command: *mut f32, now: f64) {
-    let mut boost = crate::tactics::dodge_boost_for(creature, now);
+    let (mut boost, escape) = crate::tactics::dodge_boost_for(creature, now);
     if let Some(runtime) = RUNTIME.get().filter(|_| is_ai(creature)) {
         if runtime.config.launch_flares_boost > 1.0
             && lock_ships().curtains.get(&creature).is_some_and(|c| c.is_active(now) && c.boost_until >= now)
@@ -1361,12 +1392,54 @@ unsafe fn apply_dodge_boost(creature: usize, command: *mut f32, now: f64) {
     if boost <= 1.0 {
         return;
     }
+    if let Some(dir) = escape {
+        if write_escape(command, dir, boost).is_some() {
+            return;
+        }
+    }
     for offset in [COMMAND_STRENGTH, COMMAND_NEXT_STRENGTH] {
         let strength = command.byte_add(offset);
         if let Some(boosted) = panic_math::boosted_strength(strength.read_unaligned(), boost) {
             strength.write_unaligned(boosted);
         }
     }
+}
+
+/// Sets the four engine-command angles in one go: the two force commands (`0x66` at `+0x10`,
+/// `0x67` at `+0x30`) and the two swivel-servo commands (`0x64` at `-0x3c`, `0x65` at `-0x1c`).
+unsafe fn write_engine_angles(command: *mut f32, first: f32, second: f32) {
+    for (offset, angle) in [
+        (COMMAND_ANGLE as isize, first),
+        (COMMAND_NEXT_ANGLE as isize, second),
+        (COMMAND_PREV2_ANGLE, first),
+        (COMMAND_PREV_ANGLE, second),
+    ] {
+        command.byte_offset(offset).write_unaligned(angle);
+    }
+}
+
+/// Command angle for a world push direction `(x, y)`: a part at world angle `a` pushes `(sin a, -cos a)`
+/// (`Engine_ApplyThrustForce`), so `a = atan2(x, -y)`. Wrapped to `[0, 2pi)`, the range the AI tick uses.
+fn direction_angle(direction: (f32, f32)) -> Option<f32> {
+    let (x, y) = crate::tactics_math::normalized(direction.0, direction.1)?;
+    let angle = x.atan2(-y);
+    Some(if angle < 0.0 { angle + std::f32::consts::TAU } else { angle })
+}
+
+/// Dashes both engine banks along `direction` at `strength`: the player's Shift with the stick held.
+/// This bypasses the stock AI's velocity controller and its `s * 25 * TWR` speed target, which no
+/// command-strength raise can exceed. Returns the strengths before and after, `None` = direction unusable.
+unsafe fn write_escape(command: *mut f32, direction: (f32, f32), strength: f32) -> Option<[(f32, f32); 2]> {
+    let angle = direction_angle(direction)?;
+    write_engine_angles(command, angle, angle);
+    let mut changed = [(0.0f32, 0.0f32); 2];
+    for (slot, offset) in [COMMAND_STRENGTH, COMMAND_NEXT_STRENGTH].into_iter().enumerate() {
+        let field = command.byte_add(offset);
+        let current = field.read_unaligned();
+        field.write_unaligned(strength);
+        changed[slot] = (current, strength);
+    }
+    Some(changed)
 }
 
 /// What the player's Q or E with Shift does: the two engine groups (the `0x66`/`0x64` and the
@@ -1389,14 +1462,7 @@ unsafe fn spin(
     let heading: f32 = rd(body + BODY_HEADING)?;
     let (first, second) = panic_math::spin_angles(heading, side)?;
 
-    for (offset, angle) in [
-        (COMMAND_ANGLE as isize, first),
-        (COMMAND_NEXT_ANGLE as isize, second),
-        (COMMAND_PREV2_ANGLE, first),
-        (COMMAND_PREV_ANGLE, second),
-    ] {
-        command.byte_offset(offset).write_unaligned(angle);
-    }
+    write_engine_angles(command, first, second);
     for offset in [COMMAND_STRENGTH, COMMAND_NEXT_STRENGTH] {
         command.byte_add(offset).write_unaligned(boost);
     }

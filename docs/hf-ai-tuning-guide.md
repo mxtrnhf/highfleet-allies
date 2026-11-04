@@ -1,7 +1,7 @@
-# Tuning hf_ai: a plain-language guide (source: v0.10.12)
+# Tuning hf_ai: a plain-language guide (source: v0.10.13)
 
 > **IMPORTANT — UPDATE YOUR `Modloader/config/hf_ai.json` WHEN UPGRADING TO v0.10.11+**
-> When upgrading from before v0.10.11, replace your old `Modloader/config/hf_ai.json` with the new preset (or delete it so the mod generates fresh defaults). `v0.10.11` trims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering. v0.10.12 keeps that preset unchanged; no new release pack is published for this follow-up.
+> When upgrading from before v0.10.11, replace your old `Modloader/config/hf_ai.json` with the new preset (or delete it so the mod generates fresh defaults). `v0.10.11` trims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering. v0.10.12 and v0.10.13 keep that preset unchanged; no new release pack is published for these follow-ups.
 
 Written for the person who tunes the AI, not for the person who reads the code. Every setting below is a key in `Modloader/config/hf_ai.json`; the full key reference (including retired/internal keys) is in [hf-ai-config-reference.md](hf-ai-config-reference.md).
 
@@ -18,7 +18,7 @@ Yes, with two clarifications:
 2. **TWR gate.** Top-level `twr_cutoff` (default `2.0`) checks live strategic/Shipworks TWR (`creature +0x160c`, before UI rounding). Ships below the cutoff do not use tactical dodges or missile evasion maneuvers, though they can still drop flares. `0.0` disables the TWR gate.
 3. **Priority order** (first match wins): **missile panic / curtain** > **aim dodge** > **dive avoidance** > **stock**.
 4. **Steering composition.** The active maneuver blends its unit direction with the stock direction, then clamps against the ground (`ground_y`, `ground_clearance`, `ground_hard_y`) and arena walls (`edge_margin`).
-5. **Engine boost.** Maneuvers with a boost above `1.0` (`panic_boost`, `launch_flares_boost`, `dive_boost`, `aim_boost`) raise the AI's engine thrust commands like holding Shift. Since v0.10.11, the engine-boost hook is installed whenever *any* boost is enabled, so `tactics` boosts work even if `ai_flares.enabled` is `false`.
+5. **Engine boost and escape dash.** Maneuvers with a boost above `1.0` (`panic_boost`, `launch_flares_boost`, `dive_boost`, `aim_boost`) raise the AI's engine thrust commands like holding Shift. Since v0.10.13, dive/aim dodges and the boosted panic evasion also dash: both engine banks and the swivel servos are aimed along the manoeuvre's escape direction at the boost, which bypasses the stock AI's velocity controller. That controller brakes at a target speed of `throttle x 25 x battle TWR`, so a strength raise alone cannot make an AI ship outrun it. The flare-curtain retreat has no published direction and keeps the strength-only raise. Since v0.10.11, the engine-boost hook is installed whenever *any* boost is enabled, so `tactics` boosts work even if `ai_flares.enabled` is `false`.
 
 ## 3. The states and what each knob does
 
@@ -39,7 +39,7 @@ When the opposing side launches a missile, eligible AI ships schedule a pre-empt
 
 ### 3.3 Dive avoidance ("deny the dive", `tactics.dive_*`)
 If a ship's target stays within 45° of straight below (`dive_under: true`) or straight above (`dive_over: true`), closer than `dive_range` (`600.0`), for `dive_dwell_s` (`0.5` s), the ship rolls `dive_chance` (`0.8`):
-* **Success (`DIVE`):** Sidesteps horizontally (picking the wrong-foot direction against a fast-moving target, or away from a nearby arena wall) while pulling toward the target's altitude, boosted by `dive_boost` (`2.0`), for `1.5..3.0` s, followed by `dive_cooldown_s` (`2.0` s).
+* **Success (`DIVE`):** Sidesteps horizontally (picking the wrong-foot direction against a fast-moving target, or away from a nearby arena wall) while pulling toward the target's altitude, dashing along that sidestep at `dive_boost` (`2.0`), for `1.5..3.0` s, followed by `dive_cooldown_s` (`2.0` s).
 * **Declined (`DIVE-SKIP`):** Since v0.10.11, a failed roll pauses for `dive_cooldown_s` (`2.0` s) and then re-evaluates if the target is still hovering in the cone, instead of latching off forever.
 
 ### 3.4 Universal aim dodging & offensive early fire (`tactics.aim_*`)
