@@ -42,10 +42,12 @@ player profile and is not a vanilla/off configuration.
   inside the stock velocity controller. The tactic waypoint is 400 units, which
   saturates the AI tick's `25 x battle TWR` target-speed throttle.
 - **Missile defense (`ai_flares`):** locked-on threats trigger flare bursts and
-  evasion; stray threats trigger evasion only. Preventive flare curtains use a
-  one-time ETA estimate minus 4 s, clamped to a 1–8 s wait, checking `launch_flares_min_rack` before
-  every drop and retreating within `launch_flares_evade_range`. Ships without
-  flare launchers still evade missiles in all three stages.
+  evasion; stray threats trigger evasion only. A boosted panic evasion dashes
+  along its committed escape direction at `panic_boost`. Preventive flare
+  curtains use a one-time ETA estimate minus 4 s, clamped to a 1–8 s wait,
+  checking `launch_flares_min_rack` before every drop and retreating within
+  `launch_flares_evade_range`. Ships without flare launchers still evade
+  missiles in all three stages.
 - **Zenith bursts (`ai_missile_dump_*`):** enemy and allied AI ships can empty
   their Zenith racks in a rapid burst instead of waiting for the stock 2 s cooldown.
 - **Tactical carrier groups:** `plane_group_per_launch` and

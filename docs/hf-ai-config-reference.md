@@ -49,7 +49,7 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Curtain engine boost | `ai_flares.launch_flares_boost: 1.0` | Curtain drops and retreat remain. |
 | Barrel rolls | `ai_flares.barrel_roll_probability: 0.0` | Plain and boosted panic evasion remain. |
 | Boosted/full-steering panic evasion | `ai_flares.panic_evasion_probability: 0.0` | Plain evasion and barrel rolls remain. |
-| Panic/roll engine boost | `ai_flares.panic_boost: 1.0` | Steering and roll angles remain. |
+| Panic/roll boost and dash | `ai_flares.panic_boost: 1.0` | Steering and roll angles remain. |
 | Both dive directions | `tactics.dive_enabled: false` | Aim awareness and early fire remain. |
 | Dive-under only | `tactics.dive_under: false` | Dive-over remains. |
 | Dive-over only | `tactics.dive_over: false` | Dive-under remains. |
@@ -94,9 +94,9 @@ removed; old `log_steering`, `log_hz`, `log_scan` and `log_scan_bodies` keys do 
 | `evade` | `true` | Uses player default `true`. | Makes the ship also manoeuvre while it panics or runs a curtain. With `false` it only drops flares. Ships without flare launchers still evade when `evade` is `true`. |
 | `evasion_seconds` | `3.0` | Uses player default `3.0`. | How long, in seconds, the evasive manoeuvre lasts, extended by 1 s while a locked missile stays in range (`0.05..60`). |
 | `evasion_strength` | `0.5` | Uses player default `0.5`. | How much of the ship's course plain evasion takes over (`0.0..1.0`). |
-| `panic_evasion_probability` | `0.1` | Uses player default `0.1`. | Chance, rolled once when a panic starts, that the evasion is a full-takeover boosted *panic evasion* (`0.0..1.0`). |
+| `panic_evasion_probability` | `0.1` | Uses player default `0.1`. | Chance, rolled once when a panic starts, that the evasion is a full-takeover dashing *panic evasion* (`0.0..1.0`). |
 | `panic_evasion_seconds` | `5.0` | Uses player default `5.0`. | Duration of a panic evasion in seconds, extended by 2.5 s at a time (`0.05..60`). |
-| `panic_boost` | `2.0` | Uses player default `2.0`. | Engine strength multiplier during a panic evasion or barrel roll (`1.0..4.0`). |
+| `panic_boost` | `2.0` | Uses player default `2.0`. | Engine strength multiplier during a panic evasion or barrel roll (`1.0..4.0`). Above `1.0` a panic evasion also dashes along its committed escape direction (both engine banks and swivel servos aimed there); `1.0` disables the strength raise and the dash. |
 | `barrel_roll_probability` | `0.001` | Uses player default `0.001`. | Chance, rolled once when a panic starts, that the ship does a panic spin instead of evading (`0.0..1.0`). |
 | `barrel_roll_seconds` | `2.0` | Uses player default `2.0`. | Duration of a barrel roll in seconds (`0.05..60`). |
 | `stray_missiles` | `true` | Uses player default `true`. | Reacts (evasion only, no flare burst) when an unguided/other-target missile's trajectory passes close to the ship. |

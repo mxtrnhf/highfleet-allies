@@ -51,7 +51,7 @@ When **hf_ai v0.10.9 or newer** is loaded, a second line shows its own per-ship 
 | `AI AIM` | aim-awareness sidestep (or its early-fire window) |
 | `AI FLARES` | an ai_flares flare burst is running |
 | `AI EVADE` | missile evasion is steering the ship |
-| `AI PANIC` | panic evasion (boosted, full steering takeover) |
+| `AI PANIC` | panic evasion (dash at `panic_boost`, full steering takeover) |
 | `AI ROLL` | barrel-roll evasion |
 | `AI CURTAIN` | the pre-emptive flare curtain is running |
 

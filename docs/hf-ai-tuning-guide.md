@@ -28,7 +28,7 @@ Triggers when a missile locked onto the ship comes within `trigger_range` (`400.
 * Checked 10 times per second, rolling `reaction_probability` (`0.6`).
 * Drops flares for `burst_seconds` (`1.5` s, ~10 flares per launcher), then enforces `min_interval_seconds` (`1.5` s) of cooldown after the panic ends.
 * With `evade: true`, the ship steers sideways/upward away from the missile's approach line for `evasion_seconds` (`3.0` s) with blend `evasion_strength` (`0.5`). Ships **without** flare launchers still execute full evasion maneuvers.
-* Rolled once per panic: `panic_evasion_probability` (`0.1`) triggers a full-course escape at `panic_boost` (`2.0`) for `panic_evasion_seconds` (`5.0` s); `barrel_roll_probability` (`0.001`) triggers a `barrel_roll_seconds` (`2.0` s) spin.
+* Rolled once per panic: `panic_evasion_probability` (`0.1`) triggers a full-course escape: one committed direction, full thrust along it at `panic_boost` (`2.0`), for `panic_evasion_seconds` (`5.0` s). `barrel_roll_probability` (`0.001`) triggers a `barrel_roll_seconds` (`2.0` s) spin.
 
 ### 3.2 Preventive flare curtain (`launch_flares_*` in `ai_flares`)
 When the opposing side launches a missile, eligible AI ships schedule a pre-emptive flare curtain before the missile locks on:
@@ -49,6 +49,7 @@ Reworked in v0.10.11 so **all sides dodge each other's gun aim**:
 * **Multiple shooters:** If both you and an ally (or multiple enemies) aim at the same ship within `aim_range` (`1800.0`) and `aim_tolerance` (`200.0`), it dodges the **closest active shooter's** ray.
 * **Firing check (`aim_require_fire: true`):** Player fire-button state is sampled at 20 Hz and held for `0.6` s after a firing sample. This is not confirmed shot detection; very brief clicks can be missed. AI shooting detection checks active gun rate timers and burst latches.
 * **Anti-juking roll (`aim_chance: 0.75`):** Rolled once per awareness window when a hostile ray crosses the ship, so AI-vs-AI fights don't become endless 100% juking matches.
+* **Dodge dash (`aim_boost: 2.0`):** While the slip is active the ship aims both engine banks and the swivel servos along the slip direction at `aim_boost`, so it dashes out of the line instead of only pushing harder inside the AI's speed controller. `1.0` turns the dash off.
 * **Offensive early fire (`aim_fire_probability: 0.5`, `aim_fire_range: 1.6`):** Once per awareness window in range, the ship rolls for 1 s of widened **group-0 range permission**. Since v0.10.12, the native weapon controller still requires actual barrel alignment (0.025 radians), its friendly-fire gate, ammunition and normal burst-start eligibility. The native predicted aim-point distance must be within `1.6x` group-0 reach; group 1 and ordinary stock fire are unchanged. No player fire byte is written. **This is not a friendly-fire guarantee:** native already-latched bursts bypass later alignment/corridor checks and may continue past the permission window. Permission is rejected for stale identities, control handoffs, lost/changed targets or stale steering.
 
 ## 4. Ally support (`v0.10.11`)
