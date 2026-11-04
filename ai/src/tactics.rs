@@ -476,11 +476,18 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
             );
         }
     }
+    // Dive denial is an air-to-air sidestep, not a ground attack. A landed or
+    // taking-off target must not pull the defender onto its altitude. Passing no
+    // dive target also cancels an already-running dive; early fire keeps `target`.
+    let dive_target = target.filter(|(_, creature)| {
+        // SAFETY: page-checked scalar mode read from the validated target creature.
+        (unsafe { rd::<i32>(*creature + OFF_MODE) }) == Some(1)
+    });
     let step = tm::step(
         p,
         &mut entry.st,
         &bounds,
-        &StepInput { now, aim, ship: ctx.ship, wanted: ctx.wanted, target: target.map(|(pos, _)| pos) },
+        &StepInput { now, aim, ship: ctx.ship, wanted: ctx.wanted, target: dive_target.map(|(pos, _)| pos) },
         &mut entry.rng,
     );
     // Grant range permission only. The native weapon controller owns firing and burst latches.
@@ -502,10 +509,18 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
         }
     }
     let waypoint = step.waypoint.filter(|(x, y)| x.is_finite() && y.is_finite());
-    let factor = match step.state {
+    let requested_factor = match step.state {
         State::DiveDodge => f32::from_bits(DIVE_BOOST.load(Ordering::Relaxed)),
         State::Aim => f32::from_bits(AIM_BOOST.load(Ordering::Relaxed)),
         _ => 1.0,
+    };
+    // A level dash cannot arrest existing downward momentum: it overwrites the
+    // native controller's braking/lift commands. Leave those commands untouched
+    // near the tactical floor, and never boost a failed waypoint composition.
+    let factor = if waypoint.is_some() && ctx.ship.1 < p.ground_safe_y() {
+        requested_factor
+    } else {
+        1.0
     };
     if factor > 1.0 || entry.boosting {
         entry.boosting = factor > 1.0;

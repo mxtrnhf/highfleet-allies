@@ -167,15 +167,15 @@ The keys below were removed from the default `hf_ai.json` preset in v0.10.11 to 
 | `ai_flares.stray_missile_eta_s` | `3.0` | Maximum time to closest approach (s) for stray-missile evasion (`0.2..20`). |
 | `ai_flares.stray_missile_range` | `1200.0` | Maximum distance (units) for stray-missile evasion (`100..10000`). |
 | `tactics.ground_y` | `200.0` | Ground reference y (y grows downward) (`-5000..5000`). |
-| `tactics.ground_clearance` | `450.0` | Clearance above `ground_y` below which tactics do not add downward steering (`0..5000`). |
-| `tactics.ground_hard_y` | `120.0` | Hard floor y below which tactics never steer downward (`-5000..5000`). |
+| `tactics.ground_clearance` | `450.0` | Clearance above `ground_y` retained across the full tactical waypoint (`0..5000`). Since v0.10.15, at/below the resulting floor, tactical boosts/dashes stop and upward native avoidance is retained. Fixed reference, not terrain sampling. |
+| `tactics.ground_hard_y` | `120.0` | Additional hard floor y (`-5000..5000`): the effective tactical floor is `min(ground_y - ground_clearance, ground_hard_y)`. |
 | `tactics.edge_margin` | `300.0` | Margin (units) from arena edges within which tactics do not add outward steering (`0..3000`). |
 | `tactics.dive_cone_deg` | `45.0` | Half-angle (degrees) around straight up/down for dive detection (`5..85`). |
 | `tactics.dive_min_s` | `1.5` | Shortest dive sidestep duration (s) (`0.2..30`). |
 | `tactics.dive_max_s` | `3.0` | Longest dive sidestep duration (s) (`dive_min_s..60`). |
 | `tactics.dive_weight` | `8.0` | Steering blend weight of the dive sidestep relative to the unit stock direction (`0..20`). |
 | `tactics.dive_wrongfoot_speed` | `40.0` | Target horizontal speed (u/s) above which the sidestep goes against the target's motion (`0..1000`). |
-| `tactics.dive_level_weight` | `0.7` | Vertical pull toward the target's altitude mixed into the dive sidestep (`0..3`). |
+| `tactics.dive_level_weight` | `0.7` | Vertical pull toward the airborne target's altitude mixed into the dive sidestep (`0..3`), constrained by the tactical floor. Since v0.10.15 landed/taking-off targets do not trigger dive denial. |
 | `tactics.aim_window_s` | `1.5` | Length (s) of each per-ship awareness window (`0.1..30`). |
 | `tactics.aim_gap_min_s` | `2.5` | Shortest start-to-start interval (s) between awareness windows (`aim_window_s..120`). |
 | `tactics.aim_gap_max_s` | `3.5` | Longest start-to-start interval (s) between awareness windows (`aim_gap_min_s..300`). |

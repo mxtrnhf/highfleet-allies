@@ -1,5 +1,20 @@
 # hf_ai changelog
 
+## v0.10.15 — stop dive-denial chasing landed targets
+
+- Dive denial now requires an airborne combat target (mode 1). Landed,
+  taking-off or unreadable target modes cancel an existing dive as well as
+  preventing a new one. Aim defense and early fire remain available.
+- Tactical waypoint composition preserves the configured ground-clearance
+  floor across the entire 400-unit course. Below it, tactics cannot add descent
+  or weaken an upward native avoidance direction.
+- Disable tactical boost/dash at or below that floor, restoring native engine
+  braking instead of applying horizontal thrust while downward momentum persists.
+  A failed waypoint composition no longer activates a tactical boost.
+- No preset changes. This is a conservative fixed-reference guard, not terrain
+  sampling or a guarantee against every stock-AI ground collision. Missile panic
+  and flare-curtain maneuvers are unchanged. In-game validation pending.
+
 ## v0.10.14 — shared highfleet-rs layouts
 
 - Add `highfleet-rs` at the merged `05c6207` revision. The Creature, Body,

@@ -1,4 +1,4 @@
-# hf_ai v0.10.14
+# hf_ai v0.10.15
 
 > **IMPORTANT — UPDATE YOUR `Modloader/config/hf_ai.json`!**
 > When upgrading from before `hf_ai v0.10.11`, replace your existing `Modloader/config/hf_ai.json` with the tracked preset (or delete it so the mod writes fresh defaults). `v0.10.11` trims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires curtain sheltering. The preset is unchanged through v0.10.14; these follow-ups are not published release packs.
@@ -36,11 +36,16 @@ player profile and is not a vanilla/off configuration.
   checks, so this does not guarantee avoiding friendly fire. Group 1 is unchanged.
 - **Dive avoidance (`tactics.dive_*`):** sidesteps when its target stays above
   or below it for `dive_dwell_s`, retrying after `dive_cooldown_s` if a roll is
-  declined. Aim dodging takes priority over dive avoidance. With `dive_boost` /
+  declined. Since v0.10.15, only airborne combat targets qualify; landed and
+  taking-off targets cancel the dive instead of pulling the ship toward the ground.
+  Aim dodging takes priority over dive avoidance. With `dive_boost` /
   `aim_boost` above `1.0` the ship dashes along the dodge direction (both engine
   banks and swivel servos aimed there at the boost) instead of only pushing harder
   inside the stock velocity controller. The tactic waypoint is 400 units, which
   saturates the AI tick's `25 x battle TWR` target-speed throttle.
+  Tactical courses retain the configured ground clearance; near that floor,
+  tactical boosts/dashes stop so native braking and lift retain engine control.
+  This is not terrain-aware protection for stock or missile-panic movement.
 - **Missile defense (`ai_flares`):** locked-on threats trigger flare bursts and
   evasion; stray threats trigger evasion only. A boosted panic evasion dashes
   along its committed escape direction at `panic_boost`. Preventive flare
@@ -72,7 +77,7 @@ cargo xwin build --release --locked --no-default-features --target x86_64-pc-win
 Use one hf_ai DLL at a time. Keep the QoL flare crash fix enabled. A separate
 QoL `ai_flares` implementation must be off because it patches the same sites.
 
-See [CHANGELOG.md](CHANGELOG.md) for v0.10.14 (shared highfleet-rs layouts), v0.10.13 changes and v0.10.12 corrections. Cross-building is not
+See [CHANGELOG.md](CHANGELOG.md) for v0.10.15 (landed-target and tactical ground guards), v0.10.14 (shared highfleet-rs layouts), v0.10.13 changes and v0.10.12 corrections. Cross-building is not
 combat validation; in-game validation remains pending. Existing host math harnesses
 contain zero tests. Page checks and Rust `catch_unwind` do not catch native access violations.
 

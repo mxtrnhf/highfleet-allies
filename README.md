@@ -10,11 +10,11 @@ Two mods for **HighFleet (Steam 1.163)**, built on [logdot's Highfleet-Modloader
 
 Both are optional, independent DLLs. Everything is reverse-engineered, so **Steam 1.163 only**; they refuse to start on other versions. Back up your `Saves` folder first.
 
-> **UPGRADING TO PACK v0.14.16 — CONFIG COMPATIBILITY**
-> **From v0.14.15:** no config changes are required; the `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
+> **UPGRADING TO PACK v0.14.17 — CONFIG COMPATIBILITY**
+> **From v0.14.15 or v0.14.16:** no config changes are required; the `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
 > **From v0.14.13 or older:** replace your old `Modloader/config/hf_ai.json` with the new one in the release pack (or delete your old `hf_ai.json` so fresh defaults are generated). `hf_ai v0.10.11` slims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering.
 
-Release pack **v0.14.16** contains **hf_ally v0.14.16** and **hf_ai v0.10.14** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)).
+Release pack **v0.14.17** contains **hf_ally v0.14.16** (unchanged) and **hf_ai v0.10.15** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). This quick hotfix stops dive denial chasing landed targets into a calculated ground slam (expert move).
 
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).

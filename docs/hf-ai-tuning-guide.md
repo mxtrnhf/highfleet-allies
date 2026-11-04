@@ -39,7 +39,7 @@ When the opposing side launches a missile, eligible AI ships schedule a pre-empt
 
 ### 3.3 Dive avoidance ("deny the dive", `tactics.dive_*`)
 If a ship's target stays within 45° of straight below (`dive_under: true`) or straight above (`dive_over: true`), closer than `dive_range` (`600.0`), for `dive_dwell_s` (`0.5` s), the ship rolls `dive_chance` (`0.8`):
-* **Success (`DIVE`):** Sidesteps horizontally (picking the wrong-foot direction against a fast-moving target, or away from a nearby arena wall) while pulling toward the target's altitude, dashing along that sidestep at `dive_boost` (`2.0`), for `1.5..3.0` s, followed by `dive_cooldown_s` (`2.0` s).
+* **Success (`DIVE`):** Sidesteps horizontally (picking the wrong-foot direction against a fast-moving target, or away from a nearby arena wall) while pulling toward the target's altitude, dashing along that sidestep at `dive_boost` (`2.0`), for `1.5..3.0` s, followed by `dive_cooldown_s` (`2.0` s). Since v0.10.15, the target must be in airborne combat mode; a landed/taking-off target cancels an existing dive too. Tactical courses cannot descend past `min(ground_y - ground_clearance, ground_hard_y)`. At/below that floor, tactical boosts/dashes stop to preserve native braking/lift. The floor is a fixed reference, not terrain sampling; stock and missile-panic movement are not protected by this guard.
 * **Declined (`DIVE-SKIP`):** Since v0.10.11, a failed roll pauses for `dive_cooldown_s` (`2.0` s) and then re-evaluates if the target is still hovering in the cone, instead of latching off forever.
 
 ### 3.4 Universal aim dodging & offensive early fire (`tactics.aim_*`)

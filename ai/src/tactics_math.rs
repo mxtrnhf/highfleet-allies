@@ -39,7 +39,7 @@ pub struct TacticsParams {
     pub allies: bool,
     /// Ground reference in game y (y grows downward). The ground itself varies with x; see `ground_clearance`.
     pub ground_y: f32,
-    /// Closer than this above `ground_y` (ship.y > ground_y - ground_clearance) no downward component is added.
+    /// Clearance above `ground_y` retained by tactical waypoints and direct dashes.
     pub ground_clearance: f32,
     /// Below this y (ship.y larger = lower; the ground is about +250) no tactic may steer downward at all, whatever the
     /// stock direction does (enemies were seen following the player into the ground).
@@ -133,6 +133,13 @@ impl Default for TacticsParams {
             aim_fire_s: 1.0,
             aim_fire_range: 1.6,
         }
+    }
+}
+
+impl TacticsParams {
+    /// Conservative tactical floor, not a sample of the terrain at the ship's x.
+    pub fn ground_safe_y(&self) -> f32 {
+        (self.ground_y - self.ground_clearance).min(self.ground_hard_y)
     }
 }
 
@@ -283,12 +290,16 @@ struct Limits {
 }
 
 fn limits(ship: (f32, f32), stock: (f32, f32), bounds: &Bounds, p: &TacticsParams) -> Limits {
-    // Never more downward (+y) than the stock direction, and never downward at all if stock is level or up.
-    let max_y = if ship.1 > p.ground_hard_y {
-        Some(0.0)
+    // Limit the whole 400-unit course, not only the direction at the current position.
+    // Below the floor, forbid descent even when stock also points down. Retain upward
+    // native avoidance rather than flattening it to a horizontal tactical course.
+    let safe_y = p.ground_safe_y();
+    let floor_limit = ((safe_y - ship.1) / WAYPOINT_LEN).clamp(0.0, 1.0);
+    let max_y = Some(if ship.1 >= safe_y {
+        stock.1.min(0.0)
     } else {
-        (ship.1 > p.ground_y - p.ground_clearance).then(|| stock.1.max(0.0))
-    };
+        floor_limit
+    });
     let max_x = (ship.0 > bounds.xmax - p.edge_margin).then(|| stock.0.max(0.0));
     let min_x = (ship.0 < bounds.xmin + p.edge_margin).then(|| stock.0.min(0.0));
     let min_y = (ship.1 < bounds.ymin + p.edge_margin).then(|| stock.1.min(0.0));
