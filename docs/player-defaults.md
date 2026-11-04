@@ -1,15 +1,13 @@
-# Player defaults — release pack v0.14.15
+# Player defaults — release pack v0.14.16
 
-> **IMPORTANT — UPDATE YOUR `Modloader/config/hf_ai.json`!**
-> When upgrading to pack v0.14.15 (`hf_ai v0.10.11`), replace your old `Modloader/config/hf_ai.json` with the new preset from the pack (or delete your old `hf_ai.json` so `hf_ai` generates a fresh copy).
+> **Config compatibility.** Updating from v0.14.15 needs no config changes; the preset is unchanged since `hf_ai v0.10.11`. When upgrading from v0.14.13 or older, replace your old `Modloader/config/hf_ai.json` with the preset from the pack (or delete your old `hf_ai.json` so `hf_ai` generates a fresh copy).
 
-The tracked player default profiles for `hf_ally v0.14.15` and `hf_ai v0.10.11` live in:
+The tracked player default profiles for `hf_ally v0.14.16` and `hf_ai v0.10.14` live in:
 
 - [ally/config/ally.json](../ally/config/ally.json)
 - [ai/config/hf_ai.json](../ai/config/hf_ai.json)
 
-The source-only hf_ally v0.14.16 and hf_ai v0.10.12 through v0.10.14
-follow-ups use the same presets; they are not new published packs. See the
+The v0.14.16 release uses the same presets as v0.14.15. See the
 [ally changelog](../ally/CHANGELOG.md) and [ai changelog](../ai/CHANGELOG.md).
 
 The release pack copies these files unchanged. Compiled defaults use the same
@@ -21,7 +19,7 @@ guides to disable specific behavior.
 
 ## Profile highlights
 
-Allies (`hf_ally v0.14.15`): up to four wingmen, 1.5 s arrival delay, eight enemies,
+Allies (`hf_ally v0.14.16`): up to four wingmen, 1.5 s arrival delay, eight enemies,
 vanilla three-ship waves, K-13/loadout buttons on, ally ship panels and ally target
 boxes on (`ally_reticle_scale: 0.6`), ship switching on, ally ship bombers on,
 bomb/rocket and AA attack delays of 1 s, and fuel retreat at 30%. The Sprint
@@ -47,6 +45,6 @@ Update the tracked preset and corresponding Rust defaults together.
 
 Build the three DLLs with `cargo xwin build --release --locked --no-default-features
 --target x86_64-pc-windows-msvc` in `ally/`, `ai/` and `qol/`. Commit the source and
-presets, then run `python3 tools/package_release.py --version 0.14.15 --output
+presets, then run `python3 tools/package_release.py --version 0.14.16 --output
 ../release_packs`. The packager checks a clean tracked source tree and includes a
 manifest with the source commit, versions and per-file SHA256 hashes.

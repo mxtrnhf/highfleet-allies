@@ -10,10 +10,11 @@ Two mods for **HighFleet (Steam 1.163)**, built on [logdot's Highfleet-Modloader
 
 Both are optional, independent DLLs. Everything is reverse-engineered, so **Steam 1.163 only**; they refuse to start on other versions. Back up your `Saves` folder first.
 
-> **UPGRADING TO PACK v0.14.15 / hf_ai v0.10.11+ — UPDATE YOUR `hf_ai.json`!**
-> Replace your old `Modloader/config/hf_ai.json` with the new one in the release pack (or delete your old `hf_ai.json` so fresh defaults are generated). `hf_ai v0.10.11` slims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering.
+> **UPGRADING TO PACK v0.14.16 — CONFIG COMPATIBILITY**
+> **From v0.14.15:** no config changes are required; the `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
+> **From v0.14.13 or older:** replace your old `Modloader/config/hf_ai.json` with the new one in the release pack (or delete your old `hf_ai.json` so fresh defaults are generated). `hf_ai v0.10.11` slims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering.
 
-Source now includes **hf_ally v0.14.16** and **hf_ai v0.10.14** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)); no new release pack has been published for them.
+Release pack **v0.14.16** contains **hf_ally v0.14.16** and **hf_ai v0.10.14** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)).
 
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).
