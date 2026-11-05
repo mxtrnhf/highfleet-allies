@@ -501,15 +501,19 @@ static LAST_SIG: Mutex<(usize, u8, u32, u32, usize)> = Mutex::new((0, 0, 0, 0, 0
 const SCENE_SELECTOR: usize = 0x1_47fc_6fc4; // u32
 const SCENE_FLAGS: [usize; 3] = [0x1_47fc_6fd0, 0x1_47fc_6fda, 0x1_43a1_1902];
 
-// --- radio sounds (v0.10.0) ---
+// --- sounds: radio lines (v0.10.0) and pre-combat button clicks ---
 // `playSFXSound_` (0x1402e30e0) is what the stock battle radio (`PlayRadioSounds_`, 0x1402d5910) ends in; the call
-// below repeats its last call exactly: kind 0xb (radio), the sound resource name from `Media/Snd/sound.res`, the
-// global GUI node, 60.0, then the stack arguments 1.0, a status float it writes into, and zeros.
+// below repeats its last call exactly: kind 0xb, the sound resource name from `Media/Snd/sound.res`, the global GUI
+// node, a base volume, then the stack arguments 1.0, a status float it writes into, and zeros.
 const PLAY_SFX: usize = 0x1_402e_30e0;
 const PLAY_SFX_PROLOGUE: [u8; 15] = [0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18];
-const SFX_KIND_RADIO: i32 = 0xb;
+/// Kind 0xb: the stock radio and the ClickFunc UI sounds all play through it.
+const SFX_KIND_STOCK: i32 = 0xb;
 type PlaySfxFn = unsafe extern "C" fn(i32, *const u8, usize, f32, f32, *mut f32, u64, u8, i32, u8, u8, f32, u8) -> f32;
-static SOUNDS: AtomicBool = AtomicBool::new(false);
+/// Ally radio lines: the retreat key, an ally joining the fight, an ally destroyed.
+static RADIO_SOUNDS: AtomicBool = AtomicBool::new(false);
+/// Pre-combat ALLY and plane-loadout button clicks (independent of `ally_sounds`).
+static BUTTON_SOUNDS: AtomicBool = AtomicBool::new(false);
 /// The game keeps the pointer it is given (sound object +0x88) and, every frame, multiplies the sound's volume by
 /// the float behind it (the stock radio stores the call's result, 1.0, there): 1.0f here, or the sound is silent.
 static SFX_STATUS: [AtomicU32; 8] = [const { AtomicU32::new(0x3f80_0000) }; 8];
@@ -521,12 +525,13 @@ const SND_DANGER: &[u8] = b"mission_danger_01\0";
 const SND_LOST: [&[u8]; 2] = [b"radio_stall_01\0", b"radio_lost_energy_01\0"];
 const SND_RETREATED: [&[u8]; 3] = [b"mission_end_01\0", b"mission_end_02\0", b"mission_end_03\0"];
 const SND_JOIN: [&[u8]; 3] = [b"mission_start_01\0", b"mission_start_02\0", b"mission_start_03\0"];
+/// Stock `Media/Snd/button_01.wav`, named `button_01` in `sound.res`. The game itself plays it as a UI click in
+/// `Map_BuildMissileMarkers` (`0x1401c4ee0`), with kind 0xb and base volume 30.0.
+const SND_BUTTON: &[u8] = b"button_01\0";
+const BUTTON_VOLUME: f32 = 30.0;
 
-/// Plays a radio sound by its `sound.res` name (NUL-terminated); `what` is for the log.
-unsafe fn play_radio(name: &[u8], what: &str) {
-    if !SOUNDS.load(Ordering::Relaxed) {
-        return;
-    }
+/// Plays one sound by its `sound.res` name (NUL-terminated); `what` is for the log.
+unsafe fn play_sfx(name: &[u8], volume: f32, what: &str) {
     let node: usize = read(GUI_ROOT);
     if node == 0 {
         log::info!("ALLY sound ({what}) skipped: no global node yet");
@@ -535,8 +540,22 @@ unsafe fn play_radio(name: &[u8], what: &str) {
     let slot = &SFX_STATUS[SFX_NEXT.fetch_add(1, Ordering::Relaxed) as usize % SFX_STATUS.len()];
     slot.store(0x3f80_0000, Ordering::Relaxed);
     let play: PlaySfxFn = std::mem::transmute(PLAY_SFX);
-    let result = play(SFX_KIND_RADIO, name.as_ptr(), node, 60.0, 1.0, slot.as_ptr() as *mut f32, 0, 0, 0, 0, 0, 0.0, 1);
+    let result = play(SFX_KIND_STOCK, name.as_ptr(), node, volume, 1.0, slot.as_ptr() as *mut f32, 0, 0, 0, 0, 0, 0.0, 1);
     log::info!("ALLY sound ({what}) {} -> {result}", String::from_utf8_lossy(&name[..name.len() - 1]));
+}
+
+/// Plays a radio sound by its `sound.res` name.
+unsafe fn play_radio(name: &[u8], what: &str) {
+    if RADIO_SOUNDS.load(Ordering::Relaxed) {
+        play_sfx(name, 60.0, what);
+    }
+}
+
+/// Plays the stock UI click for one of our pre-combat buttons.
+unsafe fn play_button_sound(what: &str) {
+    if BUTTON_SOUNDS.load(Ordering::Relaxed) {
+        play_sfx(SND_BUTTON, BUTTON_VOLUME, what);
+    }
 }
 
 /// A cheap pick in 0..n (no rand crate): the clock's nanoseconds.
@@ -2615,6 +2634,7 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
             if let Some(ship) = ship {
                 let next = plane_loadouts::next_choice(ship, craft);
                 plane_loadouts::set_choice(ship, craft, next);
+                play_button_sound("plane loadout button");
                 // the state changed: retarget the button's existing sprite (no new Sprite per click)
                 if !paint_loadout(gui as *mut u8, ship, craft) {
                     set_gui_active(gui, false);
@@ -2643,6 +2663,7 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
         if !paint_toggle(gui as *mut u8, slot) {
             set_gui_active(gui, false);
         }
+        play_button_sound("ally toggle button");
         toggle_line(format!("ALLY toggle clicked: ship {slot} {}", if mask & (1 << slot) != 0 { "ON" } else { "OFF" }));
     }
     true
@@ -3481,12 +3502,16 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         ));
     }
 
-    if config.ally_sounds && config.spawn_ally {
+    let radio_sounds = config.ally_sounds && config.spawn_ally;
+    // The ALLY toggle and plane-loadout buttons only exist when the pre-combat toggle is enabled.
+    let button_sounds = config.ally_toggle && config.spawn_ally;
+    if radio_sounds || button_sounds {
         let found = std::slice::from_raw_parts(PLAY_SFX as *const u8, PLAY_SFX_PROLOGUE.len());
         if found == PLAY_SFX_PROLOGUE {
-            SOUNDS.store(true, Ordering::Relaxed);
+            RADIO_SOUNDS.store(radio_sounds, Ordering::Relaxed);
+            BUTTON_SOUNDS.store(button_sounds, Ordering::Relaxed);
         } else {
-            log::warn!("hf_ally: playSFXSound_ bytes differ ({found:02x?}), ally sounds off");
+            log::warn!("hf_ally: playSFXSound_ bytes differ ({found:02x?}), ally and button sounds off");
         }
     }
 
