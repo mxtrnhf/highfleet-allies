@@ -19,6 +19,7 @@
   "max_allies": 2,
   "ship_switching": true,
   "spare_prizes": true,
+  "ally_zenith_autofire": true,
   "ally_bombers": false,
   "intercept_ignore_oids": [
     "MDL_MISSILE_03"

@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use crate::bomber_math::{Flight, Phase, Run, PULL_OUT_S, RELEASE_HEIGHT};
 use crate::diag::rd;
 use crate::native_layout::{Body, Creature, Link, Node};
-use crate::{plausible, PatchSession, ReturnType, Trampoline};
+use crate::{plausible, tracked_ally, PatchSession, ReturnType, Trampoline};
 
 // After hf_ai's waypoint hook: an armed bomber keeps its course instead of evading missiles.
 const WAYPOINT_SITE: usize = 0x1_4006_4a96;
@@ -52,8 +52,6 @@ const RELEASE_BYTES: [u8; 5] = [0xe8, 0x66, 0x05, 0xff, 0xff];
 const STOCK_RELEASE: usize = 0x1_4006_c480;
 const DETACH_BOMB: usize = 0x1_4002_e7d0;
 const FIRE_FLARE: usize = 0x1_4002_eed0;
-const MISSILE_LAUNCH: usize = 0x1_4002_ff60;
-const MISSILE_BYTES: [u8; 5] = [0x48, 0x89, 0x5c, 0x24, 0x10];
 const WORLD_POSITION: usize = 0x1_4004_8b60;
 const PREDICT_HIT: usize = 0x1_401b_5420;
 const FRAME_RATE: usize = 0x1_403c_0de4;
@@ -132,13 +130,6 @@ struct Entry {
     recovery_target: ((f32, f32), f32),
     /// A salvo started during the post-pull-out grace; release the rest without re-diving.
     releasing: bool,
-}
-
-fn tracked_ally(ship: usize) -> bool {
-    crate::ARMED.load(Ordering::Relaxed)
-        && crate::ALLIES
-            .try_lock()
-            .is_ok_and(|allies| allies.contains(&ship))
 }
 
 unsafe fn boost_available(ship: usize) -> bool {
@@ -954,35 +945,32 @@ unsafe extern "C" fn on_release(ship: usize) {
     }
 }
 
-/// Guard the native launch entry rather than hf_ai's patched call site, covering its burst
-/// wrapper too. Player/enemy/non-bomber launches retain the original function unchanged.
-unsafe extern "C" fn block_missile(launcher: usize) -> u8 {
-    catch_unwind(AssertUnwindSafe(|| {
-        let Some(ship) = rd::<usize>(launcher + OFF_OWNER).filter(|ship| plausible(*ship)) else {
-            return 0;
-        };
-        if FAILED.load(Ordering::Relaxed) || !tracked_ally(ship) {
-            return 0;
-        }
-        let Some((target, flight)) = flight(ship) else {
-            return 0;
-        };
-        let Ok(mut runs) = RUNS.try_lock() else {
-            return 1;
-        };
-        let Some(entry) = runs.iter_mut().find(|entry| entry.ship == ship) else {
-            return 0;
-        };
-        if !owns_course(entry, target, flight.now) {
-            return 0;
-        }
-        if !entry.missile_block_logged {
-            entry.missile_block_logged = true;
-            log::info!("ALLY bomber: c={ship:#x} missile launch blocked during bomber control");
-        }
-        1
-    }))
-    .unwrap_or(1)
+/// True when an active bomber course owns this ship's steering and must suppress its native
+/// ship-missile launches. Fails closed when the run table cannot be locked.
+///
+/// # Safety
+/// `ship` must be the live owner read from a launcher during the native launch call.
+pub unsafe fn blocks_launch(ship: usize) -> bool {
+    if FAILED.load(Ordering::Relaxed) || !tracked_ally(ship) {
+        return false;
+    }
+    let Some((target, flight)) = flight(ship) else {
+        return false;
+    };
+    let Ok(mut runs) = RUNS.try_lock() else {
+        return true;
+    };
+    let Some(entry) = runs.iter_mut().find(|entry| entry.ship == ship) else {
+        return false;
+    };
+    if !owns_course(entry, target, flight.now) {
+        return false;
+    }
+    if !entry.missile_block_logged {
+        entry.missile_block_logged = true;
+        log::info!("ALLY bomber: c={ship:#x} missile launch blocked during bomber control");
+    }
+    true
 }
 
 /// Install only on the supported executable; the caller owns/commits the patch session.
@@ -995,7 +983,6 @@ pub unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
         (ENGINE_SITE, &ENGINE_BYTES[..]),
         (FINAL_ENGINE_SITE, &FINAL_ENGINE_BYTES[..]),
         (RELEASE_SITE, &RELEASE_BYTES[..]),
-        (MISSILE_LAUNCH, &MISSILE_BYTES[..]),
         (crate::SET_LINK, &crate::SET_LINK_PROLOGUE[..]),
         (
             PREDICT_HIT,
@@ -1092,18 +1079,6 @@ pub unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
     release.absolute_jump(RELEASE_SITE + RELEASE_BYTES.len());
     session
         .detour_trampoline(RELEASE_SITE, RELEASE_BYTES.len(), release)
-        .map_err(|error| error.to_string())?;
-    let mut missile = Trampoline::new();
-    // Function-entry RSP is 8 mod 16; preserved_call expects an aligned inline site.
-    missile.bytes(&[0x48, 0x83, 0xec, 0x08]);
-    missile.preserved_call(block_missile as *const (), &[], &[], ReturnType::Rax);
-    missile.bytes(&[0x48, 0x83, 0xc4, 0x08]);
-    // test al,al; jz replay; xor eax,eax; ret (native launch returns false).
-    missile.bytes(&[0x84, 0xc0, 0x74, 0x03, 0x31, 0xc0, 0xc3]);
-    missile.bytes(&MISSILE_BYTES);
-    missile.absolute_jump(MISSILE_LAUNCH + MISSILE_BYTES.len());
-    session
-        .detour_trampoline(MISSILE_LAUNCH, MISSILE_BYTES.len(), missile)
         .map_err(|error| error.to_string())?;
     log::info!("hf_ally: ally ship bombers enabled (matched swivel/thrust controls, native aimed 0.05s salvo, no speed/height/timer gate, forward pull-up; landed non-prize targets only)");
     Ok(())

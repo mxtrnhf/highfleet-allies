@@ -43,6 +43,7 @@ mod debug_state;
 mod diag;
 mod intercept;
 mod max_enemy;
+mod missile_guard;
 mod native_layout;
 mod plane_loadouts;
 mod dead_node;
@@ -253,6 +254,10 @@ struct Config {
     /// Allies never keep a prize ship (the ships the player may capture and sell after the battle: the game flags
     /// them at creature +0xc19) as a target: they pick another enemy, or hold fire when only prizes are left.
     spare_prizes: bool,
+    /// Let AI-run allies launch their own ship missiles (the native Zenith launch path). False = an ally
+    /// controlled by the AI holds its missile racks; the ship you fly can still launch manually.
+    /// Needs `spawn_ally`. Ship bombers always suppress launches during a bombing course.
+    ally_zenith_autofire: bool,
     /// Governed dive, native-aimed whole-payload release and pull-out for bomb-carrying allies.
     ally_bombers: bool,
     /// SIDE PATCH (not in master). `m_oid`s the AI never treats as a strategic launch to intercept in the missile-vs-ship
@@ -314,6 +319,7 @@ impl Default for Config {
             retreat_key: 0x77,
             ally_toggle: true,
             spare_prizes: true,
+            ally_zenith_autofire: true,
             ally_bombers: false,
             intercept_ignore_oids: vec!["MDL_MISSILE_03".to_string()],
             logging: LoggingConfig::default(),
@@ -1047,6 +1053,10 @@ static SLOT_MASK: AtomicU32 = AtomicU32::new(1 << 2);
 static USED_MASK: AtomicU32 = AtomicU32::new(0);
 static MAX_ALLIES: AtomicU32 = AtomicU32::new(1);
 static ALLIES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+/// Whether `ship` is an ally this mod deployed and still tracks in the current battle.
+fn tracked_ally(ship: usize) -> bool {
+    ARMED.load(Ordering::Relaxed) && ALLIES.try_lock().is_ok_and(|allies| allies.contains(&ship))
+}
 static AMMO_ON: AtomicBool = AtomicBool::new(false);
 /// Allies that have had their ammunition doctrine rolled this battle.
 static AMMO_ROLLED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
@@ -3462,6 +3472,7 @@ unsafe extern "C" fn init() -> bool {
     PROBE_LINES.store(config.logging.probe_lines || diag::debug(), Ordering::Relaxed);
     MAX_ALLIES.store(config.max_allies.max(1), Ordering::Relaxed);
     AMMO_ON.store(config.ally_ai_ammo, Ordering::Relaxed);
+    missile_guard::set_autofire(config.ally_zenith_autofire);
     log::info!(
         "hf_ally v{} config: {}",
         env!("CARGO_PKG_VERSION"),
@@ -3692,8 +3703,14 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             SPARE_PRIZES.store(false, Ordering::Relaxed);
         }
     }
-    if config.ally_bombers && config.spawn_ally {
-        bomber::install(&mut session)?;
+    if config.spawn_ally {
+        let guard_missiles = config.ally_bombers || !config.ally_zenith_autofire;
+        if guard_missiles {
+            missile_guard::install(&mut session)?;
+        }
+        if config.ally_bombers {
+            bomber::install(&mut session)?;
+        }
     }
     // independent of spawn_ally: the filter applies to every AI ship, the enemy's included
     if let Err(error) = intercept::install(&mut session, &config.intercept_ignore_oids) {
