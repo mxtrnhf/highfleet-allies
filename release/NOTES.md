@@ -2,36 +2,35 @@
 
 For **HighFleet Steam 1.163**.
 
-> ## Config compatibility
-> **Updating from v0.14.15 or v0.14.16? No config changes are required.** The `hf_ai.json` preset is unchanged since hf_ai v0.10.11.
+> ## Minor update
+> This is a small ally-side follow-up to v0.14.17: pre-combat button click sounds and an optional Zenith hold-fire for AI allies. `hf_ai` and QoL are unchanged.
 >
-> **Updating from v0.14.13 or older?** Copy the new `Modloader/config/hf_ai.json` from this ZIP over your existing one (or delete it so the mod generates a fresh preset). The v0.10.11 preset trims `hf_ai.json` from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings (`dive_dwell_s: 0.5`, `dive_boost: 2.0`, `aim_boost: 2.0`, `launch_flares_evade_range: 400.0`), and retires flare-curtain sheltering. Keeping an older preset will override the tuned values with stale numbers.
+> ## Config compatibility
+> **Updating from v0.14.17:** merge the new `Modloader/config/ally.json` from this pack (or just add `"ally_zenith_autofire": true`). The pack's ally config is updated for this release: it carries the new Zenith key and keeps the existing button settings (the click sounds need no key of their own). An older config without the key keeps the vanilla default `true`. The `hf_ai.json` preset is unchanged since hf_ai v0.10.11.
+>
+> **Updating from v0.14.16 or older:** no separate `hf_ai.json` change is needed unless you come from v0.14.13 or older, where the hf_ai preset still has old dive/flare values: replace `Modloader/config/hf_ai.json` with the one in this pack (or delete it so the mod generates a fresh preset).
 
-## Why another update already?
+## Changes since v0.14.17
 
-**Fixed AI dive leading to calculated ground slam (expert move).**
+### `hf_ally v@ALLY_VERSION@` — pre-combat button click sounds
+- Clicking one of the pre-combat ALLY ship on/off buttons or a carrier plane-loadout button now plays the stock `Media/Snd/button_01.wav` click.
+- The sound plays only when a click actually changes the choice. Every other pre-combat control stays silent.
+- It uses the existing `ally_toggle` and `plane_loadouts` buttons and is independent of `ally_sounds`; no new config key is needed.
 
-Shortly after v0.14.16, a recording exposed dive denial trying to match the
-altitude of a landed enemy. Its direct engine dash also bypassed native braking:
-turning the requested direction horizontal did not remove downward momentum.
-That deserves a hotfix rather than waiting for the next feature release.
+### `hf_ally v@ALLY_VERSION@` — optional ally Zenith hold-fire
+- New `ally_zenith_autofire` in `ally.json` (default `true`, vanilla behaviour). Set it to `false` and AI-run allies no longer launch their own ship missiles (the native Zenith launch path).
+- The ship you fly keeps manual launches. Enemies, neutrals and player-flown ships are unaffected.
+- The guard sits on the native launch entry, so it also covers `hf_ai`'s missile-burst wrapper. Ship-bomber missile suppression shares the same guard.
 
-## Changes since v0.14.16
-
-### `hf_ai v@AI_VERSION@` — landed-target and tactical ground guards
-- Dive denial now requires an airborne combat target. Landed, taking-off or unreadable target modes cancel an existing dive as well as preventing a new one.
-- The entire tactical waypoint respects the configured ground-clearance floor; below it, tactics cannot add descent or weaken upward native avoidance.
-- Tactical boost/dash stops near that floor so native braking and lift retain engine control. Failed waypoint composition no longer activates a tactical boost.
-- Aim defense and early fire remain available against landed targets. No preset or config-key changes.
-- `hf_ally v@ALLY_VERSION@` and QoL source are unchanged from the previous pack.
-
-These are conservative fixed-reference guards, not terrain sampling or a guarantee
-against all stock-AI ground collisions. Missile-panic/flare-curtain maneuvers are unchanged.
+### Updated ally config
+- The pack's `Modloader/config/ally.json` gains the new `ally_zenith_autofire` key. Merge it into your existing config; an old config still loads and uses `true` for the missing key.
+- The button click sounds need no key: they follow the existing ALLY and plane-loadout buttons.
+- `Modloader/config/hf_ai.json` is unchanged.
 
 ### Validation
-- Windows release cross-build passes; this pack is built by GitHub Actions without diagnostic features.
-- Clippy completes with warnings; formatting checks report existing crate-wide differences.
-- Installed locally, but in-game validation of the fix remains pending. No new regression tests were added.
+- GitHub Actions builds all three Windows DLLs without diagnostic features.
+- The installed hf_ally v@ALLY_VERSION@ build was exercised by the maintainer; no automated regression tests were added.
+- In-game validation of the full release pack remains the player's responsibility.
 
 ## Pack contents
 
@@ -42,4 +41,4 @@ against all stock-AI ground collisions. Missile-panic/flare-curtain maneuvers ar
 1. Back up your `Saves` folder.
 2. Extract the pack into the folder containing `Highfleet.exe`.
 3. Remove any older `hf_ai_v*.dll` and `hf_ally_v*.dll` files from `Modloader/mods/` so only one of each DLL is present.
-4. If you are coming from v0.14.13 or older, make sure you overwrite `Modloader/config/hf_ai.json` with the new one from this pack.
+4. Merge the new `Modloader/config/ally.json` key into your existing config if you keep a custom profile.

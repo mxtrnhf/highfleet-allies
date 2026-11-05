@@ -1,13 +1,14 @@
-# Player defaults — release pack v0.14.16
+# Player defaults — release pack v0.14.18
 
-> **Config compatibility.** Updating from v0.14.15 needs no config changes; the preset is unchanged since `hf_ai v0.10.11`. When upgrading from v0.14.13 or older, replace your old `Modloader/config/hf_ai.json` with the preset from the pack (or delete your old `hf_ai.json` so `hf_ai` generates a fresh copy).
+> **Config compatibility.** Updating from v0.14.17: merge the new `Modloader/config/ally.json`, which adds `ally_zenith_autofire` (default `true`). The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`. When upgrading from v0.14.13 or older, replace your old `Modloader/config/hf_ai.json` with the preset from the pack (or delete your old `hf_ai.json` so `hf_ai` generates a fresh copy).
 
-The tracked player default profiles for `hf_ally v0.14.16` and `hf_ai v0.10.14` live in:
+The tracked player default profiles for `hf_ally v0.14.18` and `hf_ai v0.10.15` live in:
 
 - [ally/config/ally.json](../ally/config/ally.json)
 - [ai/config/hf_ai.json](../ai/config/hf_ai.json)
 
-The v0.14.16 release uses the same presets as v0.14.15. See the
+The v0.14.18 release uses the same `hf_ai.json` preset as v0.14.15 and later;
+`ally.json` gains the new `ally_zenith_autofire` key. See the
 [ally changelog](../ally/CHANGELOG.md) and [ai changelog](../ai/CHANGELOG.md).
 
 The release pack copies these files unchanged. Compiled defaults use the same
@@ -19,12 +20,13 @@ guides to disable specific behavior.
 
 ## Profile highlights
 
-Allies (`hf_ally v0.14.16`): up to four wingmen, 1.5 s arrival delay, eight enemies,
+Allies (`hf_ally v0.14.18`): up to two wingmen, 1.5 s arrival delay, eight enemies,
 vanilla three-ship waves, K-13/loadout buttons on, ally ship panels and ally target
-boxes on (`ally_reticle_scale: 0.6`), ship switching on, ally ship bombers on,
-bomb/rocket and AA attack delays of 1 s, and fuel retreat at 30%. The Sprint
-exception is `MDL_MISSILE_03`. Battle `debug_overlay` defaults to `false`. Runtime
-`logging.debug_log` is `true`; set it `false` for quieter play.
+boxes on (`ally_reticle_scale: 0.8`), ship switching on, ally ship bombers off,
+`ally_zenith_autofire` on (vanilla autonomous launches), bomb/rocket and AA attack
+delays of 1 s, and fuel retreat at 30%. The Sprint exception is `MDL_MISSILE_03`.
+Battle `debug_overlay` defaults to `false`. Runtime `logging.debug_log` is `true`;
+set it `false` for quieter play.
 
 AI (preset introduced in `hf_ai v0.10.11`): 48 gameplay settings plus `logging.log_panic`
 (49 total leaf settings). Flares, allied reactions, universal
@@ -45,6 +47,6 @@ Update the tracked preset and corresponding Rust defaults together.
 
 Build the three DLLs with `cargo xwin build --release --locked --no-default-features
 --target x86_64-pc-windows-msvc` in `ally/`, `ai/` and `qol/`. Commit the source and
-presets, then run `python3 tools/package_release.py --version 0.14.16 --output
+presets, then run `python3 tools/package_release.py --version 0.14.18 --output
 ../release_packs`. The packager checks a clean tracked source tree and includes a
 manifest with the source commit, versions and per-file SHA256 hashes.
