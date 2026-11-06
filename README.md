@@ -10,11 +10,11 @@ Two mods for **HighFleet (Steam 1.163)**, built on [logdot's Highfleet-Modloader
 
 Both are optional, independent DLLs. Everything is reverse-engineered, so **Steam 1.163 only**; they refuse to start on other versions. Back up your `Saves` folder first.
 
-> **UPGRADING TO PACK v0.14.20 — CONFIG CLEANUP**
-> **From v0.14.19:** `plane_bombers`, `marker_seam` and `marker_delay_ms` are retired and ignored; the preset now writes `ally_damage_color` as HEX (`"#00E4FF"`). The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
-> **From v0.14.18 or older:** replace the `logging` block in `Modloader/config/ally.json`. `logging.debug_log` defaults to `false`, `logging.debug_overlay` replaces the top-level key, and `max_lines`, `log_precombat`, `probe_lines`, `log_colors` and `dead_node` are retired. If you come from v0.14.13 or older, replace `Modloader/config/hf_ai.json` too (or delete it so fresh defaults are generated).
+> **UPGRADING TO PACK v0.14.21 — CONFIG GROUPING**
+> **From v0.14.20:** the ally preset is grouped by feature; values and behaviour are unchanged. `max_enemy_ships` is the total enemy list size, while `enemy_group_size` controls how many enemies are active at once. The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
+> **From v0.14.19 or older:** also apply the earlier cleanups: `plane_bombers`, `marker_seam` and `marker_delay_ms` are retired; `ally_damage_color` is HEX; `logging.debug_log` defaults to `false`, `logging.debug_overlay` replaces the top-level key, and the retired logging keys are ignored. If you come from v0.14.13 or older, replace `Modloader/config/hf_ai.json` too.
 
-Release pack **v0.14.20** contains **hf_ally v0.14.20** and **hf_ai v0.10.15** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). This is a config cleanup: retired diagnostics, the legacy global `plane_bombers` patch and the marker seam/delay keys were removed, and the preset uses HEX for the ally damage colour.
+Release pack **v0.14.21** contains **hf_ally v0.14.21** and **hf_ai v0.10.15** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). This is a config-organization update: the preset is grouped by feature, and the enemy-wave docs now distinguish total enemy list size from the number active at once.
 
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).

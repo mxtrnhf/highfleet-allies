@@ -225,6 +225,8 @@ struct Config {
     enabled: bool,
     /// Bring the next ship of the fleet into the battle as an AI wingman.
     spawn_ally: bool,
+    /// Governed dive, native-aimed whole-payload release and pull-out for bomb-carrying allies.
+    ally_bombers: bool,
     /// Game seconds the player's ship must have been in the battle before the ally arrives.
     ally_delay_seconds: f64,
     /// When the flagship leaves the arena alive, order the ally out too (otherwise the battle goes on with the
@@ -241,14 +243,8 @@ struct Config {
     /// How many AI allies may fight at the same time. Ships switched on beyond that wait in the reserve and
     /// step in, in ship-number order, when an ally is destroyed or has left.
     max_allies: u32,
-    /// Draw a half-size ship panel for each ally beside the player's own panel while the ally is in the battle.
-    ally_panels: bool,
     /// 1/2 take the displayed top/bottom ally; TAB cycles deployed friendly ships.
     ship_switching: bool,
-    /// Draw an ally-coloured target box around the enemy each ally is currently shooting at.
-    ally_reticles: bool,
-    /// Ally target box size relative to the native 62 x 62 frame.
-    ally_reticle_scale: f32,
     /// Allies never keep a prize ship (the ships the player may capture and sell after the battle: the game flags
     /// them at creature +0xc19) as a target: they pick another enemy, or hold fire when only prizes are left.
     spare_prizes: bool,
@@ -256,12 +252,25 @@ struct Config {
     /// controlled by the AI holds its missile racks; the ship you fly can still launch manually.
     /// Needs `spawn_ally`. Ship bombers always suppress launches during a bombing course.
     ally_zenith_autofire: bool,
-    /// Governed dive, native-aimed whole-payload release and pull-out for bomb-carrying allies.
-    ally_bombers: bool,
-    /// SIDE PATCH (not in master). `m_oid`s the AI never treats as a strategic launch to intercept in the missile-vs-ship
-    /// arcade scene, e.g. `["MDL_MISSILE_03"]` (the R-9 Sprint) for a Sprint modded to be strat-launchable (its category has bit 0x8000000, so
-    /// the CIWS and anti-air launchers of both sides would shoot at it). Copy the names from `m_oid=` in OL.seria. Empty = vanilla.
-    intercept_ignore_oids: Vec<String>,
+    /// Allies roll the AI's AP / proximity shell doctrine once, like enemy ships do at spawn. Default on.
+    ally_ai_ammo: bool,
+    /// Damage popups of allied ships are drawn in this colour, as HEX: `"#00E4FF"` (`"00E4FF"` and `"0x00E4FF"` work
+    /// too). A plain number is still accepted so configs from before v0.14.0 keep working (read as 0xRRGGBB).
+    #[serde(deserialize_with = "deserialize_hex_color")]
+    ally_damage_color: String,
+    /// Draw a half-size ship panel for each ally beside the player's own panel while the ally is in the battle.
+    ally_panels: bool,
+    /// Draw an ally-coloured target box around the enemy each ally is currently shooting at.
+    ally_reticles: bool,
+    /// Ally target box size relative to the native 62 x 62 frame.
+    ally_reticle_scale: f32,
+    /// Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed.
+    ally_sounds: bool,
+    /// An ally leaves the battle (same order as the retreat key) when its COMBAT fuel (the ship's own tank, the
+    /// one the battle burns; not the map fuel of the fleet) falls to this percent. 0 = off. Allies only.
+    ally_fuel_retreat_percent: f32,
+    /// Pre-combat button that picks the armament of a carrier's planes (charged to the inventory). Default on.
+    plane_loadouts: bool,
     /// Give a chosen bomb / rocket loadout a 37 mm gunpod and keep the plane in the fight after the payload is gone:
     /// once bombs and rockets are empty it switches to the interceptor mode and strafes with the gun until that is dry.
     /// Normal tactical battle only (`Combat.seria`; `stateSelectorAircraft_ == 4`), never the strategic bomber scene.
@@ -274,28 +283,24 @@ struct Config {
     plane_aa_delay: f32,
     plane_aa_angle: f32,
     plane_aa_speed: f32,
-    /// Allies roll the AI's AP / proximity shell doctrine once, like enemy ships do at spawn. Default on.
-    ally_ai_ammo: bool,
-    /// Most enemy ships in one battle (vanilla 5, clamped to 1..=127).
+    /// Total enemy ships the battle may field (vanilla 5, clamped to 1..=127). This is the list size;
+    /// `enemy_group_size` controls how many are active at once.
     max_enemy_ships: u32,
-    /// Enemy ships placed per wave (vanilla 3, 1..=40). Waves refill every tick after the first 30 s.
+    /// Enemy slots active at once after the initial setup (vanilla 3, 1..=40). Battle setup still
+    /// places the stock three-ship first group; after the 30 s timer the active group is refilled
+    /// to this size every tick as slots free up.
     enemy_group_size: u32,
-    /// Skip the 30 s wait before the enemy waves start (with `enemy_group_size` > 3: all enemies at once).
+    /// Set the 30 s reinforcement timer to 0, so refills start immediately instead of after 30 s.
+    /// Does not change the total list or the active group size.
     enemy_all_at_once: bool,
-    /// Pre-combat button that picks the armament of a carrier's planes (charged to the inventory). Default on.
-    plane_loadouts: bool,
-    /// Damage popups of allied ships are drawn in this colour, as HEX: `"#00E4FF"` (`"00E4FF"` and `"0x00E4FF"` work
-    /// too). A plain number is still accepted so configs from before v0.14.0 keep working (read as 0xRRGGBB).
-    #[serde(deserialize_with = "deserialize_hex_color")]
-    ally_damage_color: String,
-    logging: LoggingConfig,
-    /// Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed.
-    ally_sounds: bool,
-    /// An ally leaves the battle (same order as the retreat key) when its COMBAT fuel (the ship's own tank, the
-    /// one the battle burns; not the map fuel of the fleet) falls to this percent. 0 = off. Allies only.
-    ally_fuel_retreat_percent: f32,
     /// Text drawn next to ship number 1 on the pre-combat screen (the flagship, always your own ship); "" = none.
     marker_text: String,
+    /// Diagnostic switches grouped for the config file.
+    logging: LoggingConfig,
+    /// SIDE PATCH (not in master). `m_oid`s the AI never treats as a strategic launch to intercept in the missile-vs-ship
+    /// arcade scene, e.g. `["MDL_MISSILE_03"]` (the R-9 Sprint) for a Sprint modded to be strat-launchable (its category has bit 0x8000000, so
+    /// the CIWS and anti-air launchers of both sides would shoot at it). Copy the names from `m_oid=` in OL.seria. Empty = vanilla.
+    intercept_ignore_oids: Vec<String>,
 }
 
 impl Default for Config {
@@ -303,16 +308,24 @@ impl Default for Config {
         Self {
             enabled: true,
             spawn_ally: true,
+            ally_bombers: false,
             ally_delay_seconds: 1.5,
             auto_retreat: true,
             flagship_leaves: "handover".to_string(),
             retreat_key: 0x77,
             ally_toggle: true,
+            max_allies: 2,
+            ship_switching: true,
             spare_prizes: true,
             ally_zenith_autofire: true,
-            ally_bombers: false,
-            intercept_ignore_oids: vec!["MDL_MISSILE_03".to_string()],
-            logging: LoggingConfig::default(),
+            ally_ai_ammo: true,
+            ally_damage_color: "#00E4FF".to_string(),
+            ally_panels: true,
+            ally_reticles: true,
+            ally_reticle_scale: 0.8,
+            ally_sounds: true,
+            ally_fuel_retreat_percent: 30.0,
+            plane_loadouts: true,
             extra_gunpod: true,
             plane_k13: true,
             plane_attack_delay: 1.0,
@@ -320,20 +333,12 @@ impl Default for Config {
             plane_aa_delay: 1.0,
             plane_aa_angle: 0.35,
             plane_aa_speed: 1.5,
-            ally_ai_ammo: true,
             max_enemy_ships: 8,
             enemy_group_size: 3,
             enemy_all_at_once: false,
-            plane_loadouts: true,
-            ally_damage_color: "#00E4FF".to_string(),
-            max_allies: 2,
-            ally_panels: true,
-            ship_switching: true,
-            ally_reticles: true,
-            ally_reticle_scale: 0.8,
-            ally_sounds: true,
-            ally_fuel_retreat_percent: 30.0,
             marker_text: "PLAYER".to_string(),
+            logging: LoggingConfig::default(),
+            intercept_ignore_oids: vec!["MDL_MISSILE_03".to_string()],
         }
     }
 }

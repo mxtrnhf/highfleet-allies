@@ -1,6 +1,6 @@
 # hf_ally settings (`Modloader/config/ally.json`)
 
-Every key below is already in the `ally.json` of the release pack, so you do not have to search for flags. A missing key takes the default shown. Edit the file while the game is closed. `"enabled": false` turns the whole mod off.
+Every key below is already in the `ally.json` of the release pack, so you do not have to search for flags. A missing key takes the default shown. Edit the file while the game is closed. `"enabled": false` turns the whole mod off. Key order does not matter; the preset groups related settings by feature.
 
 The checked-in [player preset](../ally/config/ally.json), compiled defaults, and
 release config use the same settings. `logging.debug_log` is the runtime debug
@@ -43,7 +43,7 @@ For individual features, use this table. Settings for an already-disabled parent
 | Ally ship bombing runs | `ally_bombers: false` | Default off. Restores vanilla ship bomb use; carrier aircraft are independent. |
 | Allied damage-number colour | `ally_damage_color: "#A8FC00"` | Restores the stock lime **appearance**. There is no separate off switch for the recolour hooks; use the master switch for original code paths. |
 | Total enemy-ship limit | `max_enemy_ships: 5` | Actual vanilla value; the patch is skipped. |
-| Ships per enemy wave / wave weight budget | `enemy_group_size: 3` | Actual vanilla value; also leaves the vanilla weight budget unchanged. |
+| Enemy ships active at once / wave weight budget | `enemy_group_size: 3` | Actual vanilla value; also leaves the vanilla weight budget unchanged. |
 | Initial 30-second enemy-wave delay | `enemy_all_at_once: false` | Vanilla wave timing remains. |
 | Carrier loadout buttons, inventory charging and chosen-armament behaviour | `plane_loadouts: false` | Complete revert for the loadout bundle, including guns-only rewriting, rocket-draw suppression, Shipworks stock handling and mod-managed tactical K-13 behaviour. |
 | Mod-managed bomb/rocket tactical attacks | `plane_loadouts: false` | `plane_attack_delay: 0.0` removes only the added wait; it does not restore vanilla plane behaviour. |
@@ -120,9 +120,9 @@ modloader log messages and the basic crash reporter remain available.
 | `plane_aa_angle` | `0.35` | Uses player default `0.35`. | How exactly a K-13 plane must point at the target before firing, in radians (vanilla 0.1745 = 10 degrees; 0.35 = 20 degrees). |
 | `plane_aa_speed` | `1.5` | Uses player default `1.5`. | Speed factor for K-13 planes (1.0 = vanilla); the pack uses 1.5 so they can catch missiles and planes. |
 | `ally_ai_ammo` | `true` | Uses player default `true`. | Allies roll the AI's AP / proximity shell doctrine once, like enemy ships do at spawn. Default on. |
-| `max_enemy_ships` | `8` | Uses player default `8`. | Most enemy ships in one battle (vanilla 5, clamped to 1..=127). |
-| `enemy_group_size` | `3` | Uses player default `3`. | Enemy ships placed per wave (vanilla 3, 1..=40). Waves refill every tick after the first 30 s. |
-| `enemy_all_at_once` | `false` | Uses player default `false`. | Skip the 30 s wait before the enemy waves start (with `enemy_group_size` > 3: all enemies at once). |
+| `max_enemy_ships` | `8` | Uses player default `8`. | Total enemy ships the battle can field (vanilla 5, clamped to 1..=127). This is the size of the enemy list, not how many appear at the same time. |
+| `enemy_group_size` | `3` | Uses player default `3`. | Enemy slots active at once after the initial setup (vanilla 3, clamped 1..=40). Battle setup still places the stock three-ship first group; after the 30 s timer the active group is refilled to this size every tick as slots free up. The wave weight budget is also set to `3 × group_size`. |
+| `enemy_all_at_once` | `false` | Uses player default `false`. | Set the 30 s reinforcement timer to 0, so refills start immediately instead of after 30 s. Does not change the total list or the active group size. |
 | `plane_loadouts` | `true` | Uses player default `true`. | Pre-combat buttons that pick the armament of a carrier's planes (charged to the inventory), one button per plane type the ship carries, in a column right of the ALLY button. The plane types, their loadouts, item counts and the bomb / rocket / K-13 kind of each item are read from the game's own tables when first needed, so **custom aircraft and re-priced loadouts registered through the QoL `planes` option get buttons too** (up to six plane types per card; a plane with no plain-gun loadout gets the game's 37 mm gun for "guns only"). A chosen loadout carries exactly its listed parts: the vanilla class-3 stock auto-draw is disabled for it, so a FAB plane no longer also draws NAR-122 from another loadout of the same craft. Clicking a loadout button plays the stock `button_01` UI click. Default on. |
 | `ally_damage_color` | `"#00E4FF"` | Uses player default `"#00E4FF"`. | Colour of the damage numbers popping up over ALLIED ships (instead of the enemy's yellow-green), as HEX: `"#00E4FF"`, `"00E4FF"` and `"0x00E4FF"` all work. An 8-digit value is read as `AARRGGBB` and its alpha is ignored. A plain number from an old config (e.g. `58623`) is still accepted and means `0xRRGGBB`. |
 | `ally_panels` | `true` | Uses player default `true`. | Draw a half-size copy of the ship panel for each ally currently in the battle (at most two), stacked in the empty column right of the player's own panel: name, speed, timer, counters and the live part schematic. They appear only while an ally is present and disappear when the last one leaves. Needs `spawn_ally`; the game's own target panel is unchanged. |
@@ -135,7 +135,7 @@ modloader log messages and the basic crash reporter remain available.
 
 `intercept_ignore_oids` is a list of part names (`m_oid` from `OL.seria`, case-sensitive) that the AI of both sides never treats as a strategic launch to shoot at, player default `["MDL_MISSILE_03"]` (the stock R-9 Sprint), in both code and the release preset.
 
-Enemy waves: the game spawns enemy ships in waves of `enemy_group_size` (vanilla 3); the first wave comes at the start, the next ones every 30 seconds (or at once with `enemy_all_at_once`). `max_enemy_ships` is the size of the whole list.
+Enemy waves: battle setup places the stock three-ship first group. `max_enemy_ships` is the size of the whole enemy list, so it does not make more enemies appear at once — it only sets how many can arrive over the battle. This is why `max_enemy_ships: 8` with `enemy_group_size: 3` still starts with three enemies. `enemy_group_size` is the active-slot target used by the refill function: after the 30 s timer it tops the live group up to that size every tick as enemies die or leave. `enemy_all_at_once` sets that timer to 0, so the refill starts immediately; it still does not change the total list size.
 
 ## Retired settings
 
