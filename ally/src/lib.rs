@@ -49,7 +49,7 @@ mod plane_loadouts;
 use std::{
     ffi::{c_char, CStr},
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Mutex,
     },
 };
@@ -1195,7 +1195,13 @@ static GUI_RECOVERY_EXHAUSTED: AtomicBool = AtomicBool::new(false);
 /// How often the unchanged-layout health check runs, and how many repairs it may make before it stays quiet.
 const GUI_HEALTH_INTERVAL_MS: u64 = 1000;
 const GUI_HEALTH_TRIES: u32 = 8;
-static LAST_TOGGLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Minimum gap (ms) between accepted clicks on one pre-combat button. The game can deliver one physical
+/// click twice (press and release); a deliberate second click on the same button is not this fast.
+const CLICK_DEBOUNCE_MS: u64 = 120;
+/// Last accepted click per `PLANE_ARM_*` button, indexed by the number in the name.
+static LAST_PLANE_CLICK_MS: [AtomicU64; 55] = [const { AtomicU64::new(0) }; 55];
+/// Last accepted click per `ALLY_TOGGLE_*` button, indexed by the slot in the name.
+static LAST_ALLY_CLICK_MS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
 // per-battle summary (logged when the roster empties)
 static SUM_T0: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SUM_ENEMIES: AtomicU32 = AtomicU32::new(0);
@@ -2568,6 +2574,16 @@ unsafe fn inspect_gui(trigger: &str) {
     log::info!("GUI dump #{dump} [{trigger}] {} elements: {}", lines.len(), lines.join(" ; "));
 }
 
+/// True when this button's previous accepted click is older than the debounce window; records `now` when so.
+fn accept_click(last_click_ms: &AtomicU64, now: u64) -> bool {
+    let last = last_click_ms.load(Ordering::Relaxed);
+    if now.wrapping_sub(last) <= CLICK_DEBOUNCE_MS {
+        return false;
+    }
+    last_click_ms.store(now, Ordering::Relaxed);
+    true
+}
+
 /// Called at the entry of ClickFunc (RCX ctx, RDX gui, R8 button, R9 id); true = the click was ours, skip the game.
 unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: usize) -> bool {
     let _hook = diag::scope("on_click_pre");
@@ -2598,8 +2614,7 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
         let now = now_ms();
         let (craft, card) = ((number.max(1) - 1) / 9, (number.max(1) - 1) % 9 + 1);
         let slot = number; // the label key
-        if button as u32 == 1 && (1..=54).contains(&number) && now.wrapping_sub(LAST_TOGGLE_MS.load(Ordering::Relaxed)) > 350 {
-            LAST_TOGGLE_MS.store(now, Ordering::Relaxed);
+        if button as u32 == 1 && (1..=54).contains(&number) && accept_click(&LAST_PLANE_CLICK_MS[number], now) {
             let ships = card_ship_list();
             // a column follows its ship while cards move: the button may sit over another card for a moment, but
             // it still changes the loadout of the ship it was painted for
@@ -2632,10 +2647,9 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
     let Some(slot) = name.strip_prefix("ALLY_TOGGLE_").and_then(|n| n.parse::<usize>().ok()) else {
         return false;
     };
-    // the game delivers one click twice (press and release): one toggle per 350 ms
+    // the game delivers one click twice (press and release): one toggle per CLICK_DEBOUNCE_MS
     let now = now_ms();
-    if button as u32 == 1 && (2..=9).contains(&slot) && now.wrapping_sub(LAST_TOGGLE_MS.load(Ordering::Relaxed)) > 350 {
-        LAST_TOGGLE_MS.store(now, Ordering::Relaxed);
+    if button as u32 == 1 && (2..=9).contains(&slot) && accept_click(&LAST_ALLY_CLICK_MS[slot], now) {
         let mask = SLOT_MASK.fetch_xor(1 << slot, Ordering::Relaxed) ^ (1 << slot);
         // the slot state changed: retarget the button's existing sprite and reload it
         if !paint_toggle(gui as *mut u8, slot) {
