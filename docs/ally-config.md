@@ -8,8 +8,8 @@ switch and defaults to `false`; set it to `true` for the megalog, watchdog, cras
 dump, pre-combat GUI lists and per-second probes. The legacy `megalog` cargo
 feature no longer forces debug mode on.
 Ship/battle CSV capture and F9 capture markers have been removed.
-The preset's numeric colour `58623` is equivalent to `"#00E4FF"`; newly generated
-configs write the HEX spelling.
+The preset writes `ally_damage_color` as HEX (`"#00E4FF"`); plain numeric values
+from older configs are still accepted as `0xRRGGBB`.
 
 ## Missing keys and how to revert to vanilla
 
@@ -47,7 +47,6 @@ For individual features, use this table. Settings for an already-disabled parent
 | Initial 30-second enemy-wave delay | `enemy_all_at_once: false` | Vanilla wave timing remains. |
 | Carrier loadout buttons, inventory charging and chosen-armament behaviour | `plane_loadouts: false` | Complete revert for the loadout bundle, including guns-only rewriting, rocket-draw suppression, Shipworks stock handling and mod-managed tactical K-13 behaviour. |
 | Mod-managed bomb/rocket tactical attacks | `plane_loadouts: false` | `plane_attack_delay: 0.0` removes only the added wait; it does not restore vanilla plane behaviour. |
-| Global bomber-routine patch | `plane_bombers: false` | For full plane reversion, keep this false as well as `plane_loadouts: false`. |
 | Extra 37 mm gunpod and post-payload strafing | `extra_gunpod: false` | Other chosen-loadout attack behaviour remains while `plane_loadouts` is on. |
 | K-13 loadout choice | `plane_k13: false` | Removes the offered choice. `plane_loadouts: false` additionally removes the mod-managed tactical interceptor hook. |
 | K-13 launch range | `plane_aa_range: 3750.0` | Actual vanilla range. |
@@ -55,8 +54,7 @@ For individual features, use this table. Settings for an already-disabled parent
 | K-13 speed multiplier | `plane_aa_speed: 1.0` | No speed modification. |
 | K-13 engagement delay only | `plane_aa_delay: 0.0` | Removes the added wait, not the mod-managed interceptor; use `plane_k13: false` or `plane_loadouts: false` for the feature. |
 | Strategic-launch interception ignore list | `intercept_ignore_oids: []` | Empty list skips the patch and is vanilla. |
-| `PLAYER` pre-combat label | `marker_text: ""` | Plane-loadout labels are controlled by `plane_loadouts`, not this key. |
-| Marker seam / delay | `marker_delay_ms: 0` removes the extra delay | `marker_seam` has no off value. Disable the owning label/UI feature instead. |
+| `PLAYER` pre-combat label | `marker_text: ""` | Plane-loadout labels are controlled by `plane_loadouts`, not this key. Labels draw at the fixed B23 seam. |
 | Debug mode | `logging.debug_log: false` | No megalog, watchdog, crash dump, pre-combat GUI lists or per-second probes. The legacy `megalog` cargo feature does not force it on. |
 | Battle debug overlay | `logging.debug_overlay: false` | No rings or AI-state labels are drawn. Independent of `spawn_ally` and `ally_reticles`. |
 | Creature registry log | `logging.log_creatures: false` | Other logs remain. |
@@ -114,7 +112,6 @@ modloader log messages and the basic crash reporter remain available.
 | `ally_zenith_autofire` | `true` | Uses player default `true`. | Let AI-run allies launch their own ship missiles (the native Zenith launch path, `0x14002ff60`). `false` = an ally controlled by the native AI holds its missile racks; the ship you fly can still launch manually. Ship bombers always suppress launches while a bombing course owns the ship. Needs `spawn_ally`; enemies, neutrals and player-flown ships are unaffected. |
 | `ally_bombers` | `false` | Off. | Experimental FAB1000 **ship** bombing using player-style matched swivel/thrust commands: continuous governed descent (up to 220 u/s, 0.85x the speed the remaining height can recover from), lateral alignment before diving in, release below 1000 units above the target (low spawns already qualify) with real downward speed, and the entire payload rippled on a native predicted hit within the target's bounding radius at 0.05s intervals. Release ceiling is 1000 units above the target (low spawns already qualify) and needs real downward speed; no timer gate and no multi-target switching. Boost pulses 0.5s at `2.0` / 1.0s at normal `1.0`; boost suppressed at max engine temperature350 or when an engine lock is reported. After salvo/unsafe-clearance abort, continue horizontally along the run while pulling up for at least1.5s, until descent is arrested with safe clearance. Recovery survives target destruction. Independent of `hf_ai.json`; flares every0.5s while armed, missile evasion overridden and ship-missile launches blocked during bomber control. Never releases at airborne or prize/trader targets. Requires `spawn_ally`; player-flown ships, enemies and carrier aircraft unaffected. Heat behavior, accuracy and collision safety require in-game validation. |
 | `intercept_ignore_oids` | `["MDL_MISSILE_03"]` | Uses player default `["MDL_MISSILE_03"]`. | SIDE PATCH (not in master). `m_oid`s the AI never treats as a strategic launch to intercept in the missile-vs-ship arcade scene, e.g. `["MDL_MISSILE_03"]` (the R-9 Sprint) for a Sprint modded to be strat-launchable (its category has bit 0x8000000, so the CIWS and anti-air launchers of both sides would shoot at it). Copy the names from `m_oid=` in OL.seria. Empty = vanilla. |
-| `plane_bombers` | `false` | Uses player default `false`. | Experimental: lets carrier planes with bombs/rockets attack in normal campaign battles (the game only does that in some scenes). Off by default. |
 | `extra_gunpod` | `true` | Uses player default `true`. | Normal tactical battle (`Combat.seria`) only, and **only for the vanilla T-7 / LA-29**: give a chosen FAB / NURS plane the vanilla 37 mm gun (`ITEM_GUN37`) and, once both its bombs and rockets are empty, switch it to the interceptor mode so it strafes with that gun until it is dry. Custom crafts (e.g. `CRAFT_SB15`) never get a gunpod from this flag and keep their vanilla leave-after-payload behaviour. If the loadout already has a gun (a class-4 item or a QoL `gun_ammo`, including a custom one), that gun is kept and nothing is added. Custom bombs / rockets are classified by their live ammo-table class, not by name. Strategic map bombers (`Bombers.seria`) keep their vanilla loadout and leave after the bombing run. Off = old behaviour: the plane leaves when its payload is empty. |
 | `plane_k13` | `true` | Uses player default `true`. | Offer the K-13 air-to-air loadout for carrier planes. Enabled in the player preset. |
 | `plane_attack_delay` | `1.0` | Uses player default `1.0`. | Seconds after launch before a bomb/rocket plane starts its attack runs; until then it flies the game's own script (without a delay LA-29 bombers dive into the carrier deck). |
@@ -134,10 +131,18 @@ modloader log messages and the basic crash reporter remain available.
 | `ally_reticle_scale` | `0.8` | Uses player default `0.8`. | Ally target box size relative to the native 62 × 62 frame: `0.8` is about 50 × 50 pixels, `1.0` is native size. Must be positive and finite; invalid values fall back to `0.8`. Does not affect the player's box. |
 | `ally_sounds` | `true` | Uses player default `true`. | Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed. |
 | `ally_fuel_retreat_percent` | `30.0` | Uses player default `30.0`. | An ally leaves the battle (same order as the retreat key) when its COMBAT fuel (the ship's own tank, the one the battle burns; not the map fuel of the fleet) falls to this percent. 0 = off. Allies only. |
-| `marker_text` | `"PLAYER"` | Uses player default `"PLAYER"`. | Text drawn next to ship number 1 on the pre-combat screen (the flagship, always your own ship); "" = none. |
-| `marker_seam` | `23` | Uses player default `23`. | Render seam that draws the PLAYER and plane-loadout labels: 22 or 23 (22 may sit under the sliding doors). Legacy 24 is remapped to 23 because the game skips B24 when GLITCH is OFF. |
-| `marker_delay_ms` | `0` | Uses player default `0`. | The label stays hidden this many milliseconds after the screen is entered (the doors slide in). |
+| `marker_text` | `"PLAYER"` | Uses player default `"PLAYER"`. | Text drawn next to ship number 1 on the pre-combat screen (the flagship, always your own ship); "" = none. The label and plane-loadout labels draw at the fixed B23 seam. |
 
 `intercept_ignore_oids` is a list of part names (`m_oid` from `OL.seria`, case-sensitive) that the AI of both sides never treats as a strategic launch to shoot at, player default `["MDL_MISSILE_03"]` (the stock R-9 Sprint), in both code and the release preset.
 
 Enemy waves: the game spawns enemy ships in waves of `enemy_group_size` (vanilla 3); the first wave comes at the start, the next ones every 30 seconds (or at once with `enemy_all_at_once`). `max_enemy_ships` is the size of the whole list.
+
+## Retired settings
+
+`plane_bombers`, `marker_seam` and `marker_delay_ms` were removed in v0.14.20
+and are ignored in older configs. `plane_bombers` was the unsafe global bomber
+gate that could send planes into the dive before they cleared the carrier; the
+supported tactical bombing path is `plane_loadouts` plus `plane_attack_delay`.
+The marker seam is fixed at B23 and the redundant marker delay is gone. Full
+history: [retired settings](retired-settings.md). Retired logging keys are in
+[retired diagnostics](retired-diagnostics.md).

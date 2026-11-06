@@ -10,11 +10,11 @@ Two mods for **HighFleet (Steam 1.163)**, built on [logdot's Highfleet-Modloader
 
 Both are optional, independent DLLs. Everything is reverse-engineered, so **Steam 1.163 only**; they refuse to start on other versions. Back up your `Saves` folder first.
 
-> **UPGRADING TO PACK v0.14.19 — CONFIG CLEANUP**
-> **From v0.14.18:** replace the `logging` block in `Modloader/config/ally.json`. `logging.debug_log` now defaults to `false` and is the runtime debug switch; `logging.debug_overlay` replaces the top-level `debug_overlay` key (the old key still loads). `max_lines`, `log_precombat`, `probe_lines`, `log_colors` and `dead_node` are retired and ignored. The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
-> **From v0.14.16 or older:** no separate `hf_ai.json` change is needed unless you come from v0.14.13 or older, where the preset still has old dive/flare values: replace `Modloader/config/hf_ai.json` with the new one in the release pack (or delete your old `hf_ai.json` so fresh defaults are generated). `hf_ai v0.10.11` slims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering.
+> **UPGRADING TO PACK v0.14.20 — CONFIG CLEANUP**
+> **From v0.14.19:** `plane_bombers`, `marker_seam` and `marker_delay_ms` are retired and ignored; the preset now writes `ally_damage_color` as HEX (`"#00E4FF"`). The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
+> **From v0.14.18 or older:** replace the `logging` block in `Modloader/config/ally.json`. `logging.debug_log` defaults to `false`, `logging.debug_overlay` replaces the top-level key, and `max_lines`, `log_precombat`, `probe_lines`, `log_colors` and `dead_node` are retired. If you come from v0.14.13 or older, replace `Modloader/config/hf_ai.json` too (or delete it so fresh defaults are generated).
 
-Release pack **v0.14.19** contains **hf_ally v0.14.19** and **hf_ai v0.10.15** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). This is a config cleanup: `debug_log` is a runtime switch and off by default, retired diagnostics were removed, and `debug_overlay` moved under `logging`.
+Release pack **v0.14.20** contains **hf_ally v0.14.20** and **hf_ai v0.10.15** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). This is a config cleanup: retired diagnostics, the legacy global `plane_bombers` patch and the marker seam/delay keys were removed, and the preset uses HEX for the ally damage colour.
 
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).

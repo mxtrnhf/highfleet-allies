@@ -50,3 +50,6 @@ Older `ally.json` files may still contain these keys. They are ignored:
 
 `logging.debug_log` is now the runtime debug switch and defaults to `false`.
 The legacy `megalog` cargo feature no longer forces debug mode on.
+
+Non-diagnostic retired keys (`plane_bombers`, `marker_seam`, `marker_delay_ms`)
+are documented in [retired settings](retired-settings.md).

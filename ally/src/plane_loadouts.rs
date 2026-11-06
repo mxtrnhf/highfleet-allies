@@ -1260,24 +1260,6 @@ pub unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
     Ok(())
 }
 
-/// The gate in the plane state function `0x14000ceb0`: `cmp byte [0x147fc6f80],0 / jnz` (the bytes are the hot-seat
-/// flags, not "campaign"), so in a normal battle a plane with bombs never enters the bomber variant `0x14000bd50`.
-/// Turning the `jnz` (0x75) into `jmp` (0xeb) sends every plane with a bomb list and a state other than 0 there.
-const BOMBER_GATE: usize = 0x1_4000_cf16;
-const BOMBER_GATE_CONTEXT: [u8; 11] = [0x75, 0x09, 0x80, 0x3d, 0x62, 0xa0, 0xfb, 0x07, 0x00, 0x74, 0x1d];
-
-pub unsafe fn install_bomber_gate(session: &mut PatchSession) {
-    let found = std::slice::from_raw_parts(BOMBER_GATE as *const u8, BOMBER_GATE_CONTEXT.len());
-    if found != BOMBER_GATE_CONTEXT {
-        log::warn!("hf_ally: bomber gate not applied, bytes at {BOMBER_GATE:#x} are {found:02x?}");
-        return;
-    }
-    match session.overwrite(BOMBER_GATE, &[0xeb]) {
-        Ok(_) => log::info!("hf_ally: planes with bombs use the bomber routine ({BOMBER_GATE:#x})"),
-        Err(e) => log::warn!("hf_ally: bomber gate failed: {e}"),
-    }
-}
-
 /// Editor / Shipworks test-fight flag (`DAT_147fc6fb6`, set by `EDC_TEST_FIGHT`; notes section 16).
 const TEST_FLAG: u64 = 0x1_47fc_6fb6;
 const OWNED_BYTES: [u8; 12] = [0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48, 0x8b, 0xca];

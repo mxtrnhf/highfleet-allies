@@ -262,7 +262,6 @@ struct Config {
     /// arcade scene, e.g. `["MDL_MISSILE_03"]` (the R-9 Sprint) for a Sprint modded to be strat-launchable (its category has bit 0x8000000, so
     /// the CIWS and anti-air launchers of both sides would shoot at it). Copy the names from `m_oid=` in OL.seria. Empty = vanilla.
     intercept_ignore_oids: Vec<String>,
-    plane_bombers: bool,
     /// Give a chosen bomb / rocket loadout a 37 mm gunpod and keep the plane in the fight after the payload is gone:
     /// once bombs and rockets are empty it switches to the interceptor mode and strafes with the gun until that is dry.
     /// Normal tactical battle only (`Combat.seria`; `stateSelectorAircraft_ == 4`), never the strategic bomber scene.
@@ -297,10 +296,6 @@ struct Config {
     ally_fuel_retreat_percent: f32,
     /// Text drawn next to ship number 1 on the pre-combat screen (the flagship, always your own ship); "" = none.
     marker_text: String,
-    /// Render seam that draws the label: 22 or 23 (22 may sit under the sliding doors). Legacy 24 is remapped to 23.
-    marker_seam: u32,
-    /// The label stays hidden this many milliseconds after the screen is entered (the doors slide in).
-    marker_delay_ms: u64,
 }
 
 impl Default for Config {
@@ -318,7 +313,6 @@ impl Default for Config {
             ally_bombers: false,
             intercept_ignore_oids: vec!["MDL_MISSILE_03".to_string()],
             logging: LoggingConfig::default(),
-            plane_bombers: false,
             extra_gunpod: true,
             plane_k13: true,
             plane_attack_delay: 1.0,
@@ -340,8 +334,6 @@ impl Default for Config {
             ally_sounds: true,
             ally_fuel_retreat_percent: 30.0,
             marker_text: "PLAYER".to_string(),
-            marker_seam: 23,
-            marker_delay_ms: 0,
         }
     }
 }
@@ -1098,19 +1090,10 @@ static MARKER_TEXT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static MARKER_DRAWS: AtomicU32 = AtomicU32::new(0);
 /// The label sits a little right of where a button would (it is wider than one).
 const MARKER_DX: f32 = 14.0;
-/// Calls to the layer flush in the battle-branch renderer (which also draws the pre-combat screen), checked as
-/// `E8 rel32` to FLUSH before use. B24 (0x140309897) is deliberately absent: the game skips it when GLITCH is OFF.
-const MARKER_SEAMS: [usize; 2] = [0x1_4030_9327, 0x1_4030_9408]; // B22, B23
-/// Which of them draws (config `marker_seam`): B22 may be drawn under the sliding doors.
-static MARKER_SEAM_SEL: AtomicU32 = AtomicU32::new(23);
-
-/// B24 was the old default, but it runs only inside the glitch pass. Remap old configurations to B23 so turning
-/// GLITCH OFF cannot hide the PLAYER label or plane-loadout labels.
-fn select_marker_seam(configured: u32) -> u32 {
-    configured.clamp(22, 23)
-}
-/// The label stays hidden this long (ms) after the screen is entered, while the doors slide.
-static MARKER_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// B23 is the layer-flush call in the battle-branch renderer (which also draws the pre-combat screen).
+/// B24 (`0x140309897`) is deliberately unused: the game skips it when GLITCH is OFF. B22 sits under the
+/// sliding doors, so it is not used either.
+const MARKER_SEAM: usize = 0x1_4030_9408;
 static ENTRY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 const FLUSH: usize = 0x1_4008_3b50;
 const MEDIA_RES: usize = 0x1_43a1_19e8;
@@ -2287,13 +2270,11 @@ unsafe fn precombat_tick(source: usize) {
     }
 }
 
-/// Draws the slot-1 label with the game's own text code (as the elevation readout does): the font is a shared
-/// object, so its style is saved and put back.
-unsafe extern "C" fn draw_marker_b22() {
-    draw_marker(22);
-}
-unsafe extern "C" fn draw_marker_b23() {
-    draw_marker(23);
+/// Draws the slot-1 label and the plane-loadout labels with the game's own text code (as the elevation readout
+/// does): the font is a shared object, so its style is saved and put back.
+unsafe extern "C" fn draw_marker() {
+    draw_marker_text();
+    draw_plane_labels();
 }
 
 /// The metal roller covers that play when the pre-combat screen opens (`ROLL_DESK`, `ROLL_TABLET`, `ROLL_TASK`,
@@ -2323,16 +2304,11 @@ const ROLL_TIMEOUT_MS: u64 = 6000;
 static DOOR_STATE: AtomicU32 = AtomicU32::new(0);
 static DOOR_LOGS: AtomicU32 = AtomicU32::new(0);
 
-unsafe fn draw_marker(seam: u32) {
-    draw_marker_text(seam);
-    draw_plane_labels(seam);
-}
-
 /// The plane buttons' labels, drawn the same way as the slot-1 text and under the same gates.
-unsafe fn draw_plane_labels(seam: u32) {
+unsafe fn draw_plane_labels() {
     let _hook = diag::scope("draw_plane_labels");
     // The input/battle ticks validate screen lifetime before rendering. Do not scan/repair GUI ownership here.
-    if seam != MARKER_SEAM_SEL.load(Ordering::Relaxed) || !PRECOMBAT_LIVE.load(Ordering::Relaxed) || esc_menu_open() || doors_closed() {
+    if !PRECOMBAT_LIVE.load(Ordering::Relaxed) || esc_menu_open() || doors_closed() {
         return;
     }
     let Ok(labels) = PLANE_LABELS.try_lock().map(|l| l.clone()) else { return };
@@ -2362,12 +2338,9 @@ unsafe fn draw_plane_labels(seam: u32) {
     style(LABEL_FONT.as_ptr(), old_scale, old_blend, old_color);
 }
 
-unsafe fn draw_marker_text(seam: u32) {
+unsafe fn draw_marker_text() {
     let _hook = diag::scope("draw_marker");
-    if PRECOMBAT_LIVE.load(Ordering::Relaxed) && seam == MARKER_SEAM_SEL.load(Ordering::Relaxed) && doors_closed() {
-        return;
-    }
-    if seam != MARKER_SEAM_SEL.load(Ordering::Relaxed) || now_ms().wrapping_sub(ENTRY_MS.load(Ordering::Relaxed)) < MARKER_DELAY_MS.load(Ordering::Relaxed) {
+    if PRECOMBAT_LIVE.load(Ordering::Relaxed) && doors_closed() {
         return;
     }
     if !PRECOMBAT_LIVE.load(Ordering::Relaxed) || !MARKER_SHOW.load(Ordering::Relaxed) || esc_menu_open() {
@@ -3405,8 +3378,6 @@ unsafe extern "C" fn init() -> bool {
         log::info!("hf_ally: debug_log on: megalog, watchdog and crash dump (large files, see ally.json)");
     }
     SPAWN_ALLY.store(config.spawn_ally, Ordering::Relaxed);
-    MARKER_SEAM_SEL.store(select_marker_seam(config.marker_seam), Ordering::Relaxed);
-    MARKER_DELAY_MS.store(config.marker_delay_ms, Ordering::Relaxed);
     if let Ok(mut text) = MARKER_TEXT.lock() {
         // ASCII only; '@' is a line break for the game's text code
         *text = config.marker_text.bytes().filter(|b| (0x20..0x7f).contains(b) && *b != b'@').chain([0]).collect();
@@ -3555,18 +3526,16 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         }
     }
     if config.ally_toggle && config.spawn_ally {
-        for (seam, handler) in MARKER_SEAMS.iter().zip([draw_marker_b22 as *const (), draw_marker_b23 as *const ()]) {
-            let bytes = std::slice::from_raw_parts(*seam as *const u8, 5);
-            let target = (*seam + 5).wrapping_add(i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as isize as usize);
-            if bytes[0] == 0xe8 && target == FLUSH {
-                let mut trampoline = Trampoline::new();
-                trampoline.absolute_call(FLUSH as *const ());
-                trampoline.preserved_call(handler, &[], &[], ReturnType::None);
-                trampoline.relative_jump(*seam + 5);
-                session.detour_trampoline(*seam, 5, trampoline).map_err(|e| e.to_string())?;
-            } else {
-                log::warn!("hf_ally: render seam {seam:#x} is not a call to the flush: not hooked");
-            }
+        let bytes = std::slice::from_raw_parts(MARKER_SEAM as *const u8, 5);
+        let target = (MARKER_SEAM + 5).wrapping_add(i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as isize as usize);
+        if bytes[0] == 0xe8 && target == FLUSH {
+            let mut trampoline = Trampoline::new();
+            trampoline.absolute_call(FLUSH as *const ());
+            trampoline.preserved_call(draw_marker as *const (), &[], &[], ReturnType::None);
+            trampoline.relative_jump(MARKER_SEAM + 5);
+            session.detour_trampoline(MARKER_SEAM, 5, trampoline).map_err(|e| e.to_string())?;
+        } else {
+            log::warn!("hf_ally: render seam {MARKER_SEAM:#x} is not a call to the flush: not hooked");
         }
     }
     if config.ally_toggle && config.spawn_ally {
@@ -3700,9 +3669,6 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     }
     plane_loadouts::EXTRA_GUNPOD.store(config.extra_gunpod, Ordering::Relaxed);
     plane_loadouts::K13_ON.store(config.plane_k13, Ordering::Relaxed);
-    if config.plane_bombers {
-        plane_loadouts::install_bomber_gate(&mut session);
-    }
     if config.spawn_ally {
         for (name, address, expected) in [
             ("deploy", DEPLOY, &DEPLOY_PROLOGUE[..]),

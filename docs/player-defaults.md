@@ -1,15 +1,15 @@
-# Player defaults — release pack v0.14.19
+# Player defaults — release pack v0.14.20
 
-> **Config compatibility.** Updating from v0.14.18: replace the `logging` block in `Modloader/config/ally.json`. `logging.debug_log` now defaults to `false` and is the runtime debug switch; `logging.debug_overlay` replaces the top-level `debug_overlay` key (the old key still loads). `max_lines`, `log_precombat`, `probe_lines`, `log_colors` and `dead_node` are retired and ignored. The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`. When upgrading from v0.14.13 or older, replace your old `Modloader/config/hf_ai.json` with the preset from the pack (or delete your old `hf_ai.json` so `hf_ai` generates a fresh copy).
+> **Config compatibility.** Updating from v0.14.19: `plane_bombers`, `marker_seam` and `marker_delay_ms` are retired and ignored; the preset now writes `ally_damage_color` as HEX (`"#00E4FF"`). Updating from v0.14.18 also requires the `logging` block rewrite: `logging.debug_log` defaults to `false`, `logging.debug_overlay` replaces the top-level key, and `max_lines`, `log_precombat`, `probe_lines`, `log_colors` and `dead_node` are retired. The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`. When upgrading from v0.14.13 or older, replace your old `Modloader/config/hf_ai.json` with the preset from the pack (or delete your old `hf_ai.json` so `hf_ai` generates a fresh copy).
 
-The tracked player default profiles for `hf_ally v0.14.19` and `hf_ai v0.10.15` live in:
+The tracked player default profiles for `hf_ally v0.14.20` and `hf_ai v0.10.15` live in:
 
 - [ally/config/ally.json](../ally/config/ally.json)
 - [ai/config/hf_ai.json](../ai/config/hf_ai.json)
 
-The v0.14.19 release uses the same `hf_ai.json` preset as v0.14.15 and later;
-`ally.json` drops the retired diagnostics and moves `debug_overlay` into
-`logging`. See the [ally changelog](../ally/CHANGELOG.md) and
+The v0.14.20 release uses the same `hf_ai.json` preset as v0.14.15 and later;
+`ally.json` drops the retired plane-bomber and marker keys and writes the ally
+damage colour as HEX. See the [ally changelog](../ally/CHANGELOG.md) and
 [ai changelog](../ai/CHANGELOG.md).
 
 The release pack copies these files unchanged. Compiled defaults use the same
@@ -21,13 +21,14 @@ guides to disable specific behavior.
 
 ## Profile highlights
 
-Allies (`hf_ally v0.14.19`): up to two wingmen, 1.5 s arrival delay, eight enemies,
+Allies (`hf_ally v0.14.20`): up to two wingmen, 1.5 s arrival delay, eight enemies,
 vanilla three-ship waves, K-13/loadout buttons on, ally ship panels and ally target
 boxes on (`ally_reticle_scale: 0.8`), ship switching on, ally ship bombers off,
 `ally_zenith_autofire` on (vanilla autonomous launches), bomb/rocket and AA attack
 delays of 1 s, and fuel retreat at 30%. The Sprint exception is `MDL_MISSILE_03`.
-`logging.debug_overlay` defaults to `false`. `logging.debug_log` is the runtime
-debug switch and defaults to `false`; set it `true` only for a tester log.
+`ally_damage_color` is `"#00E4FF"`. `logging.debug_overlay` defaults to `false`.
+`logging.debug_log` is the runtime debug switch and defaults to `false`; set it
+`true` only for a tester log.
 
 AI (preset introduced in `hf_ai v0.10.11`): 48 gameplay settings plus `logging.log_panic`
 (49 total leaf settings). Flares, allied reactions, universal
