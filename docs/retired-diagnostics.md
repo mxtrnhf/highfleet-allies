@@ -2,7 +2,8 @@
 
 This page keeps the history of diagnostic features that are no longer part of
 `hf_ally`. The source files are preserved under
-[`ally/src/retired/`](../ally/src/retired) but are **not compiled** into the mod.
+[`ally/src/retired/`](https://github.com/mxtrnhf/highfleet-allies/tree/main/ally/src/retired)
+but are **not compiled** into the mod.
 
 ## `logging.dead_node` (retired in v0.14.19)
 
@@ -22,7 +23,7 @@ the assertion or change game state.
 
 The config key was removed because the feature had served its investigation
 purpose. The original implementation remains at
-[`ally/src/retired/dead_node.rs`](../ally/src/retired/dead_node.rs).
+[`ally/src/retired/dead_node.rs`](https://github.com/mxtrnhf/highfleet-allies/blob/main/ally/src/retired/dead_node.rs).
 
 ## `logging.log_colors` (retired in v0.14.19)
 
@@ -33,7 +34,7 @@ probe every 2 s during battle. It was used to read off the HUD's friendly blue
 and the combat-callout yellow; that work is finished.
 
 The original implementation remains at
-[`ally/src/retired/color_probe.rs`](../ally/src/retired/color_probe.rs).
+[`ally/src/retired/color_probe.rs`](https://github.com/mxtrnhf/highfleet-allies/blob/main/ally/src/retired/color_probe.rs).
 
 ## Retired config keys
 
@@ -51,5 +52,5 @@ Older `ally.json` files may still contain these keys. They are ignored:
 `logging.debug_log` is now the runtime debug switch and defaults to `false`.
 The legacy `megalog` cargo feature no longer forces debug mode on.
 
-Non-diagnostic retired keys (`plane_bombers`, `marker_seam`, `marker_delay_ms`)
-are documented in [retired settings](retired-settings.md).
+Non-diagnostic retired keys (`plane_bombers`, `marker_seam`, `marker_delay_ms`,
+`max_enemy_ships`) are documented in [retired settings](retired-settings.md).

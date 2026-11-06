@@ -2,28 +2,33 @@
 
 For **HighFleet Steam 1.163**.
 
-> ## Enemy config cleanup
-> This removes the misleading `max_enemy_ships` setting. It patched the strategic bomber scene, not normal tactical combat; vanilla tactical battles have no total enemy cap. Use `enemy_group_size` to control how many enemies are active at once. `hf_ai` and QoL are unchanged.
+> ## Ally config cleanup
+> This pack cleans up the ally configuration and removes retired settings. `hf_ai` and QoL are unchanged. The pack's `Modloader/config/ally.json` is the current grouped preset.
 >
 > ## Config compatibility
-> **Updating from v0.14.21:** remove or ignore `max_enemy_ships`; it is retired. `enemy_group_size` controls both the initial enemy group and refills after the 30 s timer. `enemy_all_at_once` only sets that timer to 0. The `hf_ai.json` preset is unchanged since hf_ai v0.10.11.
->
-> **Updating from v0.14.20 or older:** also apply the earlier cleanups: the ally preset is grouped by feature; `plane_bombers`, `marker_seam` and `marker_delay_ms` are retired; `ally_damage_color` is HEX; `logging.debug_log` defaults to `false`, `logging.debug_overlay` replaces the top-level key, and the retired logging keys are ignored. If you come from v0.14.13 or older, replace `Modloader/config/hf_ai.json` too.
+> **Updating from v0.14.18 or older:** replace `Modloader/config/ally.json` from this pack (or merge the current keys). Retired keys are ignored if left in an old file. If you come from v0.14.13 or older, replace `Modloader/config/hf_ai.json` too. The `hf_ai.json` preset is unchanged since hf_ai v0.10.11.
 
-## Changes since v0.14.21
+## Changes since v0.14.18
 
-### `hf_ally v@ALLY_VERSION@` — retire `max_enemy_ships`
-- Removed the key and its patch. The patched instruction was in `SCR_BOMBERS`, the strategic bomber scene setup, not `SCR_COMBAT`.
-- Normal tactical combat fills its enemy list from the engagement through `Precombat_SplitFleetIntoReserveLists` with no total cap, so the setting did nothing in normal battles.
-- `enemy_group_size` is the real control for enemies active at once: it is used for the initial group and for refills after the 30 s timer. The weight budget is `3 × group_size`.
-- `enemy_all_at_once` only sets the 30 s refill timer to 0.
+### `hf_ally v@ALLY_VERSION@` — config cleanup
+- `logging.debug_log` is the runtime debug switch and defaults to `false`. Debug mode still provides the megalog, watchdog, crash dump, pre-combat GUI lists, per-second probes and the lifted line budget. The legacy `megalog` cargo feature no longer forces it on.
+- `debug_overlay` moved to `logging.debug_overlay` (default false).
+- `max_enemy_ships` is retired. Its patch was inside `SCR_BOMBERS`, the strategic bomber scene setup, not `SCR_COMBAT`; normal tactical combat fills its enemy list from the engagement with no total cap. Use `enemy_group_size` for enemies active at once.
+- `plane_bombers` is retired. It was the unsafe global patch that could send planes into the diving run before they cleared the carrier. Tactical bombing remains available through `plane_loadouts` plus `plane_attack_delay`.
+- `marker_seam` and `marker_delay_ms` are retired. Labels always use the fixed B23 seam; the roller-cover check already hides them while the doors slide.
+- `ally_damage_color` is written as HEX (`"#00E4FF"`); numeric values from older configs still load.
+- The remaining keys are grouped by feature in the preset and generated defaults.
+
+### Enemy groups
+- `enemy_group_size` controls the enemy slots active at once: the initial group and refills after the 30 s timer. The weight budget is `3 × group_size`, so expensive ships can make the actual group smaller.
+- `enemy_all_at_once` only sets the 30 s refill timer to 0. It does not change the initial group size.
 
 ### Updated ally config
-- The pack's `Modloader/config/ally.json` drops `max_enemy_ships`; the grouped layout is unchanged.
+- The pack's `Modloader/config/ally.json` is the current grouped preset without retired keys.
 - `Modloader/config/hf_ai.json` is unchanged.
 
 ### Validation
-- Cross-build only (`cargo xwin build --release --target x86_64-pc-windows-msvc`); no in-game validation was performed for this config removal.
+- Cross-build only (`cargo xwin build --release --target x86_64-pc-windows-msvc`); no in-game validation was performed for this config cleanup.
 - No automated regression tests were added.
 
 ## Pack contents
