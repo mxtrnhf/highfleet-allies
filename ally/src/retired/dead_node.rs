@@ -1,5 +1,8 @@
+//! RETIRED in hf_ally v0.14.19: not compiled.
+//!
 //! Read-only text diagnostic for the native dead-node/master assertion.
-//! Formerly bundled with battle capture; now controlled by logging.dead_node.
+//! Formerly controlled by `logging.dead_node`; kept here as a reference for future RE work.
+//! See `docs/retired-diagnostics.md`.
 
 use patchy::{PatchSession, ReturnType, Trampoline};
 use std::{

@@ -1,6 +1,6 @@
 //! Debug overlay for the tactical battle: rings around every ship and its live AI state above it.
 //!
-//! Enabled with `"debug_overlay": true` in `ally.json` (default off). The drawing runs from the
+//! Enabled with `"logging": { "debug_overlay": true }` in `ally.json` (default off). The drawing runs from the
 //! per-frame battle HUD pass `0x14029c5c0` (`afterBattleStars??`, also the native target-box pass),
 //! which is wrapped by [`crate::ally_reticles`] at the call site `0x14029a8c1`. That pass owns the
 //! battle camera projection, so every label and ring is computed from the same world-to-screen

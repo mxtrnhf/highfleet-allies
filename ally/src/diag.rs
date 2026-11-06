@@ -4,9 +4,10 @@
 //!   crashed, in which module and at which Ghidra address, and whether a hf_ally hook was running) into the log
 //!   and flush it. The modloader buffers its log file (flexi_logger `BufferAndFlush`), so without a flush the
 //!   last second before a crash is lost.
-//! * Feature `megalog` (the "debug build"): a second, unbuffered file `Modloader/logs/hf_ally_megalog_<time>.log`
-//!   with a heartbeat, every click, every change of the game's scene state and every spawn, a watchdog that
-//!   flushes the normal log every 300 ms, and a minidump (`hf_ally_crash_<time>.dmp`) on an unhandled crash.
+//! * `logging.debug_log` (runtime switch, default off): a second, unbuffered file
+//!   `Modloader/logs/hf_ally_megalog_<time>.log` with a heartbeat, every click, every change of the game's scene
+//!   state and every spawn, a watchdog that flushes the normal log every 300 ms, and a minidump
+//!   (`hf_ally_crash_<time>.dmp`) on an unhandled crash.
 
 use std::{
     ffi::c_void,
@@ -36,9 +37,9 @@ use windows_sys::Win32::System::{
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BUILD: &str = env!("HF_ALLY_BUILD");
-/// Debug mode (megalog file, watchdog, crash minidump, verbose lines): on in builds made with the cargo feature
-/// `megalog`, otherwise switched on at start-up by `debug_log` in `ally.json` (see [`enable_debug`]).
-static DEBUG_ON: AtomicBool = AtomicBool::new(cfg!(feature = "megalog"));
+/// Debug mode (megalog file, watchdog, crash minidump, verbose lines), set from `logging.debug_log`.
+/// Off unless the JSON enables it; the legacy `megalog` cargo feature does not force it.
+static DEBUG_ON: AtomicBool = AtomicBool::new(false);
 static MEGALOG_STARTED: AtomicBool = AtomicBool::new(false);
 
 #[inline]
@@ -46,11 +47,11 @@ pub fn debug() -> bool {
     DEBUG_ON.load(Ordering::Relaxed)
 }
 
-/// The first line a tester's log must show: version, build time and whether this is the verbose debug build.
+/// The first line a tester's log must show: version, build time and whether verbose debug mode is on.
 pub fn banner() -> String {
     format!(
         "hf_ally v{VERSION} (build {BUILD} UTC){}",
-        if debug() { " DEBUG BUILD (megalog): verbose, writes a large extra log file and a crash dump" } else { "" }
+        if debug() { " DEBUG MODE (debug_log): verbose, writes a large extra log file and a crash dump" } else { "" }
     )
 }
 
@@ -73,7 +74,7 @@ fn write_file(msg: &str, in_crash: bool) {
     }
 }
 
-/// A line for the megalog only (debug build). Use through the `crumb!` macro so the string is not built otherwise.
+/// A line for the megalog only (debug mode). Use through the `crumb!` macro so the string is not built otherwise.
 pub fn crumb(msg: &str) {
     if debug() {
         write_file(msg, false);
@@ -231,7 +232,7 @@ unsafe extern "system" fn vectored_handler(info: *mut EXCEPTION_POINTERS) -> i32
     0
 }
 
-/// Nobody handled it: the process is going down. Report, dump (debug build), then pass it on.
+/// Nobody handled it: the process is going down. Report, dump (debug mode), then pass it on.
 unsafe extern "system" fn unhandled_filter(info: *const EXCEPTION_POINTERS) -> i32 {
     if !BUSY.swap(true, Ordering::Relaxed) {
         report("UNHANDLED, the game is dying", info);
@@ -314,7 +315,7 @@ fn watchdog() {
     }
 }
 
-/// Installs the crash capture (every build); in a `megalog` build also starts the debug files at once.
+/// Installs the crash capture (every build); starts the debug files when `debug_log` is on.
 pub fn install() {
     START.get_or_init(Instant::now);
     let previous_hook = panic::take_hook();
@@ -332,10 +333,9 @@ pub fn install() {
     }
 }
 
-/// Turns the debug mode on at run time (config `debug_log`): megalog file, watchdog, crash minidump.
-pub fn enable_debug() {
-    DEBUG_ON.store(true, Ordering::Relaxed);
-    start_megalog();
+/// Sets the runtime debug switch from `logging.debug_log` before [`install`] starts the megalog.
+pub fn set_debug(enabled: bool) {
+    DEBUG_ON.store(enabled, Ordering::Relaxed);
 }
 
 /// Creates the megalog file and the watchdog thread (once).

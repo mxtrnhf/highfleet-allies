@@ -3,9 +3,10 @@
 Every key below is already in the `ally.json` of the release pack, so you do not have to search for flags. A missing key takes the default shown. Edit the file while the game is closed. `"enabled": false` turns the whole mod off.
 
 The checked-in [player preset](../ally/config/ally.json), compiled defaults, and
-release config now use the same settings (hf_ally 0.14.2). `logging.debug_log` is `true`
-in this preset, so detailed logs/watchdog/crash dumps are active; diagnostic mode
-can force probe/pre-combat logging even when those individual keys are false.
+release config use the same settings. `logging.debug_log` is the runtime debug
+switch and defaults to `false`; set it to `true` for the megalog, watchdog, crash
+dump, pre-combat GUI lists and per-second probes. The legacy `megalog` cargo
+feature no longer forces debug mode on.
 Ship/battle CSV capture and F9 capture markers have been removed.
 The preset's numeric colour `58623` is equivalent to `"#00E4FF"`; newly generated
 configs write the HEX spelling.
@@ -41,7 +42,6 @@ For individual features, use this table. Settings for an already-disabled parent
 | Ally Zenith autofire | `ally_zenith_autofire: true` | Vanilla: AI-run allies launch their own ship missiles. `false` makes them hold their racks; a ship you fly can still launch manually. |
 | Ally ship bombing runs | `ally_bombers: false` | Default off. Restores vanilla ship bomb use; carrier aircraft are independent. |
 | Allied damage-number colour | `ally_damage_color: "#A8FC00"` | Restores the stock lime **appearance**. There is no separate off switch for the recolour hooks; use the master switch for original code paths. |
-| Battle debug overlay | `debug_overlay: false` | No rings or AI-state labels are drawn. Independent of `spawn_ally` and `ally_reticles`. |
 | Total enemy-ship limit | `max_enemy_ships: 5` | Actual vanilla value; the patch is skipped. |
 | Ships per enemy wave / wave weight budget | `enemy_group_size: 3` | Actual vanilla value; also leaves the vanilla weight budget unchanged. |
 | Initial 30-second enemy-wave delay | `enemy_all_at_once: false` | Vanilla wave timing remains. |
@@ -57,14 +57,14 @@ For individual features, use this table. Settings for an already-disabled parent
 | Strategic-launch interception ignore list | `intercept_ignore_oids: []` | Empty list skips the patch and is vanilla. |
 | `PLAYER` pre-combat label | `marker_text: ""` | Plane-loadout labels are controlled by `plane_loadouts`, not this key. |
 | Marker seam / delay | `marker_delay_ms: 0` removes the extra delay | `marker_seam` has no off value. Disable the owning label/UI feature instead. |
-| Spawn/ADD log-line budget | `logging.max_lines: 0` | Minimizes only those lines; it is not a general logging switch. |
-| Pre-combat GUI-list log | `logging.log_precombat: false` | Debug mode can force it on. |
-| Per-second ally/enemy probe logs | `logging.probe_lines: false` | Debug mode can force it on. |
+| Debug mode | `logging.debug_log: false` | No megalog, watchdog, crash dump, pre-combat GUI lists or per-second probes. The legacy `megalog` cargo feature does not force it on. |
+| Battle debug overlay | `logging.debug_overlay: false` | No rings or AI-state labels are drawn. Independent of `spawn_ally` and `ally_reticles`. |
 | Creature registry log | `logging.log_creatures: false` | Other logs remain. |
 | GUI click/ammo-selector inspection | `logging.gui_inspect: false` | Other logs remain. |
-| HUD colour-call logging | `logging.log_colors: false` | Damage recolouring itself is independent. |
-| Debug megalog/watchdog/crash dump | `logging.debug_log: false` | The `megalog` cargo feature forces debug mode on. |
-| Dead-node assertion diagnostic | `logging.dead_node: false` | No dead-node hooks installed. |
+
+Retired logging keys (`max_lines`, `log_precombat`, `probe_lines`, `log_colors`,
+`dead_node`) are ignored if an older config still contains them. See
+[retired diagnostics](retired-diagnostics.md).
 
 ## Stock-game crash fixes moved to QoL
 
@@ -77,34 +77,26 @@ The battle-restart diagnostic-probe fix remains in ally.
 
 ## Logging (`logging` object)
 
-All logging flags and the line budget are grouped in `"logging"`. Old top-level
-logging keys remain readable; explicit nested values take precedence per key.
-Missing nested keys keep their defaults. The removed `telemetry` key does nothing.
-Normal modloader log messages and the basic crash reporter remain available.
+Debug and diagnostic switches are grouped in `"logging"`. Old top-level keys for
+the kept settings remain readable; explicit nested values take precedence per key.
+Missing nested keys keep their defaults. Retired keys are ignored. Normal
+modloader log messages and the basic crash reporter remain available.
 
 ```json
 "logging": {
-  "debug_log": true,
-  "max_lines": 600,
-  "log_precombat": false,
-  "probe_lines": false,
-  "log_colors": false,
+  "debug_log": false,
+  "debug_overlay": false,
   "gui_inspect": false,
-  "log_creatures": false,
-  "dead_node": false
+  "log_creatures": false
 }
 ```
 
 | Key inside `logging` | Default | Purpose |
 |---|---|---|
-| `debug_log` | `true` | Megalog `hf_ally_megalog_<time>.log`, watchdog and crash minidump `hf_ally_crash_<time>.dmp`. Dumps may contain paths/campaign data; delete after sending. The `megalog` cargo feature forces this on. |
-| `max_lines` | `600` | Spawn/ADD line budget; debug mode lifts it. |
-| `log_precombat` | `false` | Pre-combat GUI lists; debug mode can force this on. |
-| `probe_lines` | `false` | Per-second ally/enemy activity probes; debug mode can force this on. |
-| `log_colors` | `false` | HUD colour-call diagnostic. |
-| `gui_inspect` | `false` | GUI lists on clicks and ammo-selector rebuilds. |
-| `log_creatures` | `false` | Every creature registry pass (very noisy). |
-| `dead_node` | `false` | Read-only, byte-validated hooks reporting the native dead-node/master assertion to `hf_ally_deadnode.log` and the normal log. No CSV capture; does not suppress the assertion. Previously bundled with telemetry builds. |
+| `debug_log` | `false` | Runtime debug switch. `true` starts the megalog `hf_ally_megalog_<time>.log`, the watchdog, the crash minidump `hf_ally_crash_<time>.dmp`, pre-combat GUI lists, per-second probes and the lifted line budget. Dumps may contain paths/campaign data; delete after sending. The legacy `megalog` cargo feature does not force it on. |
+| `debug_overlay` | `false` | Battle debug overlay: rings, driver-state labels and AI waypoints. Independent of `spawn_ally`; see [debug overlay](debug-overlay.md). |
+| `gui_inspect` | `false` | Full GUI lists on clicks and native ammo-selector rebuilds. |
+| `log_creatures` | `false` | Creature add/remove log (very noisy). |
 
 ## Gameplay settings
 
@@ -140,7 +132,6 @@ Normal modloader log messages and the basic crash reporter remain available.
 | `ship_switching` | `true` | Uses player default `true`. | **1** takes the displayed top-panel ally, **2** the bottom-panel ally; **TAB** cycles all deployed friendly ships. Your old ship becomes an AI ally. Needs `spawn_ally`; 1/2 also need visible `ally_panels`. See [ship switching](ship-switching.md) for safeguards and keybinding caveats. |
 | `ally_reticles` | `true` | Uses player default `true`. | Draw the game's native `sign_aim` target box around the enemy each ally is currently targeting, in the ally colour (`ally_damage_color`). The player's own lime box is unchanged and drawn first; every living ally with a valid target gets its own box. Needs `spawn_ally`. |
 | `ally_reticle_scale` | `0.8` | Uses player default `0.8`. | Ally target box size relative to the native 62 × 62 frame: `0.8` is about 50 × 50 pixels, `1.0` is native size. Must be positive and finite; invalid values fall back to `0.8`. Does not affect the player's box. |
-| `debug_overlay` | `false` | Off. | Battle debug overlay: three labelled world-space rings (250u / 500u / 1000u) around every live ship, a ship-following label with the native driver state (`+0xbdc`), and the AI steering waypoint with its distance (`WP ...u`, or `DEST ...u` when off-screen). When hf_ai v0.10.9+ is loaded, a second `AI ...` line shows its tactics decision or active flare/evasion mode. Independent of `spawn_ally`; see [debug overlay](debug-overlay.md). |
 | `ally_sounds` | `true` | Uses player default `true`. | Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed. |
 | `ally_fuel_retreat_percent` | `30.0` | Uses player default `30.0`. | An ally leaves the battle (same order as the retreat key) when its COMBAT fuel (the ship's own tank, the one the battle burns; not the map fuel of the fleet) falls to this percent. 0 = off. Allies only. |
 | `marker_text` | `"PLAYER"` | Uses player default `"PLAYER"`. | Text drawn next to ship number 1 on the pre-combat screen (the flagship, always your own ship); "" = none. |

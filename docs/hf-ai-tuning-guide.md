@@ -9,7 +9,7 @@ Written for the person who tunes the AI, not for the person who reads the code. 
 
 Yes, with two clarifications:
 
-* **Each AI ship has its own small state machine.** At any moment its tactical steering is in one state (`STOCK`, `DIVE`, `DIVE-SKIP`, `AIM`, `PANIC`), and its missile-defense layer is in `NONE`, `CURTAIN`, `FLARES`, `EVADE`, `PANIC`, or `ROLL` (visible live in battle if you turn on `"debug_overlay": true` in `ally.json`).
+* **Each AI ship has its own small state machine.** At any moment its tactical steering is in one state (`STOCK`, `DIVE`, `DIVE-SKIP`, `AIM`, `PANIC`), and its missile-defense layer is in `NONE`, `CURTAIN`, `FLARES`, `EVADE`, `PANIC`, or `ROLL` (visible live in battle if you turn on `"logging": { "debug_overlay": true }` in `ally.json`).
 * **It is not a replacement brain.** The game's own AI runs every tick, picks targets, aims guns, and computes a desired *waypoint*. `hf_ai` sits on that output: it either leaves the stock waypoint alone (`STOCK`) or blends/replaces it when a maneuver triggers.
 
 ## 2. What happens every tick

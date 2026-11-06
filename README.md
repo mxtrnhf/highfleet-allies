@@ -10,11 +10,11 @@ Two mods for **HighFleet (Steam 1.163)**, built on [logdot's Highfleet-Modloader
 
 Both are optional, independent DLLs. Everything is reverse-engineered, so **Steam 1.163 only**; they refuse to start on other versions. Back up your `Saves` folder first.
 
-> **UPGRADING TO PACK v0.14.18 — MINOR UPDATE / CONFIG COMPATIBILITY**
-> **From v0.14.17:** merge the new `Modloader/config/ally.json` from the pack (or add `"ally_zenith_autofire": true`). The pack's ally config is updated for this release: it carries the new Zenith key and keeps the existing button settings (the click sounds need no key of their own); old configs still load and use the vanilla `true` default for the missing key. The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
+> **UPGRADING TO PACK v0.14.19 — CONFIG CLEANUP**
+> **From v0.14.18:** replace the `logging` block in `Modloader/config/ally.json`. `logging.debug_log` now defaults to `false` and is the runtime debug switch; `logging.debug_overlay` replaces the top-level `debug_overlay` key (the old key still loads). `max_lines`, `log_precombat`, `probe_lines`, `log_colors` and `dead_node` are retired and ignored. The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
 > **From v0.14.16 or older:** no separate `hf_ai.json` change is needed unless you come from v0.14.13 or older, where the preset still has old dive/flare values: replace `Modloader/config/hf_ai.json` with the new one in the release pack (or delete your old `hf_ai.json` so fresh defaults are generated). `hf_ai v0.10.11` slims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering.
 
-Release pack **v0.14.18** contains **hf_ally v0.14.18** and **hf_ai v0.10.15** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). This is a minor update: pre-combat ALLY/loadout button click sounds, an optional ally Zenith hold-fire (`ally_zenith_autofire`), and the updated ally config that carries the new key.
+Release pack **v0.14.19** contains **hf_ally v0.14.19** and **hf_ai v0.10.15** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). This is a config cleanup: `debug_log` is a runtime switch and off by default, retired diagnostics were removed, and `debug_overlay` moved under `logging`.
 
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).
@@ -35,10 +35,10 @@ Every setting is already in the config files of the pack, so there is nothing to
 and **TAB** cycles deployed friendly ships. Your old ship becomes an AI ally.
 Enabled by `ship_switching` (default true); [details and keybinding caveats](docs/ship-switching.md).
 
-**Debug overlay:** `"debug_overlay": true` in `ally.json` draws labelled rings
-around every ship, a label with its native AI state, and the AI steering waypoint
-with its distance; with hf_ai v0.10.9+ it adds hf_ai's tactics/missile-evasion
-state. Off by default; [details](docs/debug-overlay.md).
+**Debug overlay:** `"logging": { "debug_overlay": true }` in `ally.json` draws
+labelled rings around every ship, a label with its native AI state, and the AI
+steering waypoint with its distance; with hf_ai v0.10.9+ it adds hf_ai's
+tactics/missile-evasion state. Off by default; [details](docs/debug-overlay.md).
 
 The bundled QoL also reads top-level `elevation_rules`: `vanilla` (default),
 `modern`, `classic` or `classic_kaz`. This controls gun/KAZ firing arcs independently
@@ -55,7 +55,7 @@ Rust nightly/stable ≥ 1.88 with `cargo-xwin` (cross-compiles to Windows MSVC f
     cd ally && cargo xwin build --release --target x86_64-pc-windows-msvc
     cd ai   && cargo xwin build --release --target x86_64-pc-windows-msvc
 
-Logging settings are grouped under `"logging"` in each mod's JSON. In `ally.json`, set `"logging": { "debug_log": true }` for a verbose megalog, watchdog and crash dump (`Modloader/logs/hf_ally_megalog_*.log`, `hf_ally_crash_*.dmp`; dumps may contain paths and campaign data, delete them after sending). The cargo feature `megalog` still forces this mode on. Other text diagnostics remain available, including `logging.dead_node` (default false) and `hf_ai.json`'s `logging.log_panic`. Old logging-key locations remain readable; explicit nested settings take precedence. Ship/battle CSV capture, F9 capture markers and replay-analysis tools have been removed, including the `telemetry` cargo feature.
+Logging settings are grouped under `"logging"` in each mod's JSON. In `ally.json`, set `"logging": { "debug_log": true }` for a verbose megalog, watchdog and crash dump (`Modloader/logs/hf_ally_megalog_*.log`, `hf_ally_crash_*.dmp`; dumps may contain paths and campaign data, delete them after sending). `debug_log` is an on/off switch and defaults to `false`; the legacy `megalog` cargo feature does not force it on. `logging.gui_inspect` and `logging.log_creatures` remain available (both default false), as does `hf_ai.json`'s `logging.log_panic`. Old top-level forms of the kept keys remain readable; explicit nested settings take precedence. `max_lines`, `log_precombat`, `probe_lines`, `log_colors` and `dead_node` are retired and ignored. See [retired diagnostics](docs/retired-diagnostics.md) and [all ally settings](docs/ally-config.md). Ship/battle CSV capture, F9 capture markers and replay-analysis tools have been removed, including the `telemetry` cargo feature.
 Build and publish releases through [GitHub Actions](.github/workflows/release.yml): run **Build and publish release** with the pack version. It builds all three DLLs on Windows, packages the tracked presets, and publishes the ZIP/checksum to GitHub Releases. For local packaging only: `python3 tools/package_release.py --version 0.14.2 --output ../release_packs`.
 
 Automated tests have been removed. Build success does not validate hooks or gameplay; validate those in game.

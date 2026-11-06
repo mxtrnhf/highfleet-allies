@@ -1,3 +1,5 @@
+//! RETIRED in hf_ally v0.14.19: not compiled.
+//!
 //! `log_colors` (diagnostic): logs every distinct colour the game hands to its sprite-colour setter `0x140172ae0`
 //! (RCX sprite, EDX ARGB, R8D corner), its colour-vector setter `0x140016fe0` (RCX out float4*, EDX ARGB) and its font style
 //! call `0x1401a8710` (name, scale, blend, colour in R9D), with the return address of the caller. Used to read off the

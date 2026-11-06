@@ -4,8 +4,13 @@
 labels and the AI waypoint display. It is off by default and is independent of `spawn_ally`.
 
 ```json
-"debug_overlay": true
+"logging": {
+  "debug_overlay": true
+}
 ```
+
+The old top-level `"debug_overlay": true` is still read and moved into the
+`logging` block when the config is parsed.
 
 ## What it draws
 
@@ -108,7 +113,7 @@ Relevant code:
 
 * `ally/src/debug_overlay.rs` -- projection, rings and labels;
 * `ally/src/ally_reticles.rs` -- shared battle HUD post-pass;
-* `ally/src/lib.rs` -- `debug_overlay` config key and install condition.
+* `ally/src/lib.rs` -- `logging.debug_overlay` config key and install condition.
 
 ## Validation status
 
@@ -122,7 +127,7 @@ Relevant code:
   3. labels do not survive into the city view / Esc menu / end screen;
   4. the game's own missile circles and target boxes still look normal (the line primitive and font
      style are shared native objects; the font style is saved and restored after each draw);
-  5. `debug_overlay: false` draws nothing and keeps the old reticle-only behaviour;
+  5. `logging.debug_overlay: false` draws nothing and keeps the old reticle-only behaviour;
   6. with hf_ai loaded, the second line tracks `DIVE` / `AIM` / `EVADE` / `ROLL` as those stages
      start and end, and the line disappears when hf_ai is removed;
   7. ring labels stay attached to the correct ring at different zoom levels, and the waypoint
@@ -154,7 +159,7 @@ Relevant code:
   `0x14029a8c1`. Both features can now be enabled separately, and only one set of five stolen
   bytes exists.
 * Version bumped to 0.14.14 in `Cargo.toml` and `Cargo.lock`; the player preset gains the disabled
-  `debug_overlay` key.
+  `logging.debug_overlay` key.
 
 ### 2026-11-03 -- hf_ai state line
 

@@ -21,7 +21,7 @@
 
 highfleet_mod_api::export_logger!();
 
-/// A line for the debug build's megalog (a no-op, and the arguments are not even formatted, otherwise).
+/// A line for the debug mode's megalog (a no-op, and the arguments are not even formatted, otherwise).
 macro_rules! crumb {
     ($($arg:tt)*) => {
         if diag::debug() {
@@ -37,7 +37,6 @@ mod ship_switch;
 mod ally_reticles;
 mod bomber;
 mod bomber_math;
-mod color_probe;
 mod debug_overlay;
 mod debug_state;
 mod diag;
@@ -46,7 +45,6 @@ mod max_enemy;
 mod missile_guard;
 mod native_layout;
 mod plane_loadouts;
-mod dead_node;
 
 use std::{
     ffi::{c_char, CStr},
@@ -291,9 +289,6 @@ struct Config {
     /// too). A plain number is still accepted so configs from before v0.14.0 keep working (read as 0xRRGGBB).
     #[serde(deserialize_with = "deserialize_hex_color")]
     ally_damage_color: String,
-    /// Debug overlay in the tactical battle: rings around every ship and its AI driver state above the hull.
-    /// Off by default; independent of `spawn_ally`.
-    debug_overlay: bool,
     logging: LoggingConfig,
     /// Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed.
     ally_sounds: bool,
@@ -337,7 +332,6 @@ impl Default for Config {
             enemy_all_at_once: false,
             plane_loadouts: true,
             ally_damage_color: "#00E4FF".to_string(),
-            debug_overlay: false,
             max_allies: 2,
             ally_panels: true,
             ship_switching: true,
@@ -355,30 +349,25 @@ impl Default for Config {
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct LoggingConfig {
-    /// Megalog, watchdog and crash minidump for bug reports.
+    /// Runtime debug mode: megalog, watchdog, crash minidump and the verbose diagnostics.
+    /// Off by default and independent of the cargo feature.
     debug_log: bool,
-    /// Spawn-line budget per level/session (lifted by debug mode).
-    max_lines: u32,
-    log_precombat: bool,
-    probe_lines: bool,
-    log_colors: bool,
+    /// Battle debug overlay: rings around every ship and its AI driver state above the hull.
+    /// Off by default; independent of `spawn_ally`.
+    debug_overlay: bool,
+    /// Full GUI lists on clicks and native ammo-selector rebuilds (diagnostic, off by default).
     gui_inspect: bool,
+    /// Creature add/remove log (diagnostic, off by default).
     log_creatures: bool,
-    /// Read-only hooks that report the native dead-node assertion to a text log.
-    dead_node: bool,
 }
 
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
-            debug_log: true,
-            max_lines: 600,
-            log_precombat: false,
-            probe_lines: false,
-            log_colors: false,
+            debug_log: false,
+            debug_overlay: false,
             gui_inspect: false,
             log_creatures: false,
-            dead_node: false,
         }
     }
 }
@@ -388,10 +377,7 @@ fn parse_config(text: &str) -> Result<Config, serde_json::Error> {
     let mut value: serde_json::Value = serde_json::from_str(text)?;
     if let Some(root) = value.as_object_mut() {
         let mut legacy = serde_json::Map::new();
-        for key in [
-            "debug_log", "max_lines", "log_precombat", "probe_lines",
-            "log_colors", "gui_inspect", "log_creatures",
-        ] {
+        for key in ["debug_log", "debug_overlay", "gui_inspect", "log_creatures"] {
             if let Some(setting) = root.remove(key) {
                 legacy.insert(key.to_string(), setting);
             }
@@ -439,7 +425,8 @@ fn parse_hex_color(text: &str) -> Option<u32> {
 }
 
 static GAME_IS_STEAM_1_163: AtomicBool = AtomicBool::new(false);
-static MAX_LINES: AtomicU32 = AtomicU32::new(600);
+const MAX_LINES: u32 = 600;
+const DEBUG_MAX_LINES: u32 = 1_000_000;
 static LINES: AtomicU32 = AtomicU32::new(0);
 static SPAWN_LINES: AtomicU32 = AtomicU32::new(0);
 static SPAWN_ALLY: AtomicBool = AtomicBool::new(false);
@@ -661,6 +648,15 @@ unsafe fn scene() -> String {
     )
 }
 
+/// The `ALLY ADD`/`ALLY REMOVE` and `ALLY SPAWN` line budget. Debug mode removes the practical limit.
+fn line_budget() -> u32 {
+    if diag::debug() {
+        DEBUG_MAX_LINES
+    } else {
+        MAX_LINES
+    }
+}
+
 /// Returns the level tag for a new line, or `None` when this level's line budget is spent.
 /// A changed level name resets the budget and writes a `LEVEL` line.
 unsafe fn next_line() -> Option<String> {
@@ -678,7 +674,7 @@ unsafe fn next_line() -> Option<String> {
             );
         }
     }
-    if LINES.fetch_add(1, Ordering::Relaxed) >= MAX_LINES.load(Ordering::Relaxed) {
+    if LINES.fetch_add(1, Ordering::Relaxed) >= line_budget() {
         return None;
     }
     Some(level)
@@ -742,9 +738,10 @@ unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
     // spawns are rare and the point of the exercise: their own budget, never shared with ADD lines
     let level = level_name();
     let spawn_n = SPAWN_LINES.fetch_add(1, Ordering::Relaxed);
-    if spawn_n >= MAX_LINES.load(Ordering::Relaxed) {
-        if spawn_n == MAX_LINES.load(Ordering::Relaxed) {
-            log::info!("ALLY SPAWN lines: max_lines reached for this battle, the rest are not logged");
+    let budget = line_budget();
+    if spawn_n >= budget {
+        if spawn_n == budget {
+            log::info!("ALLY SPAWN lines: budget reached for this battle, the rest are not logged");
         }
         return;
     }
@@ -994,7 +991,7 @@ unsafe fn nearest_enemy(from: usize) -> usize {
 /// wants to go, what it targets, and where the player is.
 unsafe fn track_ally(ships: &[usize]) {
     let ally = TRACK_ALLY.load(Ordering::Relaxed);
-    if ally == 0 || !PROBE_LINES.load(Ordering::Relaxed) {
+    if ally == 0 || !diag::debug() {
         return;
     }
     let now = read::<f64>(CLOCK);
@@ -1047,7 +1044,6 @@ unsafe fn track_ally(ships: &[usize]) {
 }
 
 static TOGGLE_ENABLED: AtomicBool = AtomicBool::new(false);
-static LOG_PRECOMBAT: AtomicBool = AtomicBool::new(false);
 /// Per-ship ally choice: bit n = ship number n (2..=9, as numbered on the pre-combat screen) may be the ally.
 static SLOT_MASK: AtomicU32 = AtomicU32::new(1 << 2);
 static USED_MASK: AtomicU32 = AtomicU32::new(0);
@@ -1217,7 +1213,6 @@ static GUI_RECOVERY_EXHAUSTED: AtomicBool = AtomicBool::new(false);
 const GUI_HEALTH_INTERVAL_MS: u64 = 1000;
 const GUI_HEALTH_TRIES: u32 = 8;
 static LAST_TOGGLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static PROBE_LINES: AtomicBool = AtomicBool::new(false);
 // per-battle summary (logged when the roster empties)
 static SUM_T0: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SUM_ENEMIES: AtomicU32 = AtomicU32::new(0);
@@ -2720,7 +2715,7 @@ unsafe fn precombat_dump(which: &str) {
         ensure_toggles();
         crumb!("ensure_toggles: done");
     }
-    if !LOG_PRECOMBAT.load(Ordering::Relaxed) {
+    if !diag::debug() {
         return;
     }
     let build = PRECOMBAT_BUILDS.fetch_add(1, Ordering::Relaxed);
@@ -3164,62 +3159,10 @@ unsafe extern "C" fn on_target_chosen(ship: usize) {
 }
 
 /// Called at the start of the per-frame battle manager.
-static LOG_COLORS: AtomicBool = AtomicBool::new(false);
-static TITLE_PROBE_T: Mutex<f64> = Mutex::new(-100.0);
-
-/// Diagnostic (`log_colors`): every 2 s lists the GUI elements named "TITLE" (the combat hover callouts, notes
-/// `battle-hud-callouts.md` section 5) with what they link to: gui+0x178 (a creature? its side +0xad4; a part? its owner
-/// +0xb8), the flag +0xc08 that chooses lime / red, and +0xa8c. Shows whether a callout knows its ship.
-unsafe fn title_probe() {
-    let now = read::<f64>(CLOCK);
-    let Ok(mut last) = TITLE_PROBE_T.try_lock() else { return };
-    if now - *last < 2.0 {
-        return;
-    }
-    *last = now;
-    let head: usize = read(GUI_LIST);
-    let mut node: usize = read(head);
-    let mut shown = 0;
-    for _ in 0..800 {
-        if node == 0 || node == head || shown >= 8 {
-            break;
-        }
-        let g: usize = read(node + 0x10);
-        if g != 0 && plausible(g) && cstr(g + GUI_NAME) == "TITLE" {
-            let linked: usize = read(g + 0x178);
-            let class = if plausible(linked) { read::<u8>(linked + native_layout::NODE_CODE) } else { 0 };
-            let owner: usize = if plausible(linked) { read(linked + 0xb8) } else { 0 };
-            let side = |p: usize| if plausible(p) { read::<f32>(p + OFF_SIDE) } else { f32::NAN };
-            log::info!(
-                "TITLE probe: gui {g:#x} active {} flag(+0xc08) {} +0xa8c {:#x} linked(+0x178) {linked:#x} class {class:#x} side(linked) {} owner(+0xb8) {owner:#x} side(owner) {}",
-                read::<i32>(g + OFF_ACTIVE),
-                read::<i32>(g + 0xc08),
-                read::<u32>(g + 0xa8c),
-                side(linked),
-                side(owner)
-            );
-            shown += 1;
-        }
-        node = read(node);
-    }
-}
-
 unsafe extern "C" fn on_battle_tick() {
-    if LOG_COLORS.load(Ordering::Relaxed) {
-        title_probe();
-        // rescanned every 5 s: sprites are created lazily, their handle is 0 until first use
-        static NAMES_T: Mutex<f64> = Mutex::new(-100.0);
-        if let Ok(mut t) = NAMES_T.try_lock() {
-            let now = read::<f64>(CLOCK);
-            if now - *t >= 5.0 {
-                *t = now;
-                // color_probe::scan_names() crashed the game (reads freed list nodes) and matched no sprite: off
-            }
-        }
-    }
+    let _hook = diag::scope("on_battle_tick");
     plane_loadouts::verify(read::<f64>(CLOCK));
     plane_loadouts::tick();
-    let _hook = diag::scope("on_battle_tick");
     precombat_tick(1);
     if !SPAWN_ALLY.load(Ordering::Relaxed) {
         return;
@@ -3425,18 +3368,6 @@ unsafe extern "C" fn version(version: *const c_char) -> bool {
 
 #[no_mangle]
 unsafe extern "C" fn init() -> bool {
-    // the first line of this mod in every log: testers must be able to show which build they run
-    log::info!("{}", diag::banner());
-    diag::install();
-    if !GAME_IS_STEAM_1_163.load(Ordering::Relaxed) {
-        log::error!("hf_ally: needs Steam 1.163, not starting");
-        return false;
-    }
-    if GetModuleHandleA(std::ptr::null()) as usize != IMAGE_BASE {
-        log::error!("hf_ally: unexpected image base, not starting");
-        return false;
-    }
-
     let path = "Modloader/config/ally.json";
     let config: Config = match std::fs::read_to_string(path) {
         Ok(text) => parse_config(&text).unwrap_or_else(|error| {
@@ -3451,17 +3382,28 @@ unsafe extern "C" fn init() -> bool {
             config
         }
     };
+    let supported = GAME_IS_STEAM_1_163.load(Ordering::Relaxed);
+    let image_ok = GetModuleHandleA(std::ptr::null()) as usize == IMAGE_BASE;
+    // debug_log is the runtime switch; set it before install so the legacy cargo feature cannot force it
+    diag::set_debug(supported && image_ok && config.enabled && config.logging.debug_log);
+    // the first line of this mod in every log: testers must be able to show which build they run
+    log::info!("{}", diag::banner());
+    diag::install();
+    if !supported {
+        log::error!("hf_ally: needs Steam 1.163, not starting");
+        return false;
+    }
+    if !image_ok {
+        log::error!("hf_ally: unexpected image base, not starting");
+        return false;
+    }
     if !config.enabled {
         log::info!("hf_ally: disabled in {path}");
         return true;
     }
-    if config.logging.debug_log && !diag::debug() {
-        diag::enable_debug();
+    if config.logging.debug_log {
         log::info!("hf_ally: debug_log on: megalog, watchdog and crash dump (large files, see ally.json)");
     }
-    // the debug build lifts the line budgets (a session never gets them back: the level name is always "?")
-    let max_lines = if diag::debug() { config.logging.max_lines.max(1_000_000) } else { config.logging.max_lines };
-    MAX_LINES.store(max_lines, Ordering::Relaxed);
     SPAWN_ALLY.store(config.spawn_ally, Ordering::Relaxed);
     MARKER_SEAM_SEL.store(select_marker_seam(config.marker_seam), Ordering::Relaxed);
     MARKER_DELAY_MS.store(config.marker_delay_ms, Ordering::Relaxed);
@@ -3469,7 +3411,6 @@ unsafe extern "C" fn init() -> bool {
         // ASCII only; '@' is a line break for the game's text code
         *text = config.marker_text.bytes().filter(|b| (0x20..0x7f).contains(b) && *b != b'@').chain([0]).collect();
     }
-    PROBE_LINES.store(config.logging.probe_lines || diag::debug(), Ordering::Relaxed);
     MAX_ALLIES.store(config.max_allies.max(1), Ordering::Relaxed);
     AMMO_ON.store(config.ally_ai_ammo, Ordering::Relaxed);
     missile_guard::set_autofire(config.ally_zenith_autofire);
@@ -3555,7 +3496,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             )
             .map_err(|e| e.to_string())?;
     }
-    if config.logging.log_precombat || config.ally_toggle || diag::debug() {
+    if config.ally_toggle || diag::debug() {
         HAVE_PRECOMBAT_HOOK.store(true, Ordering::Relaxed);
         let sites: [(usize, [u8; 5], *const ()); 3] = [
             (PRECOMBAT_SEAM, PRECOMBAT_SEAM_BYTES, on_precombat as *const ()),
@@ -3683,7 +3624,6 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             AMMO_ON.store(false, Ordering::Relaxed);
         }
     }
-    LOG_PRECOMBAT.store(config.logging.log_precombat || diag::debug(), Ordering::Relaxed);
     SPARE_PRIZES.store(config.spare_prizes && config.spawn_ally, Ordering::Relaxed);
     if config.spare_prizes && config.spawn_ally {
         let target_ok = std::slice::from_raw_parts(TARGET_FN as *const u8, 3) == [0x48, 0x8b, 0xc4];
@@ -3748,19 +3688,15 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         ally_panels::install(&mut session);
     }
     let reticles = config.spawn_ally && config.ally_reticles;
-    if reticles || config.debug_overlay {
+    if reticles || config.logging.debug_overlay {
         // the reticle module owns the single per-frame battle HUD post-pass that both features draw from
         ally_reticles::install(
             &mut session,
             ally_damage_color,
             config.ally_reticle_scale,
             reticles,
-            config.debug_overlay,
+            config.logging.debug_overlay,
         );
-    }
-    if config.logging.log_colors {
-        color_probe::install(&mut session);
-        LOG_COLORS.store(true, Ordering::Relaxed);
     }
     plane_loadouts::EXTRA_GUNPOD.store(config.extra_gunpod, Ordering::Relaxed);
     plane_loadouts::K13_ON.store(config.plane_k13, Ordering::Relaxed);
@@ -3800,9 +3736,6 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
                 ReturnType::None,
             )
             .map_err(|e| e.to_string())?;
-    }
-    if config.logging.dead_node {
-        dead_node::install_dead_node_hooks(&mut session)?;
     }
     session.install_permanently().map_err(|e| e.to_string())
 }

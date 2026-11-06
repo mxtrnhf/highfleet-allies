@@ -43,22 +43,24 @@ restore the backed-up hf_ally DLL. Keep exactly one hf_ally DLL installed.
 
 ## Logging
 
-Use the existing nested `"logging"` block in `ally.json`. `"debug_log"` is already `true`
-in the player preset; set `"gui_inspect"` and `"log_precombat"` to `true`:
+Use the existing nested `"logging"` block in `ally.json`. In v0.14.19+ the
+player preset has `"debug_log": false`; set it to `true`, and set
+`"gui_inspect"` to `true`:
 
 ```json
 "logging": {
   "debug_log": true,
-  "gui_inspect": true,
-  "log_precombat": true
+  "gui_inspect": true
 }
 ```
 
-Keep the other logging keys as they are. This is deliberately noisy: `debug_log` enables
-the megalog, watchdog and crash dump, `gui_inspect` logs GUI clicks and ammo-selector
-rebuilds, and `log_precombat` logs the pre-combat GUI lists. Keep `spawn_ally` and
-`ally_toggle` enabled as in your normal config so the ALLY buttons and click inspector
-are active. Restore quieter settings after the test.
+This is deliberately noisy: `debug_log` enables the megalog, watchdog, crash dump,
+pre-combat GUI lists and per-second probes; `gui_inspect` logs GUI clicks and
+ammo-selector rebuilds. On v0.14.5, debug mode did not force the pre-combat list,
+so `log_precombat: true` was needed there; that key is retired in v0.14.19 and
+older configs containing it still load. Keep `spawn_ally` and `ally_toggle`
+enabled as in your normal config so the ALLY buttons and click inspector are
+active. Restore quieter settings after the test.
 
 ## What to test
 

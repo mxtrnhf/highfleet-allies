@@ -1,14 +1,10 @@
 {
   "enabled": true,
   "logging": {
-    "debug_log": true,
-    "max_lines": 600,
-    "log_precombat": false,
-    "probe_lines": false,
-    "log_colors": false,
+    "debug_log": false,
+    "debug_overlay": false,
     "gui_inspect": false,
-    "log_creatures": false,
-    "dead_node": false
+    "log_creatures": false
   },
   "spawn_ally": true,
   "ally_delay_seconds": 1.5,
@@ -41,7 +37,6 @@
   "ally_panels": true,
   "ally_reticles": true,
   "ally_reticle_scale": 0.8,
-  "debug_overlay": false,
   "ally_sounds": true,
   "ally_fuel_retreat_percent": 30.0,
   "marker_text": "PLAYER",
