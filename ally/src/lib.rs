@@ -40,8 +40,8 @@ mod bomber_math;
 mod debug_overlay;
 mod debug_state;
 mod diag;
+mod enemy_waves;
 mod intercept;
-mod max_enemy;
 mod missile_guard;
 mod native_layout;
 mod plane_loadouts;
@@ -283,12 +283,8 @@ struct Config {
     plane_aa_delay: f32,
     plane_aa_angle: f32,
     plane_aa_speed: f32,
-    /// Total enemy ships the battle may field (vanilla 5, clamped to 1..=127). This is the list size;
-    /// `enemy_group_size` controls how many are active at once.
-    max_enemy_ships: u32,
-    /// Enemy slots active at once after the initial setup (vanilla 3, 1..=40). Battle setup still
-    /// places the stock three-ship first group; after the 30 s timer the active group is refilled
-    /// to this size every tick as slots free up.
+    /// Enemy slots active at once (vanilla 3, 1..=40). `Battle_DeployFromReserve` uses this for the
+    /// initial group and for the refill after the 30 s timer. The weight budget is `3 * group_size`.
     enemy_group_size: u32,
     /// Set the 30 s reinforcement timer to 0, so refills start immediately instead of after 30 s.
     /// Does not change the total list or the active group size.
@@ -333,7 +329,6 @@ impl Default for Config {
             plane_aa_delay: 1.0,
             plane_aa_angle: 0.35,
             plane_aa_speed: 1.5,
-            max_enemy_ships: 8,
             enemy_group_size: 3,
             enemy_all_at_once: false,
             marker_text: "PLAYER".to_string(),
@@ -3630,8 +3625,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     if let Err(error) = intercept::install(&mut session, &config.intercept_ignore_oids) {
         log::warn!("hf_ally: {error}");
     }
-    max_enemy::install(&mut session, config.max_enemy_ships);
-    max_enemy::install_waves(&mut session, config.enemy_group_size, config.enemy_all_at_once);
+    enemy_waves::install(&mut session, config.enemy_group_size, config.enemy_all_at_once);
     if config.plane_loadouts {
         match plane_loadouts::install(&mut session) {
             Ok(()) => {

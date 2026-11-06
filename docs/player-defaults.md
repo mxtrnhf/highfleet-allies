@@ -1,14 +1,14 @@
-# Player defaults — release pack v0.14.21
+# Player defaults — release pack v0.14.22
 
-> **Config compatibility.** Updating from v0.14.20: the ally preset is grouped by feature; values and behaviour are unchanged. Enemy-wave docs now distinguish `max_enemy_ships` (total list size) from `enemy_group_size` (slots active at once). Updating from v0.14.19 or older also applies the earlier cleanups: `plane_bombers`, `marker_seam` and `marker_delay_ms` are retired; `ally_damage_color` is HEX; `logging.debug_log` defaults to `false`, `logging.debug_overlay` replaces the top-level key, and the retired logging keys are ignored. The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
+> **Config compatibility.** Updating from v0.14.21: `max_enemy_ships` is retired and ignored. It patched the strategic bomber scene, not normal tactical combat; vanilla tactical battles have no total enemy cap. Use `enemy_group_size` to control how many enemies are active at once. Updating from v0.14.20 or older also applies the earlier cleanups: the preset is grouped by feature; `plane_bombers`, `marker_seam` and `marker_delay_ms` are retired; `ally_damage_color` is HEX; `logging.debug_log` defaults to `false`, `logging.debug_overlay` replaces the top-level key, and the retired logging keys are ignored. The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
 
-The tracked player default profiles for `hf_ally v0.14.21` and `hf_ai v0.10.15` live in:
+The tracked player default profiles for `hf_ally v0.14.22` and `hf_ai v0.10.15` live in:
 
 - [ally/config/ally.json](../ally/config/ally.json)
 - [ai/config/hf_ai.json](../ai/config/hf_ai.json)
 
-The v0.14.21 release uses the same `hf_ai.json` preset as v0.14.15 and later;
-`ally.json` is grouped by feature without changing values. See the
+The v0.14.22 release uses the same `hf_ai.json` preset as v0.14.15 and later;
+`ally.json` drops the misleading `max_enemy_ships` key. See the
 [ally changelog](../ally/CHANGELOG.md) and [ai changelog](../ai/CHANGELOG.md).
 
 The release pack copies these files unchanged. Compiled defaults use the same
@@ -20,7 +20,7 @@ guides to disable specific behavior.
 
 ## Profile highlights
 
-Allies (`hf_ally v0.14.21`): up to two wingmen, 1.5 s arrival delay, eight enemies,
+Allies (`hf_ally v0.14.22`): up to two wingmen, 1.5 s arrival delay,
 three enemy slots active at once, K-13/loadout buttons on, ally ship panels and ally target
 boxes on (`ally_reticle_scale: 0.8`), ship switching on, ally ship bombers off,
 `ally_zenith_autofire` on (vanilla autonomous launches), bomb/rocket and AA attack

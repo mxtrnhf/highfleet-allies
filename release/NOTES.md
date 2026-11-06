@@ -2,27 +2,28 @@
 
 For **HighFleet Steam 1.163**.
 
-> ## Config grouping
-> This is an ally-side config organization update. The preset is grouped by feature; values and behaviour are unchanged. Enemy-wave docs now distinguish total enemy list size from the number active at once. `hf_ai` and QoL are unchanged.
+> ## Enemy config cleanup
+> This removes the misleading `max_enemy_ships` setting. It patched the strategic bomber scene, not normal tactical combat; vanilla tactical battles have no total enemy cap. Use `enemy_group_size` to control how many enemies are active at once. `hf_ai` and QoL are unchanged.
 >
 > ## Config compatibility
-> **Updating from v0.14.20:** no schema change. Merge the grouped preset if you want the same layout. `max_enemy_ships` is the total enemy list size; `enemy_group_size` is the number of enemy slots active at once. The `hf_ai.json` preset is unchanged since hf_ai v0.10.11.
+> **Updating from v0.14.21:** remove or ignore `max_enemy_ships`; it is retired. `enemy_group_size` controls both the initial enemy group and refills after the 30 s timer. `enemy_all_at_once` only sets that timer to 0. The `hf_ai.json` preset is unchanged since hf_ai v0.10.11.
 >
-> **Updating from v0.14.19 or older:** also apply the earlier cleanups: `plane_bombers`, `marker_seam` and `marker_delay_ms` are retired; `ally_damage_color` is HEX; `logging.debug_log` defaults to `false`, `logging.debug_overlay` replaces the top-level key, and the retired logging keys are ignored. If you come from v0.14.13 or older, replace `Modloader/config/hf_ai.json` too.
+> **Updating from v0.14.20 or older:** also apply the earlier cleanups: the ally preset is grouped by feature; `plane_bombers`, `marker_seam` and `marker_delay_ms` are retired; `ally_damage_color` is HEX; `logging.debug_log` defaults to `false`, `logging.debug_overlay` replaces the top-level key, and the retired logging keys are ignored. If you come from v0.14.13 or older, replace `Modloader/config/hf_ai.json` too.
 
-## Changes since v0.14.20
+## Changes since v0.14.21
 
-### `hf_ally v@ALLY_VERSION@` — config grouping
-- The player preset and generated default config are grouped by feature: deployment/retreat, ally combat/UI, aircraft, enemies, markers, logging, and intercept.
-- No values or gameplay behaviour changed.
-- Corrected the enemy-wave explanation: battle setup places the stock three-ship first group. `max_enemy_ships` is the total enemy list size; `enemy_group_size` is the active-slot target for the refill function. After the 30 s timer the live group is topped up every tick as slots free up, not a new three-ship wave every 30 s. `enemy_all_at_once` only sets that timer to 0.
+### `hf_ally v@ALLY_VERSION@` — retire `max_enemy_ships`
+- Removed the key and its patch. The patched instruction was in `SCR_BOMBERS`, the strategic bomber scene setup, not `SCR_COMBAT`.
+- Normal tactical combat fills its enemy list from the engagement through `Precombat_SplitFleetIntoReserveLists` with no total cap, so the setting did nothing in normal battles.
+- `enemy_group_size` is the real control for enemies active at once: it is used for the initial group and for refills after the 30 s timer. The weight budget is `3 × group_size`.
+- `enemy_all_at_once` only sets the 30 s refill timer to 0.
 
 ### Updated ally config
-- The pack's `Modloader/config/ally.json` is grouped by feature. Existing values are retained.
+- The pack's `Modloader/config/ally.json` drops `max_enemy_ships`; the grouped layout is unchanged.
 - `Modloader/config/hf_ai.json` is unchanged.
 
 ### Validation
-- Cross-build only (`cargo xwin build --release --target x86_64-pc-windows-msvc`); no in-game validation was needed for config ordering.
+- Cross-build only (`cargo xwin build --release --target x86_64-pc-windows-msvc`); no in-game validation was performed for this config removal.
 - No automated regression tests were added.
 
 ## Pack contents

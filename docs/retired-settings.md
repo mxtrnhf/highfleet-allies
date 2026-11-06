@@ -3,6 +3,23 @@
 These keys were removed from `ally.json`. Older config files may still contain
 them; they load without error and the keys are ignored.
 
+## `max_enemy_ships` (retired in v0.14.22)
+
+The old patch changed the immediate in `cmp qword [0x147fc75b0], 5` at
+`0x1402caaa0`, inside **`SCR_BOMBERS`** (`0x1402ca2b0`), the strategic bomber
+scene setup. It capped that scene's enemy list, not normal tactical combat.
+
+Normal tactical combat is `SCR_COMBAT` (`0x1402cdaf0`). Its enemy list is filled
+by `Precombat_SplitFleetIntoReserveLists` (`0x1402d9500`), which appends every
+valid non-prize enemy ship from the engagement with no total cap. Vanilla
+tactical battles therefore have no total enemy-ship limit, and this key did
+nothing in them.
+
+The setting was retired rather than repointed: a real tactical total cap would
+have to patch the pre-combat list construction, and the vanilla behaviour is to
+use the whole engagement fleet. Use `enemy_group_size` to control how many
+enemies are active at once.
+
 ## `plane_bombers` (retired in v0.14.20)
 
 `plane_bombers` was the original one-byte global patch at `0x14000cf16`. It

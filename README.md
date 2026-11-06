@@ -4,17 +4,17 @@ Two mods for **HighFleet (Steam 1.163)**, built on [logdot's Highfleet-Modloader
 
 | Mod | What it does |
 |---|---|
-| [`ally/`](ally) (**hf_ally**) | An AI-flown **wingman ship** that fights beside you, pre-combat **ALLY** buttons with stock click sounds, radio lines, retreat/fuel logic, and an optional **Zenith hold-fire** (`ally_zenith_autofire`); **carrier plane armament buttons** (bombs, rockets, optional K-13 AA missiles, charged to your inventory; they follow the game's own plane and loadout tables, so aircraft added by other mods through the QoL `planes` option get a button too); **more enemies per battle** (`max_enemy_ships`, enemy waves); the Sprint-intercept fix. |
+| [`ally/`](ally) (**hf_ally**) | An AI-flown **wingman ship** that fights beside you, pre-combat **ALLY** buttons with stock click sounds, radio lines, retreat/fuel logic, and an optional **Zenith hold-fire** (`ally_zenith_autofire`); **carrier plane armament buttons** (bombs, rockets, optional K-13 AA missiles, charged to your inventory; they follow the game's own plane and loadout tables, so aircraft added by other mods through the QoL `planes` option get a button too); **enemy group size** (`enemy_group_size`, enemy waves); the Sprint-intercept fix. |
 | [`qol/`](qol) (optional) | Logdot's QoL `main` **plus manual editor elevation and optional gun/KAZ firing-arc rules**. **Not required**: logdot's stock QoL release works with `hf_ally`/`hf_ai`. Our build includes refuel/speed settings, manual elevation ([PR #20](https://github.com/logdot/highfleet-qol/pull/20)) and `elevation_rules` ported from our separate fork (vanilla by default). |
 | [`ai/`](ai) (**hf_ai**) | A tactical **AI layer**: enemies and allies dodge hostile aim lines, extend main-gun firing range while retaining native firing checks, deny the dive, drop flare curtains and evade missiles, and **empty their missile racks** in a burst (`ai_missile_dump_*`). Plain-language guide: [docs/hf-ai-tuning-guide.md](docs/hf-ai-tuning-guide.md). |
 
 Both are optional, independent DLLs. Everything is reverse-engineered, so **Steam 1.163 only**; they refuse to start on other versions. Back up your `Saves` folder first.
 
-> **UPGRADING TO PACK v0.14.21 — CONFIG GROUPING**
-> **From v0.14.20:** the ally preset is grouped by feature; values and behaviour are unchanged. `max_enemy_ships` is the total enemy list size, while `enemy_group_size` controls how many enemies are active at once. The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
-> **From v0.14.19 or older:** also apply the earlier cleanups: `plane_bombers`, `marker_seam` and `marker_delay_ms` are retired; `ally_damage_color` is HEX; `logging.debug_log` defaults to `false`, `logging.debug_overlay` replaces the top-level key, and the retired logging keys are ignored. If you come from v0.14.13 or older, replace `Modloader/config/hf_ai.json` too.
+> **UPGRADING TO PACK v0.14.22 — ENEMY CONFIG**
+> **From v0.14.21:** `max_enemy_ships` is retired and ignored. It patched the strategic bomber scene, not normal tactical combat; vanilla tactical battles have no total enemy cap. Use `enemy_group_size` to control how many enemies are active at once. The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
+> **From v0.14.20 or older:** also apply the earlier cleanups: the ally preset is grouped by feature; `plane_bombers`, `marker_seam` and `marker_delay_ms` are retired; `ally_damage_color` is HEX; `logging.debug_log` defaults to `false`, `logging.debug_overlay` replaces the top-level key, and the retired logging keys are ignored. If you come from v0.14.13 or older, replace `Modloader/config/hf_ai.json` too.
 
-Release pack **v0.14.21** contains **hf_ally v0.14.21** and **hf_ai v0.10.15** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). This is a config-organization update: the preset is grouped by feature, and the enemy-wave docs now distinguish total enemy list size from the number active at once.
+Release pack **v0.14.22** contains **hf_ally v0.14.22** and **hf_ai v0.10.15** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). This removes the misleading `max_enemy_ships` key and documents `enemy_group_size` as the real control for enemies active at once.
 
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).
