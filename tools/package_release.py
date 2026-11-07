@@ -32,7 +32,7 @@ def component_versions():
     }
 
 
-def populate(stage, version, versions, commit):
+def populate(stage, version, versions, commit, validation):
     shutil.copytree(REPO / "release", stage, dirs_exist_ok=True)
     shutil.copy2(REPO / "LICENSE", stage / "LICENSE.txt")
 
@@ -77,7 +77,7 @@ def populate(stage, version, versions, commit):
             ) if os.environ.get("GITHUB_RUN_ID") else None,
         },
         "target": TARGET, "cargo_features": {"ally": [], "ai": [], "qol": []},
-        "gameplay_validation": "Not run by the agent; player testing required.",
+        "gameplay_validation": validation,
         "files": {
             str(path.relative_to(stage)): digest(path)
             for path in sorted(stage.rglob("*")) if path.is_file()
@@ -89,6 +89,7 @@ def populate(stage, version, versions, commit):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--validation", default="See NOTES.md.")
     parser.add_argument("--output", type=Path, default=REPO.parent / "release_packs")
     args = parser.parse_args()
     if not re.fullmatch(r"\d+\.\d+\.\d+", args.version):
@@ -108,7 +109,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="hf-pack-", dir=output) as temporary:
         stage = Path(temporary) / "pack"
         stage.mkdir()
-        populate(stage, args.version, component_versions(), commit)
+        populate(stage, args.version, component_versions(), commit, args.validation)
         pending = Path(temporary) / "pack.zip"
         with zipfile.ZipFile(pending, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as handle:
             for path in sorted(stage.rglob("*")):
