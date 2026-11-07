@@ -25,7 +25,6 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows_sys::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION};
 
 mod ai_flares;
-mod curtain_math;
 mod debug_state;
 mod early_fire;
 mod flares_config;

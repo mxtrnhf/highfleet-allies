@@ -12,27 +12,24 @@
   "ai_flares": {
     "enabled": true,
     "allies": true,
+    "evade": true,
+
     "trigger_range": 400.0,
     "reaction_probability": 0.6,
     "burst_seconds": 1.5,
-    "min_interval_seconds": 1.5,
-    "evade": true,
+
     "evasion_seconds": 3.0,
     "evasion_strength": 0.5,
+
     "panic_evasion_probability": 0.1,
     "panic_evasion_seconds": 5.0,
-    "panic_boost": 2.0,
     "barrel_roll_probability": 0.001,
     "barrel_roll_seconds": 2.0,
-    "stray_missiles": true,
-    "launch_flares_probability": 0.6,
-    "launch_flares_target_probability": 1.0,
-    "launch_flares_targeted_only": true,
-    "launch_flares_max_drops": 6,
-    "launch_flares_min_rack": 0.5,
-    "launch_flares_evade": 0.9,
-    "launch_flares_evade_range": 400.0,
-    "launch_flares_boost": 2.0
+    "panic_boost": 2.0,
+
+    "min_interval_seconds": 1.5,
+
+    "stray_missiles": true
   },
   "tactics": {
     "enabled": true,

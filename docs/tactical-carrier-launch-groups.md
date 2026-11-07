@@ -75,7 +75,8 @@ Record logs/video and the exact JSON when reporting in-game results.
 Both source copies cross-built as v0.10.3 for x86_64-pc-windows-msvc.
 The release Windows test binaries compiled; they were not executed.
 All 74 host math tests passed (6 group, 3 TWR, 19 panic, 35 tactics, 11 curtain)
-from the release source in `highfleet-allies/ai`. New modules pass rustfmt;
+from the release source in `highfleet-allies/ai` at that time; the 11 curtain
+tests were removed with the v0.10.18 curtain retirement. New modules pass rustfmt;
 crate-wide formatting checks report existing formatting differences.
 
 Installed `highfleet-allies/ai` build into the active Steam HighFleet folder as

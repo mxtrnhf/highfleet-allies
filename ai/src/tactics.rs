@@ -55,8 +55,8 @@ static GATE_LOGS: AtomicU32 = AtomicU32::new(0);
 /// `dive_boost` as f32 bits (1.0 = none).
 static DIVE_BOOST: AtomicU32 = AtomicU32::new(0x3f80_0000);
 static AIM_BOOST: AtomicU32 = AtomicU32::new(0x3f80_0000);
-/// A running dodge boost: the factor, and the world direction to dash in (`None` = strength only, e.g. a
-/// flare-curtain retreat). Written by `decide`, read by the engine-command hook.
+/// A running dodge boost: the factor, and the world direction to dash in (`None` = strength only).
+/// Written by `decide`, read by the engine-command hook.
 #[derive(Clone, Copy)]
 struct Boost {
     creature: usize,
@@ -90,14 +90,6 @@ pub fn wants_engine_boost() -> bool {
     ENABLED.load(Ordering::Relaxed) && f32::from_bits(DIVE_BOOST.load(Ordering::Relaxed)).max(f32::from_bits(AIM_BOOST.load(Ordering::Relaxed))) > 1.0
 }
 
-/// Keeps a waypoint inside the arena (50 u margin at the sides and the ceiling) using the bounds the tactics stage
-/// read; unchanged when they are not known (tactics off or no battle yet).
-pub fn clamp_to_arena(waypoint: (f32, f32), ship: (f32, f32)) -> (f32, f32) {
-    let Ok(guard) = WORLD.try_lock() else { return waypoint };
-    let Some(bounds) = guard.as_ref().and_then(|w| w.bounds) else { return waypoint };
-    tm::clamp_waypoint(waypoint, ship, &bounds)
-}
-
 /// Drops the chase boost of `creature` (the panic stage owns the engines from now on).
 fn clear_boost(creature: usize) {
     let Ok(mut list) = BOOSTED.try_lock() else { return };
@@ -113,8 +105,8 @@ fn note_boost(creature: usize, now: f64, factor: f32, escape: Option<(f32, f32)>
 }
 
 /// Re-points a running boost at the waypoint the steering hook actually stores. The panic stage runs after
-/// `decide` and can override the tactic's waypoint (curtain retreat, missile evasion), so the engine hook must
-/// dash along the final choice, not the tactic's.
+/// `decide` and can override the tactic's waypoint (missile evasion), so the engine hook must dash along the
+/// final choice, not the tactic's.
 pub fn set_escape(creature: usize, now: f64, escape: Option<(f32, f32)>) {
     let Ok(mut list) = BOOSTED.try_lock() else { return };
     if let Some(entry) = list.iter_mut().rev().find(|entry| entry.creature == creature && entry.noted_at == now) {

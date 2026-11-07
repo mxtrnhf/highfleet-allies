@@ -444,21 +444,6 @@ fn dive_update(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, now: f64,
     }
 }
 
-/// The waypoint kept inside the arena sides and ceiling (50 u margin), per axis: a waypoint beyond a border is moved
-/// onto it (a ship already outside is pulled back in rather than left with a zero-length course).
-pub fn clamp_waypoint(wp: (f32, f32), ship: (f32, f32), b: &Bounds) -> (f32, f32) {
-    const MARGIN: f32 = 50.0;
-    if !(wp.0.is_finite() && wp.1.is_finite() && ship.0.is_finite() && ship.1.is_finite()) {
-        return wp;
-    }
-    let x = wp.0.clamp(b.xmin + MARGIN, b.xmax - MARGIN);
-    let y = wp.1.max(b.ymin + MARGIN);
-    if (x - ship.0).hypot(y - ship.1) < 1.0 {
-        return wp; // clamping would leave no course at all
-    }
-    (x, y)
-}
-
 /// The shared awareness clock: windows of `aim_window_s` opening at random intervals.
 #[derive(Clone, Debug, Default)]
 pub struct AimClock {

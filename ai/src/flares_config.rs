@@ -14,8 +14,9 @@ pub const MAX_SECONDS: f32 = 60.0;
 /// throws itself sideways until the missile is gone.
 ///
 /// Only has an effect on Steam 1.163. Defaults match config/hf_ai.json. Keep any separate QoL ai_flares feature off:
-/// both patch the same sites. The block also controls missile evasion, barrel rolls, the preventive flare curtain and
-/// stray-missile reactions, not only flare releases.
+/// both patch the same sites. The block also controls missile evasion, barrel rolls and stray-missile reactions, not
+/// only flare releases. The preventive flare curtain was retired in v0.10.18; old `curtain_*` and `launch_flares_*`
+/// keys are ignored by the config parser.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiFlaresConfig {
@@ -26,8 +27,10 @@ pub struct AiFlaresConfig {
     ///
     /// Limited to `0` through `5000`.
     pub trigger_range: f32,
-    /// Chance, checked about ten times a second while a missile is inside the range, that the
-    /// ship starts a burst. `1.0` reacts at once, `0.1` makes the ship slow and unreliable.
+    /// Chance that the ship reacts to a given missile. Rolled once when that missile first
+    /// enters the trigger range; a failed roll makes the ship ignore that missile until the
+    /// immediate threat picture clears. Other and later missiles roll separately. `1.0` always
+    /// reacts, `0.1` lets most missiles through.
     ///
     /// Limited to `0.0` through `1.0`.
     pub reaction_probability: f32,
@@ -88,56 +91,6 @@ pub struct AiFlaresConfig {
     /// Disabled by default.
     #[serde(skip)]
     pub log_panic: bool,
-    /// "Flare curtain": chance, rolled once per enemy ship each time the player's side launches a missile, that the
-    /// ship starts dropping flares at random intervals BEFORE any lock-on (like a helicopter flooding the area with
-    /// fake heat sources). `0.0` = off. Enemy ships only.
-    ///
-    /// Limited to `0.0` through `1.0`.
-    pub launch_flares_probability: f32,
-    /// Shortest and longest wait between two drops of a curtain, in seconds (every drop fires all launchers).
-    pub launch_flares_interval_min: f32,
-    pub launch_flares_interval_max: f32,
-    /// How long one curtain lasts; another launch while it runs extends it.
-    pub launch_flares_seconds: f32,
-    /// Most drops of one curtain, so the racks are not empty when the real panic needs them.
-    pub launch_flares_max_drops: u32,
-    /// Quiet time after a curtain before the next one may start.
-    pub launch_flares_cooldown: f32,
-    /// While a curtain runs the ship moves away from the launched missile: `0.0` none, `1.0` all of its course.
-    pub launch_flares_evade: f32,
-    /// Only missiles closer than this (game units) count for that retreat.
-    pub launch_flares_evade_range: f32,
-    /// Engine boost while that retreat runs (`1.0` = none, `2.0` = like the player's Shift).
-    ///
-    /// Limited to `1.0` through `4.0`.
-    pub launch_flares_boost: f32,
-    /// A ship only drops flares in a curtain while its racks hold at least this share of the most flares it was seen
-    /// to carry (so some are left for a real panic). Below it, or with no flare launcher at all, the curtain only
-    /// retreats. `0.0` = always drop.
-    ///
-    /// Limited to `0.0` through `1.0`.
-    pub launch_flares_min_rack: f32,
-    /// Preventive defence only: a curtain starts only for the ship the launched missile is aimed at, or a ship within
-    /// `launch_flares_neighbor_range` of it. `false` = every ship of that side rolls.
-    pub launch_flares_targeted_only: bool,
-    /// How close (game units) a ship must be to the targeted ship to join its curtain. `0` = only the targeted ship.
-    ///
-    /// Limited to `0` through `5000`.
-    pub launch_flares_neighbor_range: f32,
-    /// A curtain waits a random time in this range (seconds) after the launch before its first drop, so the flares
-    /// are still in the air when the missile arrives (they disappear after a short time).
-    ///
-    /// Limited to `0` through `30`.
-    pub launch_flares_delay_min: f32,
-    pub launch_flares_delay_max: f32,
-    /// With a known missile ETA (distance / `launch_flares_missile_speed`) the first drop is `ETA - launch_flares_eta_lead`
-    /// seconds after the launch, never later than `launch_flares_eta_max_wait`. Flares live 5 s, so a lead near 4 puts
-    /// the cloud in the air when the missile arrives.
-    pub launch_flares_eta_lead: f32,
-    pub launch_flares_eta_max_wait: f32,
-    pub launch_flares_missile_speed: f32,
-    /// Chance for the ship the missile is aimed at (the neighbours use `launch_flares_probability`).
-    pub launch_flares_target_probability: f32,
     /// Stray missiles: a missile that is NOT locked on to the ship (it lost its lock or is aimed at someone else) but
     /// flies a path that passes within `stray_missile_radius` (+ half the ship's size) of the ship within
     /// `stray_missile_eta_s` seconds, closer than `stray_missile_range`, counts as a threat for the panic.
@@ -165,24 +118,6 @@ impl Default for AiFlaresConfig {
             panic_boost: 2.0,
             panic_evasion_seconds: 5.0,
             log_panic: false,
-            launch_flares_probability: 0.6,
-            launch_flares_interval_min: 0.5,
-            launch_flares_interval_max: 1.0,
-            launch_flares_seconds: 5.0,
-            launch_flares_max_drops: 6,
-            launch_flares_cooldown: 6.0,
-            launch_flares_evade: 0.9,
-            launch_flares_evade_range: 400.0,
-            launch_flares_boost: 2.0,
-            launch_flares_min_rack: 0.5,
-            launch_flares_targeted_only: true,
-            launch_flares_neighbor_range: 600.0,
-            launch_flares_delay_min: 1.0,
-            launch_flares_delay_max: 2.0,
-            launch_flares_eta_lead: 4.0,
-            launch_flares_eta_max_wait: 8.0,
-            launch_flares_missile_speed: 230.0,
-            launch_flares_target_probability: 1.0,
             stray_missiles: true,
             stray_missile_radius: 150.0,
             stray_missile_eta_s: 3.0,
@@ -260,45 +195,10 @@ impl AiFlaresConfig {
                 0.05,
                 MAX_SECONDS,
             ),
-            launch_flares_probability: pick(
-                self.launch_flares_probability,
-                default.launch_flares_probability,
-                0.0,
-                1.0,
-            ),
-            launch_flares_interval_min: pick(
-                self.launch_flares_interval_min,
-                default.launch_flares_interval_min,
-                0.05,
-                MAX_SECONDS,
-            ),
-            launch_flares_interval_max: pick(
-                self.launch_flares_interval_max,
-                default.launch_flares_interval_max,
-                0.05,
-                MAX_SECONDS,
-            )
-            .max(pick(self.launch_flares_interval_min, default.launch_flares_interval_min, 0.05, MAX_SECONDS)),
-            launch_flares_seconds: pick(self.launch_flares_seconds, default.launch_flares_seconds, 0.1, MAX_SECONDS),
-            launch_flares_max_drops: self.launch_flares_max_drops.min(100),
-            launch_flares_cooldown: pick(self.launch_flares_cooldown, default.launch_flares_cooldown, 0.0, MAX_SECONDS),
-            launch_flares_boost: pick(self.launch_flares_boost, default.launch_flares_boost, 1.0, MAX_PANIC_BOOST),
-            launch_flares_min_rack: pick(self.launch_flares_min_rack, default.launch_flares_min_rack, 0.0, 1.0),
-            launch_flares_targeted_only: self.launch_flares_targeted_only,
-            launch_flares_neighbor_range: pick(self.launch_flares_neighbor_range, default.launch_flares_neighbor_range, 0.0, MAX_TRIGGER_RANGE),
-            launch_flares_delay_min: pick(self.launch_flares_delay_min, default.launch_flares_delay_min, 0.0, 30.0),
-            launch_flares_delay_max: pick(self.launch_flares_delay_max, default.launch_flares_delay_max, 0.0, 30.0)
-                .max(pick(self.launch_flares_delay_min, default.launch_flares_delay_min, 0.0, 30.0)),
-            launch_flares_eta_lead: pick(self.launch_flares_eta_lead, default.launch_flares_eta_lead, 0.0, 10.0),
-            launch_flares_eta_max_wait: pick(self.launch_flares_eta_max_wait, default.launch_flares_eta_max_wait, 0.0, 30.0),
-            launch_flares_missile_speed: pick(self.launch_flares_missile_speed, default.launch_flares_missile_speed, 50.0, 1000.0),
-            launch_flares_target_probability: pick(self.launch_flares_target_probability, default.launch_flares_target_probability, 0.0, 1.0),
             stray_missiles: self.stray_missiles,
             stray_missile_radius: pick(self.stray_missile_radius, default.stray_missile_radius, 10.0, 1000.0),
             stray_missile_eta_s: pick(self.stray_missile_eta_s, default.stray_missile_eta_s, 0.2, 20.0),
             stray_missile_range: pick(self.stray_missile_range, default.stray_missile_range, 100.0, MAX_TRIGGER_RANGE * 2.0),
-            launch_flares_evade: pick(self.launch_flares_evade, default.launch_flares_evade, 0.0, 1.0),
-            launch_flares_evade_range: pick(self.launch_flares_evade_range, default.launch_flares_evade_range, 0.0, MAX_TRIGGER_RANGE * 2.0),
         }
     }
 }

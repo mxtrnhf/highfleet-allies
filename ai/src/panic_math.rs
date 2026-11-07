@@ -1,7 +1,9 @@
 //! The pure part of the ported qol `ai_flares`: direction math and the per-ship panic timers. No game memory, no
 //! dependencies, so it can be tested on the host (`rustc --edition 2021 --test src/panic_math.rs`, see README).
-//! The function bodies are the original `hf_qol_fork/src/ai_flares.rs` code, moved here unchanged except where
-//! noted; the hook glue that reads game memory stays in `ai_flares.rs`.
+//! The function bodies started as the original `hf_qol_fork/src/ai_flares.rs` code, moved here unchanged except
+//! where noted; the hook glue that reads game memory stays in `ai_flares.rs`. The reaction roll is now per missile
+//! body instead of per scan: a failed roll is remembered in [`PanicState::ignored_threats`] until the threat picture
+//! clears.
 
 /// A still-coming missile keeps the evasion going for at least this many more seconds.
 pub const EVASION_EXTENSION: f64 = 1.0;
@@ -15,6 +17,8 @@ pub const EVASION_FALLBACK_LENGTH: f32 = 200.0;
 pub const MIN_BOOSTED_STRENGTH: f32 = 0.05;
 /// How often, in game seconds, a creature looks for threats.
 pub const SCAN_INTERVAL: f64 = 0.1;
+/// Upper bound on the missile bodies a ship remembers as ignored after a failed reaction roll.
+const MAX_IGNORED_THREATS: usize = 16;
 
 /// The sanitized config values the panic logic uses.
 #[derive(Debug, Clone, Copy)]
@@ -43,6 +47,15 @@ pub struct Threat {
     pub stray: bool,
 }
 
+/// The result of looking for threats around one ship.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThreatScan {
+    /// The nearest threat that has not already failed its reaction roll.
+    pub threat: Option<Threat>,
+    /// Whether any valid threat was in range, including missiles this ship already ignored.
+    pub any_in_range: bool,
+}
+
 pub struct PanicState {
     pub next_scan: f64,
     /// Flares are dropped until this game time.
@@ -62,6 +75,8 @@ pub struct PanicState {
     pub dodge_side: f32,
     /// Where the nearest threatening missile was at the last scan.
     pub missile_position: Option<(f32, f32)>,
+    /// Missile bodies whose reaction roll failed. They stay ignored until no threat is left in range.
+    pub ignored_threats: Vec<usize>,
     // Trace-only bookkeeping (hf_ai addition; never read by the behaviour).
     /// A panic start was traced and its end has not been traced yet.
     pub trace_active: bool,
@@ -81,6 +96,7 @@ impl Default for PanicState {
             flight: None,
             dodge_side: 1.0,
             missile_position: None,
+            ignored_threats: Vec::new(),
             trace_active: false,
             trace_last_steer: f64::NEG_INFINITY,
             trace_last_engine: f64::NEG_INFINITY,
@@ -114,7 +130,7 @@ pub enum ThreatEvent {
     NoThreat,
     /// A panic is running and a missile is still coming.
     ThreatContinues(Threat),
-    /// A missile is in range but the reaction roll failed.
+    /// A new missile entered range and its reaction roll failed; it is now ignored.
     ReactionRollFailed(Threat),
     /// A panic started.
     PanicStarted(Threat),
@@ -129,23 +145,24 @@ fn random_side(rand: &mut dyn FnMut() -> f32) -> f32 {
 }
 
 /// The scan-and-timers block of the original `on_creature_update`. `find_threat` is the game-memory scan
-/// (`threatened`) and only runs when a scan is due; `rand` is the `[0, 1)` generator. The order of the dice rolls
-/// is the original's.
+/// (`threatened`) and only runs when a scan is due; it receives the missile bodies this ship already ignored and
+/// returns the nearest remaining threat. `rand` is the `[0, 1)` generator. The order of the dice rolls is the
+/// original's, except that the reaction roll is made once per missile body rather than once per scan.
 pub fn scan(
     ship: &mut PanicState,
     now: f64,
     p: &PanicParams,
-    find_threat: impl FnOnce() -> Option<Threat>,
+    find_threat: impl FnOnce(&[usize]) -> ThreatScan,
     rand: &mut dyn FnMut() -> f32,
 ) -> ThreatEvent {
     let panicking = ship.is_panicking(now);
 
     if now >= ship.next_scan && (panicking || now >= ship.cooldown_until) {
         ship.next_scan = now + SCAN_INTERVAL;
-        let threat = find_threat();
+        let scan = find_threat(&ship.ignored_threats);
         if panicking {
             // A missile that is still coming keeps the evasion going.
-            if let Some(found) = threat {
+            if let Some(found) = scan.threat {
                 ship.missile_position = Some(found.position);
                 // A stray starts evasion only. If a locked missile appears during that evasion, add one flare burst;
                 // a burst that already ran has a non-zero expiry and is not restarted on every scan.
@@ -164,11 +181,10 @@ pub fn scan(
                 }
                 return ThreatEvent::ThreatContinues(found);
             }
-        } else if let Some(found) = threat {
+        } else if let Some(found) = scan.threat {
             // EXTENSION POINT (threat decision): `found` carries the missile body address, its position and its
             // distance. Time-to-impact / missile-velocity logic ("is this missile worth a panic?", the overshoot
-            // dodge) would go here, between the threat and the reaction roll. Deliberately not done in v0.2.0:
-            // the port is behaviour-identical to qol `ai_flares`.
+            // dodge) would go here, between the threat and the reaction roll.
             if rand() < p.reaction_probability {
                 ship.missile_position = Some(found.position);
                 ship.flare_burst_until = if found.stray { 0.0 } else { now + f64::from(p.burst_seconds) };
@@ -189,7 +205,16 @@ pub fn scan(
                     ship.flare_burst_until.max(ship.maneuver_until) + f64::from(p.min_interval_seconds);
                 return ThreatEvent::PanicStarted(found);
             }
+            if ship.ignored_threats.len() >= MAX_IGNORED_THREATS {
+                ship.ignored_threats.remove(0);
+            }
+            if !ship.ignored_threats.contains(&found.body) {
+                ship.ignored_threats.push(found.body);
+            }
             return ThreatEvent::ReactionRollFailed(found);
+        } else if !scan.any_in_range {
+            // The missile picture is clear again, so a later approach starts with fresh rolls.
+            ship.ignored_threats.clear();
         }
         return ThreatEvent::NoThreat;
     }

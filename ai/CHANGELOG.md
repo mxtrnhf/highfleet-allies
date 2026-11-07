@@ -1,5 +1,50 @@
 # hf_ai changelog
 
+## v0.10.18 — retire the preventive flare curtain
+
+- Remove the preventive flare-curtain subsystem entirely: launch scanning,
+  curtain scheduling/math, per-ship curtain timers, rack accounting, curtain
+  retreat steering, the curtain engine boost, and all `curtain_*` settings.
+- Keep the reactive missile defence: panic flares, ordinary evasion, panic
+  evasion, barrel rolls, per-missile reaction rolls and stray-missile evasion.
+- Old `curtain_*` and `launch_flares_*` keys are ignored by the permissive
+  config parser; they no longer enable or tune anything. Remove them from
+  presets to avoid implying that they still work.
+- The shared hf_ally debug-overlay value 5 is retained as a reserved retired
+  mode so the existing cross-mod ABI does not shift.
+- This is a real behaviour change, not a no-op: proactive pre-lock flare clouds
+  and their incidental protection are gone. No regression tests were
+  authorized. Cross-build only; in-game validation pending.
+
+## v0.10.17 — rename preventive curtain keys
+
+- Rename every preventive-curtain setting from `launch_flares_*` to
+  `curtain_*` in the config struct, preset and documentation. This is a naming
+  change only: defaults, ranges and behaviour are unchanged.
+- Keep every old `launch_flares_*` spelling as a Serde alias, so existing
+  `hf_ai.json` files continue to load without edits. Do not use both spellings
+  for the same setting: duplicate fields fail parsing and the whole config falls
+  back to defaults.
+- The separate reactive panic-flare settings (`trigger_range`,
+  `reaction_probability`, `burst_seconds`, etc.) are untouched; only the
+  proactive curtain keys moved.
+- The retired shelter keys remain retired under their historical
+  `launch_flares_shelter*` names.
+- Cross-build only; in-game validation pending.
+
+## v0.10.16 — reaction probability is per missile
+
+- `ai_flares.reaction_probability` is now rolled once when a missile first
+  enters `trigger_range`, not on every 0.1 s threat scan. A failed roll records
+  that missile body and ignores it while the threat picture remains; other
+  missiles and later approaches after the picture clears roll separately. With
+  `0.6`, roughly 60% of missiles trigger a reaction instead of nearly every
+  missile reacting within a second.
+- Panic timing, flare bursts, evasion, stray-missile handling and cooldowns are
+  unchanged. No configuration or preset changes.
+- Cross-build only; no regression tests were authorized. In-game validation
+  pending.
+
 ## v0.10.15 — stop dive-denial chasing landed targets
 
 - Dive denial now requires an airborne combat target (mode 1). Landed,

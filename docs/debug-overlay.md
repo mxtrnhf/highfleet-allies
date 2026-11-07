@@ -58,7 +58,7 @@ When **hf_ai v0.10.9 or newer** is loaded, a second line shows its own per-ship 
 | `AI EVADE` | missile evasion is steering the ship |
 | `AI PANIC` | panic evasion (dash at `panic_boost`, full steering takeover) |
 | `AI ROLL` | barrel-roll evasion |
-| `AI CURTAIN` | the pre-emptive flare curtain is running |
+| `AI CURTAIN` | reserved; the preventive curtain was retired in hf_ai v0.10.18, so only older hf_ai DLLs can show it |
 
 The flare/evasion modes take precedence over the tactics state because they override the
 waypoint while active. If hf_ai is not installed, the second line is simply not drawn.
@@ -164,7 +164,7 @@ Relevant code:
 ### 2026-11-03 -- hf_ai state line
 
 * Read the hf_ai layer: `tactics_math::State` (`Stock`, `Panic`, `Dive`, `DiveSkip`, `Aim`) and the
-  `ai_flares` modes (`flares`, `evade`, `panic`, `roll`, plus the pre-emptive curtain).
+  `ai_flares` modes (`flares`, `evade`, `panic`, `roll`). The old curtain value is now reserved.
 * Added a versioned shared-memory channel because the two mods are independent DLLs and neither
   module name nor load order is stable. hf_ai v0.10.9 creates `Local\hf_ai_debug_state_v1` and
   writes the tactics/flare bytes per AI ship; hf_ally 0.14.14 opens it read-only and draws the

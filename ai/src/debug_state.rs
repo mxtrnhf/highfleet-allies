@@ -8,7 +8,8 @@
 //!
 //! The two state bytes are independent:
 //! * `tactics` is the last `tactics_math::State` decision for the ship;
-//! * `flares` is the active `ai_flares` mode (burst / evade / panic / roll / curtain).
+//! * `flares` is the active `ai_flares` mode (burst / evade / panic / roll); value 5 is reserved for
+//!   the retired curtain mode so the shared layout stays compatible with older hf_ally builds.
 //! hf_ally shows the flare mode first, because it overrides tactics while it is active.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -36,6 +37,8 @@ pub const FLARES_BURST: u8 = 1;
 pub const FLARES_EVADE: u8 = 2;
 pub const FLARES_PANIC: u8 = 3;
 pub const FLARES_ROLL: u8 = 4;
+/// Retired curtain mode; the value stays reserved for the shared hf_ally ABI.
+#[expect(dead_code, reason = "value 5 is reserved for the shared hf_ally debug ABI")]
 pub const FLARES_CURTAIN: u8 = 5;
 
 #[repr(C)]
