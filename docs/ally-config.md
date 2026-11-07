@@ -135,12 +135,14 @@ Enemy waves: normal tactical combat has no total enemy-ship cap — the enemy li
 
 ## Retired settings
 
-`spawn_ally` and `ally_toggle` were removed in v0.14.24; `ally_reticles` was
-removed in v0.14.25; `plane_bombers`, `marker_seam` and `marker_delay_ms` were
-removed in v0.14.20; `max_enemy_ships` was removed in v0.14.22. They are ignored
-in older configs. `enabled` is now the only master switch: allies deploy and the
-pre-combat UI is installed whenever it is true. Use the per-ship ALLY toggle to
-skip the wingman; set `ally_reticle_scale: 0` to hide ally target boxes.
+`auto_retreat` was removed in v0.16.0; `spawn_ally` and `ally_toggle` were
+removed in v0.14.24; `ally_reticles` was removed in v0.14.25; `plane_bombers`,
+`marker_seam` and `marker_delay_ms` were removed in v0.14.20; `max_enemy_ships`
+was removed in v0.14.22. They are ignored in older configs. `enabled` is now the
+only master switch: allies deploy and the pre-combat UI is installed whenever it
+is true. `flagship_leaves` is always active; use it to choose handover or
+retreat. Use the per-ship ALLY toggle to skip the wingman; set
+`ally_reticle_scale: 0` to hide ally target boxes.
 `plane_bombers` was the unsafe global bomber gate that could send planes into
 the dive before they cleared the carrier; the supported tactical bombing path is
 `plane_loadouts` plus `plane_attack_delay`. `max_enemy_ships` patched the
