@@ -58,9 +58,11 @@ This is deliberately noisy: `debug_log` enables the megalog, watchdog, crash dum
 pre-combat GUI lists and per-second probes; `gui_inspect` logs GUI clicks and
 ammo-selector rebuilds. On v0.14.5, debug mode did not force the pre-combat list,
 so `log_precombat: true` was needed there; that key is retired in v0.14.19 and
-older configs containing it still load. Keep `spawn_ally` and `ally_toggle`
-enabled as in your normal config so the ALLY buttons and click inspector are
-active. Restore quieter settings after the test.
+older configs containing it still load. For this v0.14.5 test, keep
+`spawn_ally` and `ally_toggle` enabled as in your normal config so the ALLY
+buttons and click inspector are active. These two keys were retired in
+v0.14.24; current builds install the buttons whenever the mod is enabled.
+Restore quieter settings after the test.
 
 ## What to test
 

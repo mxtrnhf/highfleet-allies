@@ -1,6 +1,6 @@
 # Combat ship switching
 
-Requires `spawn_ally: true` and `ship_switching: true` (default).
+Requires `ship_switching: true` (default) and an enemy battle where hf_ally deployed a wingman.
 
 - **1**: take the ship actually displayed in the top ally panel.
 - **2**: take the ship actually displayed in the bottom ally panel.

@@ -1,7 +1,7 @@
 # Battle debug overlay
 
 `hf_ally` 0.14.14 added the optional tactical-battle overlay; 0.14.15 adds the ring distance
-labels and the AI waypoint display. It is off by default and is independent of `spawn_ally`.
+labels and the AI waypoint display. It is off by default and independent of `ally_reticle_scale`.
 
 ```json
 "logging": {

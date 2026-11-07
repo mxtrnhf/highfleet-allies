@@ -1,6 +1,6 @@
 # hf_ally settings (`Modloader/config/ally.json`)
 
-Every key below is already in the `ally.json` of the release pack, so you do not have to search for flags. A missing key takes the default shown. Edit the file while the game is closed. `"enabled": false` turns the whole mod off. Key order does not matter; the preset groups related settings by feature.
+Every key below is already in the `ally.json` of the release pack, so you do not have to search for flags. A missing key takes the default shown. Edit the file while the game is closed. `"enabled": false` turns the whole mod off. When `enabled` is true, hf_ally deploys a wingman by default and shows the pre-combat ALLY and plane-loadout buttons. There is no separate ally-only switch; use the per-ship ALLY toggle to skip a wingman in a battle. Key order does not matter; the preset groups related settings by feature.
 
 The checked-in [player preset](../ally/config/ally.json), compiled defaults, and
 release config use the same settings. `logging.debug_log` is the runtime debug
@@ -28,10 +28,9 @@ For individual features, use this table. Settings for an already-disabled parent
 | Feature | Setting that disables it or restores vanilla | What remains / important dependency |
 |---|---|---|
 | Entire mod | `"enabled": false` | Closest complete config revert; startup/crash-reporting infrastructure can still load with the DLL. |
-| Ally deployment | `spawn_ally: false` | No mod-deployed wingmen. Independent enemy, plane, damage-colour, intercept and crash-fix features remain. |
-| Ally arrival delay only | `ally_delay_seconds: 0.0` | Allies still deploy immediately; use `spawn_ally: false` to deploy none. |
-| Number of allies | **No zero/disable value** | `max_allies: 0` is clamped to one. Use `spawn_ally: false` for none. |
-| Pre-combat ALLY buttons | `ally_toggle: false` | Hides the buttons but does **not** stop automatic deployment; also set `spawn_ally: false` for no allies. |
+| Allies in a battle | **Per-ship toggle** | Ship 2 starts switched on. Turn its ALLY toggle off on the pre-combat card to skip the wingman; the choice persists until you toggle it back on. There is no global ally-only switch; `enabled: false` turns off the whole mod. |
+| Ally arrival delay only | `ally_delay_seconds: 0.0` | Allies still deploy immediately. |
+| Number of allies | **No zero/disable value** | `max_allies: 0` is clamped to one. Use the per-ship ALLY toggle to skip the wingman. |
 | Automatic flagship-leaves retreat/handover | `auto_retreat: false` | `flagship_leaves` then has no effect. |
 | F8 ally retreat hotkey | `retreat_key: 0` | Automatic and fuel-triggered retreat remain independently configurable. |
 | Manual ship switching | `ship_switching: false` | Disables 1/2/TAB handoffs; automatic flagship handover remains unchanged. |
@@ -55,7 +54,8 @@ For individual features, use this table. Settings for an already-disabled parent
 | Strategic-launch interception ignore list | `intercept_ignore_oids: []` | Empty list skips the patch and is vanilla. |
 | `PLAYER` pre-combat label | `marker_text: ""` | Plane-loadout labels are controlled by `plane_loadouts`, not this key. Labels draw at the fixed B23 seam. |
 | Debug mode | `logging.debug_log: false` | No megalog, watchdog, crash dump, pre-combat GUI lists or per-second probes. The legacy `megalog` cargo feature does not force it on. |
-| Battle debug overlay | `logging.debug_overlay: false` | No rings or AI-state labels are drawn. Independent of `spawn_ally` and `ally_reticles`. |
+| Ally target boxes | `ally_reticle_scale: 0` | No boxes around enemies targeted by allies; the player's own box is unchanged. |
+| Battle debug overlay | `logging.debug_overlay: false` | No rings or AI-state labels are drawn. Independent of `ally_reticle_scale`. |
 | Creature registry log | `logging.log_creatures: false` | Other logs remain. |
 | GUI click/ammo-selector inspection | `logging.gui_inspect: false` | Other logs remain. |
 
@@ -91,7 +91,7 @@ modloader log messages and the basic crash reporter remain available.
 | Key inside `logging` | Default | Purpose |
 |---|---|---|
 | `debug_log` | `false` | Runtime debug switch. `true` starts the megalog `hf_ally_megalog_<time>.log`, the watchdog, the crash minidump `hf_ally_crash_<time>.dmp`, pre-combat GUI lists, per-second probes and the lifted line budget. Dumps may contain paths/campaign data; delete after sending. The legacy `megalog` cargo feature does not force it on. |
-| `debug_overlay` | `false` | Battle debug overlay: rings, driver-state labels and AI waypoints. Independent of `spawn_ally`; see [debug overlay](debug-overlay.md). |
+| `debug_overlay` | `false` | Battle debug overlay: rings, driver-state labels and AI waypoints. Independent of `ally_reticle_scale`; see [debug overlay](debug-overlay.md). |
 | `gui_inspect` | `false` | Full GUI lists on clicks and native ammo-selector rebuilds. |
 | `log_creatures` | `false` | Creature add/remove log (very noisy). |
 
@@ -99,17 +99,15 @@ modloader log messages and the basic crash reporter remain available.
 
 | Key | Default | If key omitted | What it does |
 |---|---|---|---|
-| `enabled` | `true` | Uses player default `true`. | Master switch. |
-| `spawn_ally` | `true` | Uses player default `true`. | Bring the next ship of the fleet into the battle as an AI wingman. |
+| `enabled` | `true` | Uses player default `true`. | Master switch for every gameplay feature, including the wingman. `false` installs no gameplay hooks; the crash reporter still loads. |
 | `ally_delay_seconds` | `1.5` | Uses player default `1.5`. | Game seconds the player's ship must have been in the battle before the ally arrives. |
 | `auto_retreat` | `true` | Uses player default `true`. | When the flagship leaves alive, perform the action selected by `flagship_leaves`; when false, the game promotes the ally and the retreat point is lost. |
 | `flagship_leaves` | `"handover"` | Uses player default `"handover"`. | What `auto_retreat` does when the flagship leaves alive: "retreat" = the ally is extracted with it and the battle ends as a retreat; "handover" = the ally is promoted to your ship (the game's own behaviour) and the retreat point the flagship used up is put back, so the new flagship can still retreat. |
 | `retreat_key` | `119` | Uses player default `119`. | Virtual-key code of the "ally, retreat" key (0x77 = F8); 0 disables the key. |
-| `ally_toggle` | `true` | Uses player default `true`. | Add the "ALLY" on/off button to the pre-combat screen (needs `spawn_ally`; click it to bring or skip the ally). Clicking it plays the stock `button_01` UI click. |
 | `max_allies` | `2` | Uses player default `2`. | How many AI allies may fight at the same time. Ships switched on beyond that wait in the reserve and step in, in ship-number order, when an ally is destroyed or has left. |
 | `spare_prizes` | `true` | Uses player default `true`. | Allies never keep a prize ship (the ships the player may capture and sell after the battle: the game flags them at creature +0xc19) as a target: they pick another enemy, or hold fire when only prizes are left. |
-| `ally_zenith_autofire` | `true` | Uses player default `true`. | Let AI-run allies launch their own ship missiles (the native Zenith launch path, `0x14002ff60`). `false` = an ally controlled by the native AI holds its missile racks; the ship you fly can still launch manually. Ship bombers always suppress launches while a bombing course owns the ship. Needs `spawn_ally`; enemies, neutrals and player-flown ships are unaffected. |
-| `ally_bombers` | `false` | Off. | Experimental FAB1000 **ship** bombing using player-style matched swivel/thrust commands: continuous governed descent (up to 220 u/s, 0.85x the speed the remaining height can recover from), lateral alignment before diving in, release below 1000 units above the target (low spawns already qualify) with real downward speed, and the entire payload rippled on a native predicted hit within the target's bounding radius at 0.05s intervals. Release ceiling is 1000 units above the target (low spawns already qualify) and needs real downward speed; no timer gate and no multi-target switching. Boost pulses 0.5s at `2.0` / 1.0s at normal `1.0`; boost suppressed at max engine temperature350 or when an engine lock is reported. After salvo/unsafe-clearance abort, continue horizontally along the run while pulling up for at least1.5s, until descent is arrested with safe clearance. Recovery survives target destruction. Independent of `hf_ai.json`; flares every0.5s while armed, missile evasion overridden and ship-missile launches blocked during bomber control. Never releases at airborne or prize/trader targets. Requires `spawn_ally`; player-flown ships, enemies and carrier aircraft unaffected. Heat behavior, accuracy and collision safety require in-game validation. |
+| `ally_zenith_autofire` | `true` | Uses player default `true`. | Let AI-run allies launch their own ship missiles (the native Zenith launch path, `0x14002ff60`). `false` = an ally controlled by the native AI holds its missile racks; the ship you fly can still launch manually. Ship bombers always suppress launches while a bombing course owns the ship. Enemies, neutrals and player-flown ships are unaffected. |
+| `ally_bombers` | `false` | Off. | Experimental FAB1000 **ship** bombing using player-style matched swivel/thrust commands: continuous governed descent (up to 220 u/s, 0.85x the speed the remaining height can recover from), lateral alignment before diving in, release below 1000 units above the target (low spawns already qualify) with real downward speed, and the entire payload rippled on a native predicted hit within the target's bounding radius at 0.05s intervals. Release ceiling is 1000 units above the target (low spawns already qualify) and needs real downward speed; no timer gate and no multi-target switching. Boost pulses 0.5s at `2.0` / 1.0s at normal `1.0`; boost suppressed at max engine temperature350 or when an engine lock is reported. After salvo/unsafe-clearance abort, continue horizontally along the run while pulling up for at least1.5s, until descent is arrested with safe clearance. Recovery survives target destruction. Independent of `hf_ai.json`; flares every0.5s while armed, missile evasion overridden and ship-missile launches blocked during bomber control. Never releases at airborne or prize/trader targets. Player-flown ships, enemies and carrier aircraft unaffected. Heat behavior, accuracy and collision safety require in-game validation. |
 | `intercept_ignore_oids` | `["MDL_MISSILE_03"]` | Uses player default `["MDL_MISSILE_03"]`. | SIDE PATCH (not in master). `m_oid`s the AI never treats as a strategic launch to intercept in the missile-vs-ship arcade scene, e.g. `["MDL_MISSILE_03"]` (the R-9 Sprint) for a Sprint modded to be strat-launchable (its category has bit 0x8000000, so the CIWS and anti-air launchers of both sides would shoot at it). Copy the names from `m_oid=` in OL.seria. Empty = vanilla. |
 | `extra_gunpod` | `true` | Uses player default `true`. | Normal tactical battle (`Combat.seria`) only, and **only for the vanilla T-7 / LA-29**: give a chosen FAB / NURS plane the vanilla 37 mm gun (`ITEM_GUN37`) and, once both its bombs and rockets are empty, switch it to the interceptor mode so it strafes with that gun until it is dry. Custom crafts (e.g. `CRAFT_SB15`) never get a gunpod from this flag and keep their vanilla leave-after-payload behaviour. If the loadout already has a gun (a class-4 item or a QoL `gun_ammo`, including a custom one), that gun is kept and nothing is added. Custom bombs / rockets are classified by their live ammo-table class, not by name. Strategic map bombers (`Bombers.seria`) keep their vanilla loadout and leave after the bombing run. Off = old behaviour: the plane leaves when its payload is empty. |
 | `plane_k13` | `true` | Uses player default `true`. | Offer the K-13 air-to-air loadout for carrier planes. Enabled in the player preset. |
@@ -123,10 +121,9 @@ modloader log messages and the basic crash reporter remain available.
 | `enemy_all_at_once` | `false` | Uses player default `false`. | Set the 30 s reinforcement timer to 0, so refills start immediately instead of after 30 s. Does not change the initial group size. |
 | `plane_loadouts` | `true` | Uses player default `true`. | Pre-combat buttons that pick the armament of a carrier's planes (charged to the inventory), one button per plane type the ship carries, in a column right of the ALLY button. The plane types, their loadouts, item counts and the bomb / rocket / K-13 kind of each item are read from the game's own tables when first needed, so **custom aircraft and re-priced loadouts registered through the QoL `planes` option get buttons too** (up to six plane types per card; a plane with no plain-gun loadout gets the game's 37 mm gun for "guns only"). A chosen loadout carries exactly its listed parts: the vanilla class-3 stock auto-draw is disabled for it, so a FAB plane no longer also draws NAR-122 from another loadout of the same craft. Clicking a loadout button plays the stock `button_01` UI click. Default on. |
 | `ally_damage_color` | `"#00E4FF"` | Uses player default `"#00E4FF"`. | Colour of the damage numbers popping up over ALLIED ships (instead of the enemy's yellow-green), as HEX: `"#00E4FF"`, `"00E4FF"` and `"0x00E4FF"` all work. An 8-digit value is read as `AARRGGBB` and its alpha is ignored. A plain number from an old config (e.g. `58623`) is still accepted and means `0xRRGGBB`. |
-| `ally_panels` | `true` | Uses player default `true`. | Draw a half-size copy of the ship panel for each ally currently in the battle (at most two), stacked in the empty column right of the player's own panel: name, speed, timer, counters and the live part schematic. They appear only while an ally is present and disappear when the last one leaves. Needs `spawn_ally`; the game's own target panel is unchanged. |
-| `ship_switching` | `true` | Uses player default `true`. | **1** takes the displayed top-panel ally, **2** the bottom-panel ally; **TAB** cycles all deployed friendly ships. Your old ship becomes an AI ally. Needs `spawn_ally`; 1/2 also need visible `ally_panels`. See [ship switching](ship-switching.md) for safeguards and keybinding caveats. |
-| `ally_reticles` | `true` | Uses player default `true`. | Draw the game's native `sign_aim` target box around the enemy each ally is currently targeting, in the ally colour (`ally_damage_color`). The player's own lime box is unchanged and drawn first; every living ally with a valid target gets its own box. Needs `spawn_ally`. |
-| `ally_reticle_scale` | `0.8` | Uses player default `0.8`. | Ally target box size relative to the native 62 × 62 frame: `0.8` is about 50 × 50 pixels, `1.0` is native size. Must be positive and finite; invalid values fall back to `0.8`. Does not affect the player's box. |
+| `ally_panels` | `true` | Uses player default `true`. | Draw a half-size copy of the ship panel for each ally currently in the battle (at most two), stacked in the empty column right of the player's own panel: name, speed, timer, counters and the live part schematic. They appear only while an ally is present and disappear when the last one leaves. The game's own target panel is unchanged. |
+| `ship_switching` | `true` | Uses player default `true`. | **1** takes the displayed top-panel ally, **2** the bottom-panel ally; **TAB** cycles all deployed friendly ships. Your old ship becomes an AI ally. 1/2 also need visible `ally_panels`. See [ship switching](ship-switching.md) for safeguards and keybinding caveats. |
+| `ally_reticle_scale` | `0.8` | Uses player default `0.8`. | Draw the game's native `sign_aim` target box around the enemy each ally is currently targeting, in the ally colour (`ally_damage_color`). Size relative to the native 62 × 62 frame: `0.8` is about 50 × 50 pixels, `1.0` is native size; `0` disables the ally boxes. Negative or non-finite values fall back to `0.8`. The player's own lime box is unchanged and drawn first. |
 | `ally_sounds` | `true` | Uses player default `true`. | Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed. |
 | `ally_fuel_retreat_percent` | `30.0` | Uses player default `30.0`. | An ally leaves the battle (same order as the retreat key) when its COMBAT fuel (the ship's own tank, the one the battle burns; not the map fuel of the fleet) falls to this percent. 0 = off. Allies only. |
 | `marker_text` | `"PLAYER"` | Uses player default `"PLAYER"`. | Text drawn next to ship number 1 on the pre-combat screen (the flagship, always your own ship); "" = none. The label and plane-loadout labels draw at the fixed B23 seam. |
@@ -137,8 +134,12 @@ Enemy waves: normal tactical combat has no total enemy-ship cap — the enemy li
 
 ## Retired settings
 
-`plane_bombers`, `marker_seam` and `marker_delay_ms` were removed in v0.14.20;
-`max_enemy_ships` was removed in v0.14.22. They are ignored in older configs.
+`spawn_ally` and `ally_toggle` were removed in v0.14.24; `ally_reticles` was
+removed in v0.14.25; `plane_bombers`, `marker_seam` and `marker_delay_ms` were
+removed in v0.14.20; `max_enemy_ships` was removed in v0.14.22. They are ignored
+in older configs. `enabled` is now the only master switch: allies deploy and the
+pre-combat UI is installed whenever it is true. Use the per-ship ALLY toggle to
+skip the wingman; set `ally_reticle_scale: 0` to hide ally target boxes.
 `plane_bombers` was the unsafe global bomber gate that could send planes into
 the dive before they cleared the carrier; the supported tactical bombing path is
 `plane_loadouts` plus `plane_attack_delay`. `max_enemy_ships` patched the

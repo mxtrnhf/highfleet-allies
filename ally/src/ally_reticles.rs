@@ -8,7 +8,7 @@
 //!
 //! This module wraps that call: after the game's own boxes, it repeats the same projection and draw for
 //! the target (`ally+0xb00`) of every living ally, tinted with the configured ally colour. The ally boxes
-//! default to 80% of the native 62 x 62 pixels; their size is configurable.
+//! default to 80% of the native 62 x 62 pixels; their size is configurable, and a scale of 0 hides them.
 //!
 //! The same post-pass also hosts the debug overlay (`crate::debug_overlay`) so there is only one detour at
 //! this call site: either feature, or both, can use it.
@@ -121,18 +121,26 @@ unsafe fn draw_ally_targets() {
     }
 }
 
-/// Installs the single battle HUD post-pass. `reticles` and `overlay` select what it draws; the hook is needed
-/// when either is enabled.
-pub unsafe fn install(session: &mut PatchSession, argb: u32, scale: f32, reticles: bool, overlay: bool) {
+/// Ally boxes are off at exactly 0. Positive finite scales are the box size; negative or non-finite
+/// values fall back to the 0.8 default.
+fn normalize_scale(scale: f32) -> (f32, bool) {
+    if scale == 0.0 {
+        return (0.0, false);
+    }
+    if scale.is_finite() && scale > 0.0 {
+        return (scale, true);
+    }
+    log::warn!("hf_ally: invalid ally_reticle_scale {scale}; using 0.8");
+    (0.8, true)
+}
+
+/// Installs the single battle HUD post-pass. `scale` selects the ally box size and `overlay` the debug
+/// overlay; the hook is needed when either feature is on.
+pub unsafe fn install(session: &mut PatchSession, argb: u32, scale: f32, overlay: bool) {
+    let (scale, reticles) = normalize_scale(scale);
     ALLY_COLOR.store(argb & 0x00ff_ffff, Ordering::Relaxed);
     SHOW_RETICLES.store(reticles, Ordering::Relaxed);
     crate::debug_overlay::set_enabled(overlay);
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        log::warn!("hf_ally: invalid ally_reticle_scale {scale}; using 0.8");
-        0.8
-    };
     ALLY_RETICLE_SCALE.store(scale.to_bits(), Ordering::Relaxed);
 
     let found = std::slice::from_raw_parts(CALL_SITE as *const u8, CALL_SITE_BYTES.len());

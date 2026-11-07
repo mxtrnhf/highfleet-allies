@@ -1,15 +1,16 @@
-# Player defaults — release pack v0.14.22
+# Player defaults — hf_ally v0.14.25
 
-> **Config compatibility.** Updating from v0.14.21: `max_enemy_ships` is retired and ignored. It patched the strategic bomber scene, not normal tactical combat; vanilla tactical battles have no total enemy cap. Use `enemy_group_size` to control how many enemies are active at once. Updating from v0.14.20 or older also applies the earlier cleanups: the preset is grouped by feature; `plane_bombers`, `marker_seam` and `marker_delay_ms` are retired; `ally_damage_color` is HEX; `logging.debug_log` defaults to `false`, `logging.debug_overlay` replaces the top-level key, and the retired logging keys are ignored. The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
+> **Config compatibility.** Updating from v0.14.24: `ally_reticles` is retired; set `ally_reticle_scale: 0` to hide the ally target boxes. Updating from v0.14.23: `spawn_ally` and `ally_toggle` are retired and ignored. `enabled` is the only master switch; when true, the wingman deploys and the pre-combat ALLY/plane buttons are installed. Use the per-ship ALLY toggle to skip the wingman. Updating from v0.14.21 or older also applies the earlier cleanups: `max_enemy_ships` is retired; the preset is grouped by feature; `plane_bombers`, `marker_seam` and `marker_delay_ms` are retired; `ally_damage_color` is HEX; `logging.debug_log` defaults to `false`, `logging.debug_overlay` replaces the top-level key, and the retired logging keys are ignored. The `hf_ai.json` preset is unchanged since `hf_ai v0.10.11`.
 
-The tracked player default profiles for `hf_ally v0.14.22` and `hf_ai v0.10.15` live in:
+The tracked player default profiles for `hf_ally v0.14.25` and `hf_ai v0.10.15` live in:
 
 - [ally/config/ally.json](../ally/config/ally.json)
 - [ai/config/hf_ai.json](../ai/config/hf_ai.json)
 
-The v0.14.22 release uses the same `hf_ai.json` preset as v0.14.15 and later;
-`ally.json` drops the misleading `max_enemy_ships` key. See the
-[ally changelog](../ally/CHANGELOG.md) and [ai changelog](../ai/CHANGELOG.md).
+The v0.14.25 development preset uses the same `hf_ai.json` preset as v0.14.15
+and later; `ally.json` drops `spawn_ally`, `ally_toggle`, `ally_reticles` and the
+misleading `max_enemy_ships` key. See the [ally changelog](../ally/CHANGELOG.md)
+and [ai changelog](../ai/CHANGELOG.md).
 
 The release pack copies these files unchanged. Compiled defaults use the same
 values: a missing file is generated with this profile, and missing keys or whole
@@ -20,7 +21,7 @@ guides to disable specific behavior.
 
 ## Profile highlights
 
-Allies (`hf_ally v0.14.22`): up to two wingmen, 1.5 s arrival delay,
+Allies (`hf_ally v0.14.25`): up to two wingmen, 1.5 s arrival delay,
 three enemy slots active at once, K-13/loadout buttons on, ally ship panels and ally target
 boxes on (`ally_reticle_scale: 0.8`), ship switching on, ally ship bombers off,
 `ally_zenith_autofire` on (vanilla autonomous launches), bomb/rocket and AA attack
@@ -48,6 +49,6 @@ Update the tracked preset and corresponding Rust defaults together.
 
 Build the three DLLs with `cargo xwin build --release --locked --no-default-features
 --target x86_64-pc-windows-msvc` in `ally/`, `ai/` and `qol/`. Commit the source and
-presets, then run `python3 tools/package_release.py --version 0.14.18 --output
+presets, then run `python3 tools/package_release.py --version 0.14.25 --output
 ../release_packs`. The packager checks a clean tracked source tree and includes a
 manifest with the source commit, versions and per-file SHA256 hashes.

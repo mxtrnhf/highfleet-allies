@@ -1,7 +1,7 @@
 //! PROTOTYPE, standalone. A player-side ship that fights beside you, run by the stock AI
 //! (Steam 1.163 only). Background and addresses: `hf_notes/docs/findings/battle-ally.md`.
 //!
-//! v0.2.0 adds the **ally** (config `spawn_ally`, default off): once per battle, when the player's
+//! v0.2.0 added the **ally** (always enabled with the mod): once per battle, when the player's
 //! ship has been flying for `ally_delay_seconds` and the fleet still has a ship waiting in the
 //! reserve, the vanilla deploy function is called for a spare control slot and the new ship is
 //! handed back to the stock AI as a wingman (see the findings note, "Revised plan").
@@ -221,10 +221,9 @@ const OFF_TARGET: usize = offset_of!(Creature, target) + offset_of!(Link, target
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Config {
-    /// Master switch.
+    /// Master switch. When true, every gameplay feature is installed, including the wingman.
+    /// When false, no gameplay hooks are installed; the crash reporter still loads.
     enabled: bool,
-    /// Bring the next ship of the fleet into the battle as an AI wingman.
-    spawn_ally: bool,
     /// Governed dive, native-aimed whole-payload release and pull-out for bomb-carrying allies.
     ally_bombers: bool,
     /// Game seconds the player's ship must have been in the battle before the ally arrives.
@@ -238,8 +237,6 @@ struct Config {
     flagship_leaves: String,
     /// Virtual-key code of the "ally, retreat" key (0x77 = F8); 0 disables the key.
     retreat_key: u32,
-    /// Add the "ALLY" on/off button to the pre-combat screen (needs `spawn_ally`; click it to bring or skip the ally).
-    ally_toggle: bool,
     /// How many AI allies may fight at the same time. Ships switched on beyond that wait in the reserve and
     /// step in, in ship-number order, when an ally is destroyed or has left.
     max_allies: u32,
@@ -250,7 +247,7 @@ struct Config {
     spare_prizes: bool,
     /// Let AI-run allies launch their own ship missiles (the native Zenith launch path). False = an ally
     /// controlled by the AI holds its missile racks; the ship you fly can still launch manually.
-    /// Needs `spawn_ally`. Ship bombers always suppress launches during a bombing course.
+    /// Ship bombers always suppress launches during a bombing course.
     ally_zenith_autofire: bool,
     /// Allies roll the AI's AP / proximity shell doctrine once, like enemy ships do at spawn. Default on.
     ally_ai_ammo: bool,
@@ -260,9 +257,8 @@ struct Config {
     ally_damage_color: String,
     /// Draw a half-size ship panel for each ally beside the player's own panel while the ally is in the battle.
     ally_panels: bool,
-    /// Draw an ally-coloured target box around the enemy each ally is currently shooting at.
-    ally_reticles: bool,
-    /// Ally target box size relative to the native 62 x 62 frame.
+    /// Ally target box size relative to the native 62 x 62 frame. 0 = off; positive values
+    /// scale the box; negative or non-finite values fall back to 0.8.
     ally_reticle_scale: f32,
     /// Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed.
     ally_sounds: bool,
@@ -303,13 +299,11 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: true,
-            spawn_ally: true,
             ally_bombers: false,
             ally_delay_seconds: 1.5,
             auto_retreat: true,
             flagship_leaves: "handover".to_string(),
             retreat_key: 0x77,
-            ally_toggle: true,
             max_allies: 2,
             ship_switching: true,
             spare_prizes: true,
@@ -317,7 +311,6 @@ impl Default for Config {
             ally_ai_ammo: true,
             ally_damage_color: "#00E4FF".to_string(),
             ally_panels: true,
-            ally_reticles: true,
             ally_reticle_scale: 0.8,
             ally_sounds: true,
             ally_fuel_retreat_percent: 30.0,
@@ -345,7 +338,7 @@ struct LoggingConfig {
     /// Off by default and independent of the cargo feature.
     debug_log: bool,
     /// Battle debug overlay: rings around every ship and its AI driver state above the hull.
-    /// Off by default; independent of `spawn_ally`.
+    /// Off by default; independent of the ally reticles.
     debug_overlay: bool,
     /// Full GUI lists on clicks and native ammo-selector rebuilds (diagnostic, off by default).
     gui_inspect: bool,
@@ -421,7 +414,6 @@ const MAX_LINES: u32 = 600;
 const DEBUG_MAX_LINES: u32 = 1_000_000;
 static LINES: AtomicU32 = AtomicU32::new(0);
 static SPAWN_LINES: AtomicU32 = AtomicU32::new(0);
-static SPAWN_ALLY: AtomicBool = AtomicBool::new(false);
 /// The ship mode (`+0xd70`) an ally gets: 0 = the plain AI ship the enemies use. It was the config key `ally_mode`
 /// until v0.12.1; 1 (flown by a player) makes an ally look like the flagship and 2 (strike run) is the retreat order,
 /// so only 0 is valid for an ally (hf_notes docs/findings/battle-ally.md, "ally_mode removed").
@@ -431,7 +423,6 @@ static ALLY_DONE: AtomicBool = AtomicBool::new(false);
 /// choices come from it). Re-engaged chases, interceptions and other battles play as vanilla.
 static PRECOMBAT_SEEN: AtomicBool = AtomicBool::new(false);
 static ARMED: AtomicBool = AtomicBool::new(false);
-static HAVE_PRECOMBAT_HOOK: AtomicBool = AtomicBool::new(false);
 
 /// The modloader may buffer its log: flush after the lines that matter for a crash report.
 fn flush_log() {
@@ -692,7 +683,7 @@ unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
         }
         SPAWN_LINES.store(0, Ordering::Relaxed);
         PRIZE_LINES.store(0, Ordering::Relaxed);
-        let armed = PRECOMBAT_SEEN.swap(false, Ordering::Relaxed) || !HAVE_PRECOMBAT_HOOK.load(Ordering::Relaxed);
+        let armed = PRECOMBAT_SEEN.swap(false, Ordering::Relaxed);
         ARMED.store(armed, Ordering::Relaxed);
         log::info!(
             "ALLY battle start: scene selector {}, {}",
@@ -1035,7 +1026,8 @@ unsafe fn track_ally(ships: &[usize]) {
     );
 }
 
-static TOGGLE_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Set once the pre-combat click hook is installed. Without it the buttons cannot respond, so they are not created.
+static PRECOMBAT_UI_READY: AtomicBool = AtomicBool::new(false);
 /// Per-ship ally choice: bit n = ship number n (2..=9, as numbered on the pre-combat screen) may be the ally.
 static SLOT_MASK: AtomicU32 = AtomicU32::new(1 << 2);
 static USED_MASK: AtomicU32 = AtomicU32::new(0);
@@ -2697,7 +2689,7 @@ unsafe fn precombat_dump(which: &str) {
     diag::snapshot(&format!("precombat {which}"));
     // the screen before a fight: the previous battle is over, log its summary now if the battle hook never saw it end
     emit_summary(f64::from_bits(SUM_LAST.load(Ordering::Relaxed)));
-    if which.starts_with("B2") && TOGGLE_ENABLED.load(Ordering::Relaxed) {
+    if which.starts_with("B2") && PRECOMBAT_UI_READY.load(Ordering::Relaxed) {
         crumb!("ensure_toggles: enter");
         ensure_toggles();
         crumb!("ensure_toggles: done");
@@ -3151,9 +3143,6 @@ unsafe extern "C" fn on_battle_tick() {
     plane_loadouts::verify(read::<f64>(CLOCK));
     plane_loadouts::tick();
     precombat_tick(1);
-    if !SPAWN_ALLY.load(Ordering::Relaxed) {
-        return;
-    }
     let ships = roster();
     restore_orders("battle tick", false);
     ship_switch::tick(&ships);
@@ -3391,7 +3380,6 @@ unsafe extern "C" fn init() -> bool {
     if config.logging.debug_log {
         log::info!("hf_ally: debug_log on: megalog, watchdog and crash dump (large files, see ally.json)");
     }
-    SPAWN_ALLY.store(config.spawn_ally, Ordering::Relaxed);
     if let Ok(mut text) = MARKER_TEXT.lock() {
         // ASCII only; '@' is a line break for the game's text code
         *text = config.marker_text.bytes().filter(|b| (0x20..0x7f).contains(b) && *b != b'@').chain([0]).collect();
@@ -3412,7 +3400,7 @@ unsafe extern "C" fn init() -> bool {
 
     match prepare(&config) {
         Ok(()) => {
-            log::info!("hf_ally v{}: hooks installed (spawn log, creature log {}, ally {})", env!("CARGO_PKG_VERSION"), config.logging.log_creatures, config.spawn_ally);
+            log::info!("hf_ally v{}: hooks installed (spawn log, creature log {})", env!("CARGO_PKG_VERSION"), config.logging.log_creatures);
             true
         }
         Err(error) => {
@@ -3439,17 +3427,12 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         ));
     }
 
-    let radio_sounds = config.ally_sounds && config.spawn_ally;
-    // The ALLY toggle and plane-loadout buttons only exist when the pre-combat toggle is enabled.
-    let button_sounds = config.ally_toggle && config.spawn_ally;
-    if radio_sounds || button_sounds {
-        let found = std::slice::from_raw_parts(PLAY_SFX as *const u8, PLAY_SFX_PROLOGUE.len());
-        if found == PLAY_SFX_PROLOGUE {
-            RADIO_SOUNDS.store(radio_sounds, Ordering::Relaxed);
-            BUTTON_SOUNDS.store(button_sounds, Ordering::Relaxed);
-        } else {
-            log::warn!("hf_ally: playSFXSound_ bytes differ ({found:02x?}), ally and button sounds off");
-        }
+    let found = std::slice::from_raw_parts(PLAY_SFX as *const u8, PLAY_SFX_PROLOGUE.len());
+    if found == PLAY_SFX_PROLOGUE {
+        RADIO_SOUNDS.store(config.ally_sounds, Ordering::Relaxed);
+        BUTTON_SOUNDS.store(true, Ordering::Relaxed);
+    } else {
+        log::warn!("hf_ally: playSFXSound_ bytes differ ({found:02x?}), ally and button sounds off");
     }
 
     let mut session = PatchSession::new();
@@ -3481,96 +3464,86 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             )
             .map_err(|e| e.to_string())?;
     }
-    if config.ally_toggle || diag::debug() {
-        HAVE_PRECOMBAT_HOOK.store(true, Ordering::Relaxed);
-        let sites: [(usize, [u8; 5], *const ()); 3] = [
-            (PRECOMBAT_SEAM, PRECOMBAT_SEAM_BYTES, on_precombat as *const ()),
-            (PRECOMBAT_B1_SEAM, PRECOMBAT_B1_BYTES, on_precombat_b1 as *const ()),
-            (PRECOMBAT_B2_SEAM, PRECOMBAT_B2_BYTES, on_precombat_b2 as *const ()),
-        ];
-        for (site, bytes, hook) in sites {
-            let found = std::slice::from_raw_parts(site as *const u8, bytes.len());
-            if found != bytes {
-                return Err(format!("pre-combat seam {site:#x} has unexpected bytes {found:02x?}"));
-            }
-            let mut trampoline = Trampoline::new();
-            trampoline.preserved_call(hook, &[], &[], ReturnType::None);
-            trampoline.absolute_call(PRECOMBAT_SEAM_TARGET as *const ());
-            trampoline.relative_jump(site + bytes.len());
-            session.detour_trampoline(site, bytes.len(), trampoline).map_err(|e| e.to_string())?;
+    // The pre-combat ALLY and plane-loadout buttons are part of the mod; install them whenever it is enabled.
+    let sites: [(usize, [u8; 5], *const ()); 3] = [
+        (PRECOMBAT_SEAM, PRECOMBAT_SEAM_BYTES, on_precombat as *const ()),
+        (PRECOMBAT_B1_SEAM, PRECOMBAT_B1_BYTES, on_precombat_b1 as *const ()),
+        (PRECOMBAT_B2_SEAM, PRECOMBAT_B2_BYTES, on_precombat_b2 as *const ()),
+    ];
+    for (site, bytes, hook) in sites {
+        let found = std::slice::from_raw_parts(site as *const u8, bytes.len());
+        if found != bytes {
+            return Err(format!("pre-combat seam {site:#x} has unexpected bytes {found:02x?}"));
+        }
+        let mut trampoline = Trampoline::new();
+        trampoline.preserved_call(hook, &[], &[], ReturnType::None);
+        trampoline.absolute_call(PRECOMBAT_SEAM_TARGET as *const ());
+        trampoline.relative_jump(site + bytes.len());
+        session.detour_trampoline(site, bytes.len(), trampoline).map_err(|e| e.to_string())?;
+    }
+    for (name, address, expected) in [
+        ("gui new", GUI_NEW, &GUI_NEW_PROLOGUE[..]),
+        ("gui ctor", GUI_CTOR, &GUI_CTOR_PROLOGUE[..]),
+        ("gui setpos", GUI_SETPOS, &GUI_SETPOS_PROLOGUE[..]),
+        ("gui setbg", GUI_SETBG, &GUI_SETBG_PROLOGUE[..]),
+        ("gui sprite name", SET_SPRITE_NAME, &SET_SPRITE_NAME_PROLOGUE[..]),
+        ("gui sprite clear", OBJECT_ARRAY_DELETE_ALL, &OBJECT_ARRAY_DELETE_ALL_PROLOGUE[..]),
+        ("gui reset", GUI_RESET, &GUI_RESET_PROLOGUE[..]),
+        ("gui find", GUI_FIND, &GUI_FIND_PROLOGUE[..]),
+    ] {
+        let found = std::slice::from_raw_parts(address as *const u8, expected.len());
+        if found != expected {
+            return Err(format!("{name} at {address:#x} has unexpected bytes {found:02x?}: toggle not installed"));
         }
     }
-    if config.ally_toggle && config.spawn_ally {
-        for (name, address, expected) in [
-            ("gui new", GUI_NEW, &GUI_NEW_PROLOGUE[..]),
-            ("gui ctor", GUI_CTOR, &GUI_CTOR_PROLOGUE[..]),
-            ("gui setpos", GUI_SETPOS, &GUI_SETPOS_PROLOGUE[..]),
-            ("gui setbg", GUI_SETBG, &GUI_SETBG_PROLOGUE[..]),
-            ("gui sprite name", SET_SPRITE_NAME, &SET_SPRITE_NAME_PROLOGUE[..]),
-            ("gui sprite clear", OBJECT_ARRAY_DELETE_ALL, &OBJECT_ARRAY_DELETE_ALL_PROLOGUE[..]),
-            ("gui reset", GUI_RESET, &GUI_RESET_PROLOGUE[..]),
-            ("gui find", GUI_FIND, &GUI_FIND_PROLOGUE[..]),
-        ] {
-            let found = std::slice::from_raw_parts(address as *const u8, expected.len());
-            if found != expected {
-                return Err(format!("{name} at {address:#x} has unexpected bytes {found:02x?}: toggle not installed"));
-            }
-        }
+    let found = std::slice::from_raw_parts(CLICK_ENTRY as *const u8, CLICK_STOLEN.len());
+    if found != CLICK_STOLEN {
+        log::warn!("hf_ally: ClickFunc entry is already hooked by another mod (hf_probe hook_clicks?): no toggle, no GUI inspector");
+    } else {
+        // entry hook that can swallow the click: call the hook with the four arguments, `ret` when it says yes
+        let mut code: Vec<u8> = vec![0x51, 0x52, 0x41, 0x50, 0x41, 0x51, 0x48, 0x83, 0xec, 0x28, 0x48, 0xb8];
+        code.extend((on_click_pre as usize as u64).to_le_bytes());
+        code.extend([0xff, 0xd0, 0x48, 0x83, 0xc4, 0x28, 0x84, 0xc0, 0x41, 0x59, 0x41, 0x58, 0x5a, 0x59]);
+        code.extend([0x75, (CLICK_STOLEN.len() + 14) as u8]);
+        code.extend(CLICK_STOLEN);
+        code.extend([0xff, 0x25, 0, 0, 0, 0]);
+        code.extend(((CLICK_ENTRY + CLICK_STOLEN.len()) as u64).to_le_bytes());
+        code.push(0xc3);
+        let mut trampoline = Trampoline::new();
+        trampoline.bytes(&code);
+        session
+            .detour_trampoline(CLICK_ENTRY, CLICK_STOLEN.len(), trampoline)
+            .map_err(|e| e.to_string())?;
+        PRECOMBAT_UI_READY.store(true, Ordering::Relaxed);
     }
-    if (config.ally_toggle && config.spawn_ally) || config.logging.gui_inspect {
-        let found = std::slice::from_raw_parts(CLICK_ENTRY as *const u8, CLICK_STOLEN.len());
-        if found != CLICK_STOLEN {
-            log::warn!("hf_ally: ClickFunc entry is already hooked by another mod (hf_probe hook_clicks?): no toggle, no GUI inspector");
-        } else {
-            // entry hook that can swallow the click: call the hook with the four arguments, `ret` when it says yes
-            let mut code: Vec<u8> = vec![0x51, 0x52, 0x41, 0x50, 0x41, 0x51, 0x48, 0x83, 0xec, 0x28, 0x48, 0xb8];
-            code.extend((on_click_pre as usize as u64).to_le_bytes());
-            code.extend([0xff, 0xd0, 0x48, 0x83, 0xc4, 0x28, 0x84, 0xc0, 0x41, 0x59, 0x41, 0x58, 0x5a, 0x59]);
-            code.extend([0x75, (CLICK_STOLEN.len() + 14) as u8]);
-            code.extend(CLICK_STOLEN);
-            code.extend([0xff, 0x25, 0, 0, 0, 0]);
-            code.extend(((CLICK_ENTRY + CLICK_STOLEN.len()) as u64).to_le_bytes());
-            code.push(0xc3);
-            let mut trampoline = Trampoline::new();
-            trampoline.bytes(&code);
-            session
-                .detour_trampoline(CLICK_ENTRY, CLICK_STOLEN.len(), trampoline)
-                .map_err(|e| e.to_string())?;
-            TOGGLE_ENABLED.store(config.ally_toggle && config.spawn_ally, Ordering::Relaxed);
-        }
+    let bytes = std::slice::from_raw_parts(MARKER_SEAM as *const u8, 5);
+    let target = (MARKER_SEAM + 5).wrapping_add(i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as isize as usize);
+    if bytes[0] == 0xe8 && target == FLUSH {
+        let mut trampoline = Trampoline::new();
+        trampoline.absolute_call(FLUSH as *const ());
+        trampoline.preserved_call(draw_marker as *const (), &[], &[], ReturnType::None);
+        trampoline.relative_jump(MARKER_SEAM + 5);
+        session.detour_trampoline(MARKER_SEAM, 5, trampoline).map_err(|e| e.to_string())?;
+    } else {
+        log::warn!("hf_ally: render seam {MARKER_SEAM:#x} is not a call to the flush: not hooked");
     }
-    if config.ally_toggle && config.spawn_ally {
-        let bytes = std::slice::from_raw_parts(MARKER_SEAM as *const u8, 5);
-        let target = (MARKER_SEAM + 5).wrapping_add(i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as isize as usize);
-        if bytes[0] == 0xe8 && target == FLUSH {
-            let mut trampoline = Trampoline::new();
-            trampoline.absolute_call(FLUSH as *const ());
-            trampoline.preserved_call(draw_marker as *const (), &[], &[], ReturnType::None);
-            trampoline.relative_jump(MARKER_SEAM + 5);
-            session.detour_trampoline(MARKER_SEAM, 5, trampoline).map_err(|e| e.to_string())?;
-        } else {
-            log::warn!("hf_ally: render seam {MARKER_SEAM:#x} is not a call to the flush: not hooked");
-        }
-    }
-    if config.ally_toggle && config.spawn_ally {
-        // per-frame input task (game thread): re-places the buttons after the cards are shuffled. Another mod on the
-        // same entry (hf_voice) makes the bytes differ: then nothing ticks on this screen (the battle manager hook
-        // does not run on it, seen in the v0.11.4-0.11.8 logs) and the buttons stay where the build put them.
-        let found = std::slice::from_raw_parts(INPUT_TASK as *const u8, INPUT_TASK_PROLOGUE.len());
-        if found == INPUT_TASK_PROLOGUE {
-            // padded like hf_voice's: at a function entry RSP is 8 mod 16, patchy's register saver wants 0
-            let mut trampoline = Trampoline::new();
-            trampoline.bytes(&[0x48, 0x83, 0xec, 0x08]);
-            trampoline.preserved_call(on_input_frame as *const (), &[], &[], ReturnType::None);
-            trampoline.bytes(&[0x48, 0x83, 0xc4, 0x08]);
-            trampoline.bytes(&INPUT_TASK_PROLOGUE);
-            trampoline.relative_jump(INPUT_TASK + INPUT_TASK_PROLOGUE.len());
-            session
-                .detour_trampoline(INPUT_TASK, INPUT_TASK_PROLOGUE.len(), trampoline)
-                .map_err(|e| e.to_string())?;
-        } else {
-            log::warn!("hf_ally: SomethingInputTask entry differs (another mod hooked it?): no per-frame card check from it");
-        }
+    // per-frame input task (game thread): re-places the buttons after the cards are shuffled. Another mod on the
+    // same entry (hf_voice) makes the bytes differ: then nothing ticks on this screen (the battle manager hook
+    // does not run on it, seen in the v0.11.4-0.11.8 logs) and the buttons stay where the build put them.
+    let found = std::slice::from_raw_parts(INPUT_TASK as *const u8, INPUT_TASK_PROLOGUE.len());
+    if found == INPUT_TASK_PROLOGUE {
+        // padded like hf_voice's: at a function entry RSP is 8 mod 16, patchy's register saver wants 0
+        let mut trampoline = Trampoline::new();
+        trampoline.bytes(&[0x48, 0x83, 0xec, 0x08]);
+        trampoline.preserved_call(on_input_frame as *const (), &[], &[], ReturnType::None);
+        trampoline.bytes(&[0x48, 0x83, 0xc4, 0x08]);
+        trampoline.bytes(&INPUT_TASK_PROLOGUE);
+        trampoline.relative_jump(INPUT_TASK + INPUT_TASK_PROLOGUE.len());
+        session
+            .detour_trampoline(INPUT_TASK, INPUT_TASK_PROLOGUE.len(), trampoline)
+            .map_err(|e| e.to_string())?;
+    } else {
+        log::warn!("hf_ally: SomethingInputTask entry differs (another mod hooked it?): no per-frame card check from it");
     }
     GUI_INSPECT.store(config.logging.gui_inspect, Ordering::Relaxed);
     if config.logging.gui_inspect {
@@ -3590,7 +3563,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             log::warn!("hf_ally: ammoSelectButtonPress? bytes differ, not hooked");
         }
     }
-    if config.ally_ai_ammo && config.spawn_ally {
+    if config.ally_ai_ammo {
         let found = std::slice::from_raw_parts(REFUND as *const u8, REFUND_STOLEN.len());
         if found == REFUND_STOLEN {
             let mut trampoline = Trampoline::new();
@@ -3607,8 +3580,8 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             AMMO_ON.store(false, Ordering::Relaxed);
         }
     }
-    SPARE_PRIZES.store(config.spare_prizes && config.spawn_ally, Ordering::Relaxed);
-    if config.spare_prizes && config.spawn_ally {
+    SPARE_PRIZES.store(config.spare_prizes, Ordering::Relaxed);
+    if config.spare_prizes {
         let target_ok = std::slice::from_raw_parts(TARGET_FN as *const u8, 3) == [0x48, 0x8b, 0xc4];
         let sites_ok = TARGET_SITES.iter().all(|(site, bytes)| std::slice::from_raw_parts(*site as *const u8, 5) == bytes);
         if target_ok && sites_ok {
@@ -3626,16 +3599,14 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             SPARE_PRIZES.store(false, Ordering::Relaxed);
         }
     }
-    if config.spawn_ally {
-        let guard_missiles = config.ally_bombers || !config.ally_zenith_autofire;
-        if guard_missiles {
-            missile_guard::install(&mut session)?;
-        }
-        if config.ally_bombers {
-            bomber::install(&mut session)?;
-        }
+    let guard_missiles = config.ally_bombers || !config.ally_zenith_autofire;
+    if guard_missiles {
+        missile_guard::install(&mut session)?;
     }
-    // independent of spawn_ally: the filter applies to every AI ship, the enemy's included
+    if config.ally_bombers {
+        bomber::install(&mut session)?;
+    }
+    // the filter applies to every AI ship, the enemy's included
     if let Err(error) = intercept::install(&mut session, &config.intercept_ignore_oids) {
         log::warn!("hf_ally: {error}");
     }
@@ -3666,55 +3637,46 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         }
     };
     ally_hud::install(&mut session, ally_damage_color);
-    if config.spawn_ally && config.ally_panels {
+    if config.ally_panels {
         ally_panels::install(&mut session);
     }
-    let reticles = config.spawn_ally && config.ally_reticles;
-    if reticles || config.logging.debug_overlay {
+    let reticle_scale = config.ally_reticle_scale;
+    if reticle_scale != 0.0 || config.logging.debug_overlay {
         // the reticle module owns the single per-frame battle HUD post-pass that both features draw from
-        ally_reticles::install(
-            &mut session,
-            ally_damage_color,
-            config.ally_reticle_scale,
-            reticles,
-            config.logging.debug_overlay,
-        );
+        ally_reticles::install(&mut session, ally_damage_color, reticle_scale, config.logging.debug_overlay);
     }
     plane_loadouts::EXTRA_GUNPOD.store(config.extra_gunpod, Ordering::Relaxed);
     plane_loadouts::K13_ON.store(config.plane_k13, Ordering::Relaxed);
-    if config.spawn_ally {
-        for (name, address, expected) in [
-            ("deploy", DEPLOY, &DEPLOY_PROLOGUE[..]),
-            ("set_controlled", SET_CONTROLLED, &SET_CONTROLLED_PROLOGUE[..]),
-            ("set_link", SET_LINK, &SET_LINK_PROLOGUE[..]),
-            ("get_profile", GET_PROFILE, &GET_PROFILE_PROLOGUE[..]),
-            ("extract", EXTRACT, &EXTRACT_PROLOGUE[..]),
-        ] {
-            let found = std::slice::from_raw_parts(address as *const u8, expected.len());
-            if found != expected {
-                return Err(format!("{name} at {address:#x} has unexpected bytes {found:02x?}"));
-            }
+    // Wingman deployment and battle-manager hooks; always installed when the mod is enabled.
+    for (name, address, expected) in [
+        ("deploy", DEPLOY, &DEPLOY_PROLOGUE[..]),
+        ("set_controlled", SET_CONTROLLED, &SET_CONTROLLED_PROLOGUE[..]),
+        ("set_link", SET_LINK, &SET_LINK_PROLOGUE[..]),
+        ("get_profile", GET_PROFILE, &GET_PROFILE_PROLOGUE[..]),
+        ("extract", EXTRACT, &EXTRACT_PROLOGUE[..]),
+    ] {
+        let found = std::slice::from_raw_parts(address as *const u8, expected.len());
+        if found != expected {
+            return Err(format!("{name} at {address:#x} has unexpected bytes {found:02x?}"));
         }
     }
-    if config.spawn_ally {
-        let battle = module.resolve_rva(BATTLE_RVA).map_err(|e| e.to_string())?;
-        let found = std::slice::from_raw_parts(battle as *const u8, BATTLE_PROLOGUE.len());
-        if found != BATTLE_PROLOGUE {
-            return Err(format!("battle manager at {battle:#x} has unexpected bytes {found:02x?}"));
-        }
-        if config.ship_switching {
-            ship_switch::verify_native()?;
-        }
-        ship_switch::ENABLED.store(config.ship_switching, Ordering::Relaxed);
-        session
-            .patch_call(
-                battle,
-                on_battle_tick as *const (),
-                BATTLE_PROLOGUE.len(),
-                true,
-                ReturnType::None,
-            )
-            .map_err(|e| e.to_string())?;
+    let battle = module.resolve_rva(BATTLE_RVA).map_err(|e| e.to_string())?;
+    let found = std::slice::from_raw_parts(battle as *const u8, BATTLE_PROLOGUE.len());
+    if found != BATTLE_PROLOGUE {
+        return Err(format!("battle manager at {battle:#x} has unexpected bytes {found:02x?}"));
     }
+    if config.ship_switching {
+        ship_switch::verify_native()?;
+    }
+    ship_switch::ENABLED.store(config.ship_switching, Ordering::Relaxed);
+    session
+        .patch_call(
+            battle,
+            on_battle_tick as *const (),
+            BATTLE_PROLOGUE.len(),
+            true,
+            ReturnType::None,
+        )
+        .map_err(|e| e.to_string())?;
     session.install_permanently().map_err(|e| e.to_string())
 }

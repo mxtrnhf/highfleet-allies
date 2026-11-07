@@ -3,6 +3,39 @@
 These keys were removed from `ally.json`. Older config files may still contain
 them; they load without error and the keys are ignored.
 
+## `ally_reticles` (retired in v0.14.25)
+
+The boolean was the on/off switch for the ally target boxes. It duplicated the
+scale setting, so `ally_reticle_scale` now controls both:
+
+- `0` disables the ally boxes.
+- A positive finite value sets the box size relative to the native 62 x 62 frame.
+- Negative or non-finite values fall back to `0.8` with a warning.
+
+An old `ally_reticles: false` is ignored; set `ally_reticle_scale: 0` instead.
+The player's own target box is unaffected.
+
+## `spawn_ally` (retired in v0.14.24)
+
+`spawn_ally: false` used to keep the mod loaded while skipping the AI wingman. It
+was a second on/off switch beside `enabled`, and it also gated most ally-side
+features: panels, reticles, ship switching, ally ammo, prize sparing, the ship
+bomber and the pre-combat UI.
+
+The wingman is the point of the mod, so the key is retired: whenever
+`enabled` is true, allies deploy normally. Ship 2 starts switched on; turn its
+**ALLY** toggle off on the pre-combat card to skip the wingman, or use
+`enabled: false` to turn off the whole mod. An old `spawn_ally: false` is
+ignored and no longer suppresses allies.
+
+## `ally_toggle` (retired in v0.14.24)
+
+`ally_toggle: false` removed the pre-combat **ALLY** buttons. It was not just an
+ally-button switch: it also disabled the carrier plane-loadout buttons, the
+`PLAYER` label and the per-frame GUI handling for that screen. The pre-combat UI
+is now always installed when the mod is enabled; there is no reason to hide it
+while still deploying allies. An old `ally_toggle: false` is ignored.
+
 ## `max_enemy_ships` (retired in v0.14.22)
 
 The old patch changed the immediate in `cmp qword [0x147fc75b0], 5` at

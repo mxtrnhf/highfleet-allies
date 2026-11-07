@@ -541,10 +541,7 @@ unsafe fn restore_temporary_markers(temporary: TemporaryMarkers) {
 unsafe extern "C" fn render_allies() {
     // A frame with no fresh panel content must not composite last frame's texture.
     clear_rendered();
-    if !crate::SPAWN_ALLY.load(Ordering::Relaxed)
-        || rd::<usize>(PANEL_SUPPRESSED) != 0
-        || rd::<u8>(TARGET_PANEL_HIDDEN) != 0
-    {
+    if rd::<usize>(PANEL_SUPPRESSED) != 0 || rd::<u8>(TARGET_PANEL_HIDDEN) != 0 {
         return;
     }
     let allies = living_allies();
@@ -595,8 +592,7 @@ unsafe extern "C" fn composite_allies() {
     // A hidden HUD must not leave keyboard-selectable panels from a previous frame.
     let Ok(mut displayed) = DISPLAYED_SHIPS.lock() else { return };
     *displayed = [0; MAX_PANELS];
-    if !crate::SPAWN_ALLY.load(Ordering::Relaxed)
-        || rd::<u8>(HUD_ENABLED) == 0
+    if rd::<u8>(HUD_ENABLED) == 0
         || rd::<usize>(PANEL_SUPPRESSED) != 0
         || rd::<u8>(TARGET_PANEL_HIDDEN) != 0
     {
