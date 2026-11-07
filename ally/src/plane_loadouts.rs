@@ -418,12 +418,11 @@ const SCENARIO_AIRCRAFT: usize = 0x1_47fc_6fdb;
 static WATCH: Mutex<Vec<(usize, bool, bool, bool, f64)>> = Mutex::new(Vec::new());
 /// The aircraft state setter `FUN_14000ebb0(logic, state)`; 5 = TO_OUT_OF_SCREEN.
 const SET_STATE: usize = 0x1_4000_ebb0;
-/// Plane parts armed with the K-13 choice. The normal battle mode (`logic+0x118 == 6`) never calls the air-to-air launcher
-/// `FUN_14000f5b0`, so `on_update` calls it for these planes (notes: carrier-plane-loadouts.md section 13).
+/// Plane parts armed with the K-13 choice. `on_update` manages their mode, state and target;
+/// the native aircraft update performs the launch (notes: carrier-plane-loadouts.md section 13).
 static AA: Mutex<Vec<(usize, usize, f64)>> = Mutex::new(Vec::new());
 const UPDATE_FN: usize = 0x1_4000_b370;
 const UPDATE_BYTES: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20];
-const AA_LAUNCH: usize = 0x1_4000_f5b0;
 static AA_LAST: Mutex<Vec<(usize, u64)>> = Mutex::new(Vec::new());
 static AA_TICKS: AtomicU32 = AtomicU32::new(0);
 static AA_LOGS: AtomicU32 = AtomicU32::new(0);
@@ -541,17 +540,8 @@ pub unsafe fn describe(ship: usize) -> String {
     )
 }
 
-pub unsafe fn has_planes(ship: usize) -> bool {
-    !planes_of(ship).is_empty()
-}
-
 pub fn choice(ship: usize, craft: usize) -> Option<usize> {
     CHOICE.lock().ok()?.iter().find(|(s, c, _)| *s == ship && *c == craft).map(|(_, _, a)| *a)
-}
-
-/// Any plane type of `ship` has a choice.
-pub fn any_choice(ship: usize) -> bool {
-    CHOICE.lock().map_or(false, |c| c.iter().any(|(s, _, _)| *s == ship))
 }
 
 pub fn set_choice(ship: usize, craft: usize, arm: Option<usize>) {

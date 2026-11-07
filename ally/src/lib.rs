@@ -1194,8 +1194,6 @@ static LOADOUT_GUIS: [std::sync::atomic::AtomicUsize; 54] = [const { std::sync::
 static PAINTED_PLANE_SHIPS: [std::sync::atomic::AtomicUsize; 9] = [const { std::sync::atomic::AtomicUsize::new(0) }; 9];
 /// Gap (GUI units) between the ALLY button and the plane button above it.
 const LOADOUT_GAP: f32 = 3.0;
-/// The plane buttons are smaller than the ALLY button so both rows stay in the part of the screen that takes clicks.
-const LOADOUT_SIZE: f32 = 44.0;
 const LABEL_FONT: &std::ffi::CStr = c"flash_large_shadow";
 static TOGGLE_GUIS: [std::sync::atomic::AtomicUsize; 8] = [const { std::sync::atomic::AtomicUsize::new(0) }; 8];
 /// Identifies each builder visit for diagnostics and resets the bounded health-repair budget.
@@ -3530,7 +3528,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     } else {
         // entry hook that can swallow the click: call the hook with the four arguments, `ret` when it says yes
         let mut code: Vec<u8> = vec![0x51, 0x52, 0x41, 0x50, 0x41, 0x51, 0x48, 0x83, 0xec, 0x28, 0x48, 0xb8];
-        code.extend((on_click_pre as usize as u64).to_le_bytes());
+        code.extend((on_click_pre as *const () as usize as u64).to_le_bytes());
         code.extend([0xff, 0xd0, 0x48, 0x83, 0xc4, 0x28, 0x84, 0xc0, 0x41, 0x59, 0x41, 0x58, 0x5a, 0x59]);
         code.extend([0x75, (CLICK_STOLEN.len() + 14) as u8]);
         code.extend(CLICK_STOLEN);
