@@ -7,7 +7,10 @@
 //! field. The team values and the return path are from the 1.163 RE notes; the hook is guarded by
 //! an exact byte check before installation.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Mutex,
+};
 
 use patchy::{PatchSession, ReturnType, Trampoline};
 
@@ -28,6 +31,8 @@ const HONOR_RESUME_BYTES: [u8; 8] = [0xf3, 0x0f, 0x10, 0x05, 0xf9, 0xaa, 0xcf, 0
 
 /// Effective `ally_honor_share`, stored as f32 bits (0.5 = 0x3f00_0000).
 static SHARE: AtomicU32 = AtomicU32::new(0x3f00_0000);
+/// Per-battle totals for the `ALLY SUMMARY` line: (player honor earned, honor shared with allies).
+static TOTALS: Mutex<(f32, f32)> = Mutex::new((0.0, 0.0));
 
 /// Clamps `ally_honor_share` to 0..=1; non-finite values fall back to 0.5. Returns the value used.
 pub fn set_share(share: f32) -> f32 {
@@ -39,6 +44,18 @@ pub fn set_share(share: f32) -> f32 {
 /// The effective share after `set_share` (default 0.5 until the config is read).
 pub fn share() -> f32 {
     f32::from_bits(SHARE.load(Ordering::Relaxed))
+}
+
+/// Clears the per-battle honor totals at the start of a battle.
+pub fn reset_totals() {
+    if let Ok(mut totals) = TOTALS.lock() {
+        *totals = (0.0, 0.0);
+    }
+}
+
+/// `(player honor earned, honor shared with all allies)` for the current battle.
+pub fn totals() -> (f32, f32) {
+    TOTALS.try_lock().map_or((0.0, 0.0), |totals| *totals)
 }
 
 /// Verifies the exact battle-manager award sequence before the detour is prepared.
@@ -92,6 +109,7 @@ unsafe extern "C" fn on_award(player: usize, new_total_bits: u32) {
         return;
     }
     let Ok(allies) = ALLIES.try_lock() else { return };
+    let mut credited = 0u32;
     for (index, &ally) in allies.iter().enumerate() {
         // A handoff can leave the current player in the list for one frame; never double-credit.
         if ally == player || allies[..index].contains(&ally) || !live_ship(ally) {
@@ -101,6 +119,11 @@ unsafe extern "C" fn on_award(player: usize, new_total_bits: u32) {
         let next = current + earned * share;
         if current.is_finite() && next.is_finite() {
             (ally as *mut f32).byte_add(OFF_BATTLE_HONOR).write_unaligned(next);
+            credited += 1;
         }
+    }
+    if let Ok(mut totals) = TOTALS.try_lock() {
+        totals.0 += earned;
+        totals.1 += earned * share * credited as f32;
     }
 }

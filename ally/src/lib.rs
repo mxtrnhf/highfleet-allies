@@ -3018,6 +3018,7 @@ unsafe fn emit_summary(now: f64) {
             result = SUM_RESULT.load(Ordering::Relaxed);
         }
         let state = SUM_ALLY_STATE.load(Ordering::Relaxed);
+        let (honor_player, honor_allies) = honor_share::totals();
         let ally = if flags & F_SPAWNED == 0 {
             if flags & F_OFF != 0 { "none (switched off)" } else { "none (not brought)" }.to_string()
         } else if flags & F_EXTRACTED != 0 {
@@ -3030,7 +3031,7 @@ unsafe fn emit_summary(now: f64) {
             format!("alive at the end (last state {state})")
         };
         log::info!(
-            "ALLY SUMMARY v{}: {:.0} s, squad {} (flagship + {} others), enemies at start {}, result {result} ({}), flagship left alive: {}, retreat key used: {}, allies brought {} lost {}, ally: {ally}",
+            "ALLY SUMMARY v{}: {:.0} s, squad {} (flagship + {} others), enemies at start {}, result {result} ({}), flagship left alive: {}, retreat key used: {}, allies brought {} lost {}, ally: {ally}, honor {honor_player:.1} (allies {honor_allies:.1})",
             env!("CARGO_PKG_VERSION"),
             now - t0,
             SUM_SQUAD.load(Ordering::Relaxed),
@@ -3060,6 +3061,7 @@ unsafe fn summary_tick(ships: &[usize]) {
             SUM_ALLY_STATE.store(-1, Ordering::Relaxed);
             SUM_RESULT.store(0, Ordering::Relaxed);
             SUM_FLAGS.store(0, Ordering::Relaxed);
+            honor_share::reset_totals();
         }
         SUM_LAST.store(now.to_bits(), Ordering::Relaxed);
         let result = read::<i32>(BATTLE_RESULT);
