@@ -53,7 +53,7 @@ When **hf_ai v0.10.9 or newer** is loaded, a second line shows its own per-ship 
 | `AI STOCK` | hf_ai's tactic layer left the stock steering alone |
 | `AI DIVE` | “deny the dive” sidestep |
 | `AI DIVE-SKIP` | the dive cone was detected but the chance roll declined the dodge |
-| `AI AIM` | aim-awareness sidestep (or its early-fire window) |
+| `AI AIM` | aim-awareness sidestep |
 | `AI FLARES` | an ai_flares flare burst is running |
 | `AI EVADE` | missile evasion is steering the ship |
 | `AI PANIC` | panic evasion (dash at `panic_boost`, full steering takeover) |

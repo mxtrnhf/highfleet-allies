@@ -47,8 +47,6 @@
     "aim_range": 1800.0,
     "aim_tolerance": 200.0,
     "aim_boost": 2.0,
-    "aim_require_fire": true,
-    "aim_fire_probability": 0.5,
-    "aim_fire_range": 1.6
+    "aim_require_fire": true
   }
 }

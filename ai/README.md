@@ -1,7 +1,7 @@
-# hf_ai v0.10.18
+# hf_ai v0.10.19
 
 > **IMPORTANT — UPDATE YOUR `Modloader/config/hf_ai.json`!**
-> When upgrading from before `hf_ai v0.10.11`, replace your existing `Modloader/config/hf_ai.json` with the tracked preset (or delete it so the mod writes fresh defaults). `v0.10.11` trims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires curtain sheltering. The preset values are unchanged through v0.10.16; v0.10.17 renamed the curtain keys, and v0.10.18 removes them with the retired curtain subsystem. These follow-ups are not published release packs.
+> When upgrading from before `hf_ai v0.10.11`, replace your existing `Modloader/config/hf_ai.json` with the tracked preset (or delete it so the mod writes fresh defaults). `v0.10.11` trims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging across all ships, merges dive settings, and retires curtain sheltering. The preset values are unchanged through v0.10.16; v0.10.17 renamed the curtain keys, v0.10.18 removed the curtain subsystem, and v0.10.19 removes offensive early fire, leaving 39 total leaf settings (38 gameplay plus `logging.log_panic`). These follow-ups are not published release packs.
 
 A tactical AI layer for **HighFleet Steam 1.163**, loaded as a standalone DLL by
 logdot's Modloader v4. The stock AI still selects targets and computes movement;
@@ -30,12 +30,6 @@ player profile and is not a vanilla/off configuration.
   windows, enemy and allied AI ships check all hostile shooters (both the player
   and AI ships) and slip off the closest active aim ray (`aim_chance` roll per
   window).
-- **Offensive early fire (`tactics.aim_fire_*`):** once per awareness window, an
-  AI ship in range rolls `aim_fire_probability` for 1 s of widened group-0 range
-  permission. Since v0.10.12 the native controller retains actual barrel alignment,
-  friendly-fire, ammunition and burst-start checks; the mod never writes player
-  fire bytes. Native latched bursts can outlast that permission and skip later
-  checks, so this does not guarantee avoiding friendly fire. Group 1 is unchanged.
 - **Dive avoidance (`tactics.dive_*`):** sidesteps when its target stays above
   or below it for `dive_dwell_s`, retrying after `dive_cooldown_s` if a roll is
   declined. Since v0.10.15, only airborne combat targets qualify; landed and
@@ -79,7 +73,7 @@ cargo xwin build --release --locked --no-default-features --target x86_64-pc-win
 Use one hf_ai DLL at a time. Keep the QoL flare crash fix enabled. A separate
 QoL `ai_flares` implementation must be off because it patches the same sites.
 
-See [CHANGELOG.md](CHANGELOG.md) for v0.10.18 (curtain retirement), v0.10.17 (curtain key rename), v0.10.16 (per-missile reaction rolls), v0.10.15 (landed-target and tactical ground guards), v0.10.14 (shared highfleet-rs layouts), v0.10.13 changes and v0.10.12 corrections. Cross-building is not
+See [CHANGELOG.md](CHANGELOG.md) for v0.10.19 (early-fire retirement), v0.10.18 (curtain retirement), v0.10.17 (curtain key rename), v0.10.16 (per-missile reaction rolls), v0.10.15 (landed-target and tactical ground guards), v0.10.14 (shared highfleet-rs layouts), v0.10.13 changes and v0.10.12 corrections. Cross-building is not
 combat validation; in-game validation remains pending. Existing host math harnesses
 contain zero tests. Page checks and Rust `catch_unwind` do not catch native access violations.
 
@@ -91,6 +85,7 @@ the default `hf_ai.json` preset in v0.10.11 and later.
 
 | Former key | Status |
 |---|---|
+| `tactics.aim_fire_probability`, `tactics.aim_fire_range`, `tactics.aim_fire_s` | Retired in v0.10.19. Offensive early fire was removed; old keys are ignored. |
 | `ai_flares.curtain_*` / `launch_flares_*` | Retired in v0.10.18. The preventive flare curtain was removed; old keys are ignored. |
 | `ai_flares.launch_flares_shelter`, `launch_flares_shelter_range` | Retired in v0.10.11. Ships without flares evade missiles directly. |
 | `tactics.dive_under_chance`, `dive_under_dwell_s` | Merged into `tactics.dive_chance` (`0.8`) and `tactics.dive_dwell_s` (`0.5`) in v0.10.11. |

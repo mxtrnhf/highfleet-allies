@@ -4,7 +4,7 @@ use crate::tactics_math::TacticsParams;
 
 /// The aim-dodge and dive-avoidance `tactics` block of `hf_ai.json`. Enabled by player default; every key optional.
 /// Distances are game units, times are game seconds. Aim defense needs no own target;
-/// dive avoidance and offensive early fire require a living target.
+/// dive avoidance requires a living target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TacticsConfig {
@@ -56,12 +56,6 @@ pub struct TacticsConfig {
     pub aim_boost: f32,
     /// The aim dodge only happens while the shooter is actively firing.
     pub aim_require_fire: bool,
-    /// Early fire (0 = off): chance per awareness window to widen the native group-0
-    /// range gate for `aim_fire_s` seconds. Native alignment/FF/ammo gates remain;
-    /// native latched bursts can outlive the permission and skip later checks.
-    pub aim_fire_probability: f32,
-    pub aim_fire_s: f32,
-    pub aim_fire_range: f32,
 }
 
 impl Default for TacticsConfig {
@@ -98,9 +92,6 @@ impl Default for TacticsConfig {
             aim_weight: p.aim_weight,
             aim_boost: p.aim_boost,
             aim_require_fire: p.aim_require_fire,
-            aim_fire_probability: p.aim_fire_probability,
-            aim_fire_s: p.aim_fire_s,
-            aim_fire_range: p.aim_fire_range,
         }
     }
 }
@@ -144,9 +135,6 @@ impl TacticsConfig {
             aim_weight: pick(self.aim_weight, d.aim_weight, 0.0, 20.0),
             aim_boost: pick(self.aim_boost, d.aim_boost, 1.0, 4.0),
             aim_require_fire: self.aim_require_fire,
-            aim_fire_probability: pick(self.aim_fire_probability, d.aim_fire_probability, 0.0, 1.0),
-            aim_fire_s: pick(self.aim_fire_s, d.aim_fire_s, 0.1, 10.0),
-            aim_fire_range: pick(self.aim_fire_range, d.aim_fire_range, 0.5, 4.0),
         }
     }
 
@@ -183,9 +171,6 @@ impl TacticsConfig {
             aim_weight: s.aim_weight,
             aim_boost: s.aim_boost,
             aim_require_fire: s.aim_require_fire,
-            aim_fire_probability: s.aim_fire_probability,
-            aim_fire_s: s.aim_fire_s,
-            aim_fire_range: s.aim_fire_range,
         }
     }
 }

@@ -1,12 +1,12 @@
 # hf_ai settings (`Modloader/config/hf_ai.json`)
 
-The checked-in [player preset](../ai/config/hf_ai.json) and compiled defaults use the same values (hf_ai 0.10.18, preset values unchanged since 0.10.11; curtain keys removed). The plain-language explanation of how the AI works and what to turn for which effect is in [hf-ai-tuning-guide.md](hf-ai-tuning-guide.md); this file is the complete key list with the code defaults. Edit while the game is closed; `"enabled": false` turns hf_ai off. Older release packs retain their original DLLs.
+The checked-in [player preset](../ai/config/hf_ai.json) and compiled defaults use the same values (hf_ai 0.10.19, preset values changed since 0.10.18 by the early-fire removal; curtain keys removed). The plain-language explanation of how the AI works and what to turn for which effect is in [hf-ai-tuning-guide.md](hf-ai-tuning-guide.md); this file is the complete key list with the code defaults. Edit while the game is closed; `"enabled": false` turns hf_ai off. Older release packs retain their original DLLs.
 
 ## Missing keys and how to revert to vanilla
 
-**You do not have to list every key.** Every top-level key, nested block and key inside a block may be omitted; hf_ai supplies the code default shown below. Since v0.10.11, the shipped `hf_ai.json` lists 48 gameplay settings plus `logging.log_panic` (49 total leaf settings); internal timing/math parameters use their compiled defaults unless explicitly added. An empty `{}` is also valid. If the file is absent, hf_ai tries to create it with the full defaults; if the JSON is invalid, it logs an error and uses the defaults.
+**You do not have to list every key.** Every top-level key, nested block and key inside a block may be omitted; hf_ai supplies the code default shown below. Since v0.10.11, the shipped `hf_ai.json` has been trimmed repeatedly; the current v0.10.19 preset lists 38 gameplay settings plus `logging.log_panic` (39 total leaf settings). Internal timing/math parameters use their compiled defaults unless explicitly added. An empty `{}` is also valid. If the file is absent, hf_ai tries to create it with the full defaults; if the JSON is invalid, it logs an error and uses the defaults.
 
-**Player default does not mean vanilla.** Missing keys use the active player profile; flares, tactics, early fire and missile dumping are enabled by default. Use the explicit values below when you want stock behaviour. There is no general `-1` disable convention.
+**Player default does not mean vanilla.** Missing keys use the active player profile; flares, tactics and missile dumping are enabled by default. Use the explicit values below when you want stock behaviour. There is no general `-1` disable convention.
 
 For the most complete revert, use only:
 
@@ -41,17 +41,16 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Plain evasion steering only | `ai_flares.evasion_strength: 0.0` | Neutralizes its steering contribution, but the panic state, boosted panic evasion and rolls remain possible. |
 | Stray/lost-lock missile evasion | `ai_flares.stray_missiles: false` | Locked-missile behaviour remains. |
 | Allied flares and panic | `ai_flares.allies: false` | Enemy behaviour remains. The player-flown ship is always excluded. |
-| Allied tactical steering, aim dodging and early fire | `tactics.allies: false` | Independent of `ai_flares.allies`; set both to false to exclude allies from everything, including allied missile dumping. |
+| Allied tactical steering and aim dodging | `tactics.allies: false` | Independent of `ai_flares.allies`; set both to false to exclude allies from everything, including allied missile dumping. |
 | Barrel rolls | `ai_flares.barrel_roll_probability: 0.0` | Plain and boosted panic evasion remain. |
 | Boosted/full-steering panic evasion | `ai_flares.panic_evasion_probability: 0.0` | Plain evasion and barrel rolls remain. |
 | Panic/roll boost and dash | `ai_flares.panic_boost: 1.0` | Steering and roll angles remain. |
-| Both dive directions | `tactics.dive_enabled: false` | Aim awareness and early fire remain. |
+| Both dive directions | `tactics.dive_enabled: false` | Aim awareness remains. |
 | Dive-under only | `tactics.dive_under: false` | Dive-over remains. |
 | Dive-over only | `tactics.dive_over: false` | Dive-under remains. |
 | Dive engine boost and dash | `tactics.dive_boost: 1.0` | Dive steering remains. Works independently of `ai_flares.enabled`. |
-| Aim awareness (dodging hostile gun aim) | `tactics.aim_enabled: false` | Early fire remains independent and can still roll on its window clock unless `aim_fire_probability: 0.0`. |
+| Aim awareness (dodging hostile gun aim) | `tactics.aim_enabled: false` | No aim-ray steering. Dive avoidance and missile defence remain. |
 | Aim engine boost and dash | `tactics.aim_boost: 1.0` | Aim steering remains. Works independently of `ai_flares.enabled`. |
-| Early fire | `tactics.aim_fire_probability: 0.0` | Aim-awareness steering remains. |
 | Tactical carrier plane groups | `plane_group_per_launch: 1` | Restores stock one-at-a-time cadence; strategic and manual launch paths are unchanged. |
 | Zenith/missile dumping | `ai_missile_dump_chance: 0.0` | Restores vanilla launch timing for enemies and allies. Delay values do not disable dumping. |
 | Panic trace | `logging.log_panic: false` | General startup and diagnostic messages in `Modloader.log` are separate. |
@@ -99,12 +98,12 @@ and `launch_flares_*` keys are ignored by the parser and do nothing.
 | `barrel_roll_seconds` | `2.0` | Uses player default `2.0`. | Duration of a barrel roll in seconds (`0.05..60`). |
 | `stray_missiles` | `true` | Uses player default `true`. | Reacts (evasion only, no flare burst) when an unguided/other-target missile's trajectory passes close to the ship. |
 
-## `tactics` (universal aim dodging, early fire, and dive avoidance)
+## `tactics` (universal aim dodging and dive avoidance)
 
 | Key | Default | If key omitted | What it does |
 |---|---|---|---|
 | `enabled` | `true` | Uses player default `true`. | Master switch for the `tactics` block. |
-| `allies` | `true` | Uses player default `true`. | Also applies dive avoidance, aim dodging and early fire to AI-flown allied ships. The player-flown ship is never touched. |
+| `allies` | `true` | Uses player default `true`. | Also applies dive avoidance and aim dodging to AI-flown allied ships. The player-flown ship is never touched. |
 | `dive_enabled` | `true` | Uses player default `true`. | "Deny the dive": sidestep when the target hangs inside the vertical cone above or below. |
 | `dive_under` | `true` | Uses player default `true`. | React to a target hanging below the ship. |
 | `dive_over` | `true` | Uses player default `true`. | React to a target hanging above the ship. |
@@ -119,8 +118,6 @@ and `launch_flares_*` keys are ignored by the parser and do nothing.
 | `aim_tolerance` | `200.0` | Uses player default `200.0`. | Maximum perpendicular miss distance (units) from a hostile aim ray that counts as aiming at the ship (`10..2000`). |
 | `aim_boost` | `2.0` | Uses player default `2.0`. | Engine boost multiplier while dodging an aim ray (`1.0..4.0`). Above `1.0` the ship also dashes along the slip direction with both banks and the swivel servos aimed there, bypassing the stock velocity controller's speed target. `1.0` disables both. Independent of `ai_flares.enabled`. |
 | `aim_require_fire` | `true` | Uses player default `true`. | Only dodge hostile aim rays from firing shooters. Player button state is sampled at 20 Hz with a 0.6 s hold-over, not confirmed shot detection; brief clicks can be missed. AI detection uses gun rate timers and burst latches. |
-| `aim_fire_probability` | `0.5` | Uses player default `0.5`. | Offensive early-fire chance (`0.0` = off), once per awareness window in range. Since v0.10.12 grants group-0 range permission for `aim_fire_s` (1 s), retaining native barrel alignment, friendly-fire, ammunition and burst-start checks. No fire-byte writes. Native latched bursts may continue past the permission and bypass later checks; friendly fire is not impossible. |
-| `aim_fire_range` | `1.6` | Uses player default `1.6`. | Early-fire range limit (`0.5..4.0`) times the native group-0 gun reach, measured against the native predicted aim-point distance. Does not restrict ordinary stock fire or affect group 1. |
 
 ---
 
@@ -134,6 +131,7 @@ The keys below were removed from the default `hf_ai.json` preset in v0.10.11 or 
 
 | Former key | Former default | Status |
 |---|---|---|
+| `tactics.aim_fire_probability`, `tactics.aim_fire_range`, `tactics.aim_fire_s` | — | Retired in v0.10.19 with offensive early fire; ignored by the parser. |
 | `ai_flares.curtain_*` / `launch_flares_*` | — | Retired in v0.10.18 with the preventive flare curtain; ignored by the parser. |
 | `ai_flares.launch_flares_shelter` | `true` | Retired. Ships without flares no longer steer behind a flare-dropping ally; they still evade/retreat from the missile directly. |
 | `ai_flares.launch_flares_shelter_range` | `1200.0` | Retired with `launch_flares_shelter`. |
@@ -161,7 +159,6 @@ The keys below were removed from the default `hf_ai.json` preset in v0.10.11 or 
 | `tactics.aim_gap_min_s` | `2.5` | Shortest start-to-start interval (s) between awareness windows (`aim_window_s..120`). |
 | `tactics.aim_gap_max_s` | `3.5` | Longest start-to-start interval (s) between awareness windows (`aim_gap_min_s..300`). |
 | `tactics.aim_weight` | `12.0` | Steering blend weight of the aim dodge relative to the unit stock direction (`0..20`). |
-| `tactics.aim_fire_s` | `1.0` | Duration (s) of widened native group-0 range permission (`0.1..10`), not a forced burst duration. Native latched bursts may continue afterward. |
 
 ### Retired in earlier versions (v0.10.4 – v0.10.6)
 

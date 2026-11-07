@@ -1,5 +1,20 @@
 # hf_ai changelog
 
+## v0.10.19 — retire offensive early fire
+
+- Remove the offensive early-fire subsystem entirely: the group-0 range-gate
+  detour, `tactics.aim_fire_probability`, `tactics.aim_fire_range`, the hidden
+  `tactics.aim_fire_s`, per-ship early-fire windows, gun-reach tracking and all
+  related state.
+- Old `aim_fire_*` keys are ignored by the permissive config parser; they no
+  longer grant range permission or change native firing.
+- Aim awareness, dive avoidance, missile defence, carrier groups and missile
+  dumping are unchanged.
+- The tracked preset now has 39 leaf settings (38 gameplay plus
+  `logging.log_panic`).
+- Cross-build only; no regression tests were authorized. In-game validation
+  pending.
+
 ## v0.10.18 — retire the preventive flare curtain
 
 - Remove the preventive flare-curtain subsystem entirely: launch scanning,

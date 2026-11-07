@@ -1,7 +1,7 @@
-# Tuning hf_ai: a plain-language guide (source: v0.10.18)
+# Tuning hf_ai: a plain-language guide (source: v0.10.19)
 
 > **IMPORTANT — UPDATE YOUR `Modloader/config/hf_ai.json` WHEN UPGRADING TO v0.10.11+**
-> When upgrading from before v0.10.11, replace your old `Modloader/config/hf_ai.json` with the new preset (or delete it so the mod generates fresh defaults). `v0.10.11` trims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging and early fire across all ships, merges dive settings, and retires flare-curtain sheltering. v0.10.12 through v0.10.16 keep that preset's values unchanged; v0.10.17 renamed the `launch_flares_*` keys to `curtain_*`, and v0.10.18 retires the curtain subsystem and removes those keys. No new release pack is published for these follow-ups.
+> When upgrading from before v0.10.11, replace your old `Modloader/config/hf_ai.json` with the new preset (or delete it so the mod generates fresh defaults). `v0.10.11` trims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging across all ships, merges dive settings, and retires flare-curtain sheltering. v0.10.12 through v0.10.16 keep that preset's values unchanged; v0.10.17 renamed the `launch_flares_*` keys to `curtain_*`, v0.10.18 retired the curtain subsystem, and v0.10.19 removes offensive early fire, leaving 39 total leaf settings (38 gameplay plus `logging.log_panic`). No new release pack is published for these follow-ups.
 
 Written for the person who tunes the AI, not for the person who reads the code. Every setting below is a key in `Modloader/config/hf_ai.json`; the full key reference (including retired/internal keys) is in [hf-ai-config-reference.md](hf-ai-config-reference.md).
 
@@ -14,7 +14,7 @@ Yes, with two clarifications:
 
 ## 2. What happens every tick
 
-1. **Gates.** `hf_ai` stays out (`STOCK`) unless the ship is AI-flown (never the ship you fly yourself), airborne (mode 1), the arena bounds are readable, and its side is enabled (enemies always; allies when `allies: true`). Since v0.10.12, defensive aim dodging needs no own target; dive avoidance and offensive early fire still require a living target other than itself.
+1. **Gates.** `hf_ai` stays out (`STOCK`) unless the ship is AI-flown (never the ship you fly yourself), airborne (mode 1), the arena bounds are readable, and its side is enabled (enemies always; allies when `allies: true`). Since v0.10.12, defensive aim dodging needs no own target; dive avoidance still requires a living target other than itself.
 2. **TWR gate.** Top-level `twr_cutoff` (default `2.0`) checks live strategic/Shipworks TWR (`creature +0x160c`, before UI rounding). Ships below the cutoff do not use tactical dodges or missile evasion maneuvers, though they can still drop flares. `0.0` disables the TWR gate.
 3. **Priority order** (first match wins): **missile panic** > **aim dodge** > **dive avoidance** > **stock**.
 4. **Steering composition.** The active maneuver blends its unit direction with the stock direction, then clamps against the ground (`ground_y`, `ground_clearance`, `ground_hard_y`) and arena walls (`edge_margin`).
@@ -35,7 +35,7 @@ If a ship's target stays within 45° of straight below (`dive_under: true`) or s
 * **Success (`DIVE`):** Sidesteps horizontally (picking the wrong-foot direction against a fast-moving target, or away from a nearby arena wall) while pulling toward the target's altitude, dashing along that sidestep at `dive_boost` (`2.0`), for `1.5..3.0` s, followed by `dive_cooldown_s` (`2.0` s). Since v0.10.15, the target must be in airborne combat mode; a landed/taking-off target cancels an existing dive too. Tactical courses cannot descend past `min(ground_y - ground_clearance, ground_hard_y)`. At/below that floor, tactical boosts/dashes stop to preserve native braking/lift. The floor is a fixed reference, not terrain sampling; stock and missile-panic movement are not protected by this guard.
 * **Declined (`DIVE-SKIP`):** Since v0.10.11, a failed roll pauses for `dive_cooldown_s` (`2.0` s) and then re-evaluates if the target is still hovering in the cone, instead of latching off forever.
 
-### 3.3 Universal aim dodging & offensive early fire (`tactics.aim_*`)
+### 3.3 Universal aim dodging (`tactics.aim_*`)
 Reworked in v0.10.11 so **all sides dodge each other's gun aim**:
 * **Staggered per-ship windows:** Each AI ship runs its own awareness clock (`1.5` s window every `2.5..3.5` s) rather than a single global clock.
 * **Universal threat rays:** During an open window, the ship checks all hostile live ships (enemies check the player **and** your allies; your allies check all enemies). For the player, aim comes from the mouse aim vector (`0x1403c0dc8`); for AI ships, aim comes from `AiWeaponController`'s lead vector (`creature +0xbf8/+0xbfc`).
@@ -43,7 +43,6 @@ Reworked in v0.10.11 so **all sides dodge each other's gun aim**:
 * **Firing check (`aim_require_fire: true`):** Player fire-button state is sampled at 20 Hz and held for `0.6` s after a firing sample. This is not confirmed shot detection; very brief clicks can be missed. AI shooting detection checks active gun rate timers and burst latches.
 * **Anti-juking roll (`aim_chance: 0.75`):** Rolled once per awareness window when a hostile ray crosses the ship, so AI-vs-AI fights don't become endless 100% juking matches.
 * **Dodge dash (`aim_boost: 2.0`):** While the slip is active the ship aims both engine banks and the swivel servos along the slip direction at `aim_boost`, so it dashes out of the line instead of only pushing harder inside the AI's speed controller. `1.0` turns the dash off.
-* **Offensive early fire (`aim_fire_probability: 0.5`, `aim_fire_range: 1.6`):** Once per awareness window in range, the ship rolls for 1 s of widened **group-0 range permission**. Since v0.10.12, the native weapon controller still requires actual barrel alignment (0.025 radians), its friendly-fire gate, ammunition and normal burst-start eligibility. The native predicted aim-point distance must be within `1.6x` group-0 reach; group 1 and ordinary stock fire are unchanged. No player fire byte is written. **This is not a friendly-fire guarantee:** native already-latched bursts bypass later alignment/corridor checks and may continue past the permission window. Permission is rejected for stale identities, control handoffs, lost/changed targets or stale steering.
 
 ## 4. Ally support (`v0.10.11`)
 
@@ -52,7 +51,6 @@ Reworked in v0.10.11 so **all sides dodge each other's gun aim**:
 | Locked & stray missile panic / flares | Yes (`ai_flares.allies`) |
 | Dive avoidance | Yes (`tactics.allies`) |
 | Aim dodging (against enemy gun aim) | Yes (`tactics.allies`) |
-| Offensive early fire (retains native firing checks; not a no-friendly-fire guarantee) | Yes (`tactics.allies`) |
 | Zenith missile burst dump (`ai_missile_dump_*`) | Yes (`ai_flares.allies` or `tactics.allies`) |
 | The ship you fly yourself | Never touched |
 
@@ -63,7 +61,6 @@ Reworked in v0.10.11 so **all sides dodge each other's gun aim**:
 | AI ships dodge my cannon shots too often | Lower `tactics.aim_chance` (default `0.75` -> `0.4`) or narrow `tactics.aim_tolerance` (`200.0` -> `120.0`). |
 | AI ships never dodge until I'm already shooting | Set `tactics.aim_require_fire: false` so they react to hostile aim lines even before the trigger is pulled. |
 | Ships still let me camp directly underneath them | Lower `tactics.dive_dwell_s` (`0.5` -> `0.25`) or raise `tactics.dive_chance` (`0.8` -> `1.0`). |
-| Enemies or allies open fire from too far away | Lower `tactics.aim_fire_range` (`1.6` -> `1.25`) or set `tactics.aim_fire_probability: 0.0`. |
 | Heavy ships never dodge | Lower top-level `twr_cutoff` (`2.0` -> `1.5`, or `0.0` to allow all ships). |
 
 ## 6. Retired settings
@@ -71,12 +68,13 @@ Reworked in v0.10.11 so **all sides dodge each other's gun aim**:
 Moved out of the default `hf_ai.json` in v0.10.11 or later (see [hf-ai-config-reference.md](hf-ai-config-reference.md#retired-settings) for full details and ranges):
 
 * **Retired feature keys (ignored):**
+  * `tactics.aim_fire_probability`, `tactics.aim_fire_range`, `tactics.aim_fire_s` — offensive early fire was retired in v0.10.19. Old keys are ignored; native firing is untouched.
   * `ai_flares.curtain_*` / `launch_flares_*` — the preventive flare curtain was retired in v0.10.18. Old keys are ignored; reactive panic flares, evasion and panic evasion remain.
   * `ai_flares.launch_flares_shelter`, `ai_flares.launch_flares_shelter_range` — sheltering behind another ship's flare curtain was removed; ships without flares still evade/retreat from the missile directly.
   * `tactics.dive_under_chance`, `tactics.dive_under_dwell_s` — merged into `tactics.dive_chance` (`0.8`) and `tactics.dive_dwell_s` (`0.5`).
 * **Internal tuning keys (omitted from `hf_ai.json` for clarity, but still accepted if added manually):**
   * `ai_flares`: `stray_missile_radius` (`150.0`), `stray_missile_eta_s` (`3.0`), `stray_missile_range` (`1200.0`).
-  * `tactics`: `ground_y` (`200.0`), `ground_clearance` (`450.0`), `ground_hard_y` (`120.0`), `edge_margin` (`300.0`), `dive_cone_deg` (`45.0`), `dive_min_s` (`1.5`), `dive_max_s` (`3.0`), `dive_weight` (`8.0`), `dive_wrongfoot_speed` (`40.0`), `dive_level_weight` (`0.7`), `aim_window_s` (`1.5`), `aim_gap_min_s` (`2.5`), `aim_gap_max_s` (`3.5`), `aim_weight` (`12.0`), `aim_fire_s` (`1.0`).
+  * `tactics`: `ground_y` (`200.0`), `ground_clearance` (`450.0`), `ground_hard_y` (`120.0`), `edge_margin` (`300.0`), `dive_cone_deg` (`45.0`), `dive_min_s` (`1.5`), `dive_max_s` (`3.0`), `dive_weight` (`8.0`), `dive_wrongfoot_speed` (`40.0`), `dive_level_weight` (`0.7`), `aim_window_s` (`1.5`), `aim_gap_min_s` (`2.5`), `aim_gap_max_s` (`3.5`), `aim_weight` (`12.0`).
 * **Retired in v0.10.4–v0.10.6 (ignored):**
   * `tactics.min_accel`, `tactics.dive_min_accel` (replaced by top-level `twr_cutoff`).
   * `tactics.k_center`, `band_min`, `band_max`, `half_width`, `outrange_extra`, `blend_weight`, `strafe_min_s`, `strafe_max_s`, `retreat_tangent`, `strafe_enabled` (optional positioning removed in v0.10.6).

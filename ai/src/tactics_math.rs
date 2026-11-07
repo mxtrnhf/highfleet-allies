@@ -89,11 +89,6 @@ pub struct TacticsParams {
     pub aim_boost: f32,
     /// The dodge only happens while the shooter is actually firing.
     pub aim_require_fire: bool,
-    /// Early fire: once per awareness window, a ship with a target in range rolls
-    /// this chance for `aim_fire_s` of native group-0 range permission.
-    pub aim_fire_probability: f32,
-    pub aim_fire_s: f32,
-    pub aim_fire_range: f32,
 }
 
 impl Default for TacticsParams {
@@ -129,9 +124,6 @@ impl Default for TacticsParams {
             aim_weight: 12.0,
             aim_boost: 2.0,
             aim_require_fire: true,
-            aim_fire_probability: 0.5,
-            aim_fire_s: 1.0,
-            aim_fire_range: 1.6,
         }
     }
 }
@@ -191,11 +183,6 @@ impl Rng {
     }
 }
 
-/// Larger of the two group reaches that is positive and finite.
-pub fn best_reach(a: f32, b: f32) -> Option<f32> {
-    [a, b].into_iter().filter(|r| r.is_finite() && *r > 0.0).fold(None, |m, r| Some(m.map_or(r, |m: f32| m.max(r))))
-}
-
 pub fn normalized(x: f32, y: f32) -> Option<(f32, f32)> {
     let len = (x * x + y * y).sqrt();
     (x.is_finite() && y.is_finite() && len.is_finite() && len > 1.0e-3).then(|| (x / len, y / len))
@@ -205,8 +192,6 @@ pub fn normalized(x: f32, y: f32) -> Option<(f32, f32)> {
 #[derive(Clone, Debug)]
 pub struct ShipState {
     pub last_seen: f64,
-    /// Largest own reach seen (0 = none yet).
-    pub reach_self: f32,
     /// Target in the dive cone since this time.
     pub aligned_since: Option<f64>,
     /// The roll for the current alignment said no (held until `dive_cooldown_until`).
@@ -228,7 +213,6 @@ impl ShipState {
     pub fn new(now: f64) -> Self {
         Self {
             last_seen: now,
-            reach_self: 0.0,
             aligned_since: None,
             declined: false,
             dive: None,
@@ -240,18 +224,6 @@ impl ShipState {
             aim_dodging: false,
         }
     }
-
-    /// Keep the largest own gun reach seen for early fire; AP can lower the live value.
-    pub fn latch_reach(&mut self, own: Option<f32>) {
-        if let Some(reach) = own.filter(|r| r.is_finite() && *r > 0.0) {
-            self.reach_self = self.reach_self.max(reach);
-        }
-    }
-
-    pub fn reach(&self) -> Option<f32> {
-        (self.reach_self > 0.0).then_some(self.reach_self)
-    }
-
 }
 
 /// Whether the per-ship table must be cleared: the clock went backwards or jumped (a new battle).
@@ -450,7 +422,7 @@ pub struct AimClock {
     pub open_until: f64,
     pub next_open: f64,
     pub started: bool,
-    /// How many windows have opened (a ship rolls its early fire once per window number).
+    /// How many windows have opened.
     pub window: u32,
 }
 
@@ -472,11 +444,6 @@ impl AimClock {
         }
         now < self.open_until
     }
-}
-
-/// Early fire is allowed while the target is inside `aim_fire_range` x the ship's gun reach (reach unknown: never).
-pub fn early_fire_in_range(dist: f32, reach: Option<f32>, p: &TacticsParams) -> bool {
-    reach.is_some_and(|r| r.is_finite() && r > 0.0 && dist.is_finite() && dist <= r * p.aim_fire_range)
 }
 
 /// A hostile shooter's aim ray: where the shooter is and the unit direction of its aim.

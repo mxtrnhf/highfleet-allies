@@ -26,7 +26,6 @@ use windows_sys::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION}
 
 mod ai_flares;
 mod debug_state;
-mod early_fire;
 mod flares_config;
 mod missile_dump;
 mod native_layout;
@@ -440,9 +439,6 @@ unsafe extern "C" fn init() -> bool {
             &mut session, module, config.plane_group_per_launch,
             config.plane_group_launch_delay_seconds,
         )?;
-        if steering_ok && config.tactics.enabled && config.tactics.aim_fire_probability > 0.0 {
-            early_fire::prepare(&mut session, module)?;
-        }
         let boost_wanted = tactics::wants_engine_boost()
             || (with_flares && ai_flares::wants_engine_boost(&config.ai_flares));
         let boost = if boost_wanted {
