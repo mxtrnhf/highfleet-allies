@@ -39,7 +39,7 @@
     "dive_over": true,
     "dive_chance": 0.8,
     "dive_range": 600.0,
-    "dive_dwell_s": 0.5,
+    "dive_dwell_s": 0.3,
     "dive_cooldown_s": 2.0,
     "dive_boost": 2.0,
     "aim_enabled": true,

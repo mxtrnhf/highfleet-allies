@@ -1,16 +1,16 @@
-# Player defaults — hf_ally v0.16.0
+# Player defaults — hf_ally v0.16.1
 
-> **Config compatibility.** Updating from v0.14.22 or any later development build: replace `Modloader/config/ally.json` with the v0.16.0 preset. `enabled` is the only master switch; `auto_retreat` is retired and `flagship_leaves` always applies; `spawn_ally`, `ally_toggle`, `ally_reticles`, `max_enemy_ships`, `plane_bombers`, `marker_seam`, `marker_delay_ms` and the retired logging keys are ignored. `ally_reticle_scale: 0` hides the ally target boxes. New `ally_honor_share` (default `0.5`) shares the player's battle honor with deployed allies. Ally radio lines follow the game language (`Media/Snd/RADIO` in Russian, `Media/Snd/RADIO_ENG` in English). `hf_ai.json` values changed in `hf_ai v0.10.18`, which retires the preventive flare curtain and removes its `curtain_*` / `launch_flares_*` keys, and in `hf_ai v0.10.19`, which removes offensive early fire and its `aim_fire_*` keys.
+> **Config compatibility.** Updating from v0.14.22 or any later development build: replace `Modloader/config/ally.json` with the v0.16.1 preset. `enabled` is the only master switch; `auto_retreat` is retired and `flagship_leaves` always applies; `enemy_all_at_once` is retired and the stock 30 s wave delay always applies; `spawn_ally`, `ally_toggle`, `ally_reticles`, `max_enemy_ships`, `plane_bombers`, `marker_seam`, `marker_delay_ms` and the retired logging keys are ignored. `ally_reticle_scale: 0` hides the ally target boxes. New `ally_honor_share` (default `0.5`) shares the player's battle honor with deployed allies. Ally radio lines follow the game language (`Media/Snd/RADIO` in Russian, `Media/Snd/RADIO_ENG` in English). `hf_ai.json` values changed in `hf_ai v0.10.18`, which retires the preventive flare curtain and removes its `curtain_*` / `launch_flares_*` keys, in `hf_ai v0.10.19`, which removes offensive early fire and its `aim_fire_*` keys, and in `hf_ai v0.10.20`, which changes the default `dive_dwell_s` to `0.3`.
 >
 > **From v0.14.13 or older:** also replace `Modloader/config/hf_ai.json` (the v0.10.11 preset trims it to 49 leaf settings). From v0.14.21 or older, the earlier config cleanups are included in this preset: grouped by feature, HEX `ally_damage_color`, `logging.debug_log` default false, `logging.debug_overlay` under `logging`, and the retired logging keys.
 
-The tracked player default profiles for `hf_ally v0.16.0` and `hf_ai v0.10.19` live in:
+The tracked player default profiles for `hf_ally v0.16.1` and `hf_ai v0.10.20` live in:
 
 - [ally/config/ally.json](../ally/config/ally.json)
 - [ai/config/hf_ai.json](../ai/config/hf_ai.json)
 
-The v0.16.0 development preset uses the same `hf_ai.json` values as v0.14.15
-and later, with the v0.10.18 curtain removal and the v0.10.19 early-fire removal; `ally.json` drops `auto_retreat`, `spawn_ally`, `ally_toggle`, `ally_reticles` and the
+The v0.16.1 development preset uses the same `hf_ai.json` values as v0.14.15
+and later, with the v0.10.18 curtain removal, the v0.10.19 early-fire removal and the v0.10.20 dive-dwell default; `ally.json` drops `auto_retreat`, `enemy_all_at_once`, `spawn_ally`, `ally_toggle`, `ally_reticles` and the
 misleading `max_enemy_ships` key, and adds `ally_honor_share: 0.5`. See the
 [ally changelog](../ally/CHANGELOG.md) and [ai changelog](../ai/CHANGELOG.md).
 
@@ -23,7 +23,7 @@ guides to disable specific behavior.
 
 ## Profile highlights
 
-Allies (`hf_ally v0.16.0`): up to two wingmen, 1.5 s arrival delay,
+Allies (`hf_ally v0.16.1`): up to two wingmen, 1.5 s arrival delay,
 three enemy slots active at once, K-13/loadout buttons on, ally ship panels and ally target
 boxes on (`ally_reticle_scale: 0.8`), ship switching on, ally ship bombers off,
 `ally_zenith_autofire` on (vanilla autonomous launches), bomb/rocket and AA attack
@@ -35,12 +35,12 @@ delays of 1 s, fuel retreat at 30%, and battle honor sharing at 50%
 
 AI (preset introduced in `hf_ai v0.10.11`): 38 gameplay settings plus `logging.log_panic`
 (39 total leaf settings). Flares, allied reactions, universal
-aim dodging (`aim_chance: 0.75`, `aim_boost: 2.0`), and dive avoidance (`dive_chance: 0.8`, `dive_dwell_s: 0.5`,
+aim dodging (`aim_chance: 0.75`, `aim_boost: 2.0`), and dive avoidance (`dive_chance: 0.8`, `dive_dwell_s: 0.3`,
 `dive_boost: 2.0`) are on. Top-level `twr_cutoff` is `2.0`. Carrier groups launch
 up to three planes at `0.5` s intervals. Missile-dump chance is `0.4` with
 `0.6..1.5` s spacing (for both enemies and allies). Plain evasion strength is
 `0.5`, roll chance `0.001`, panic-evasion chance `0.1` and panic duration `5` s.
-The preventive flare curtain is retired in v0.10.18; offensive early fire is retired in v0.10.19. `logging.log_panic` is off. Internal math/timing keys are omitted from the preset
+The preventive flare curtain is retired in v0.10.18; offensive early fire is retired in v0.10.19; `dive_dwell_s` defaults to `0.3` in v0.10.20. `logging.log_panic` is off. Internal math/timing keys are omitted from the preset
 and documented under Retired settings in [hf-ai-config-reference.md](hf-ai-config-reference.md).
 
 ## Maintaining the reference
@@ -49,6 +49,6 @@ Update the tracked preset and corresponding Rust defaults together.
 
 Build the three DLLs with `cargo xwin build --release --locked --no-default-features
 --target x86_64-pc-windows-msvc` in `ally/`, `ai/` and `qol/`. Commit the source and
-presets, then run `python3 tools/package_release.py --version 0.16.0 --output
+presets, then run `python3 tools/package_release.py --version 0.16.1 --output
 ../release_packs`. The packager checks a clean tracked source tree and includes a
 manifest with the source commit, versions and per-file SHA256 hashes.

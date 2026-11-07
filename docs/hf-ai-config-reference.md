@@ -1,10 +1,10 @@
 # hf_ai settings (`Modloader/config/hf_ai.json`)
 
-The checked-in [player preset](../ai/config/hf_ai.json) and compiled defaults use the same values (hf_ai 0.10.19, preset values changed since 0.10.18 by the early-fire removal; curtain keys removed). The plain-language explanation of how the AI works and what to turn for which effect is in [hf-ai-tuning-guide.md](hf-ai-tuning-guide.md); this file is the complete key list with the code defaults. Edit while the game is closed; `"enabled": false` turns hf_ai off. Older release packs retain their original DLLs.
+The checked-in [player preset](../ai/config/hf_ai.json) and compiled defaults use the same values (hf_ai 0.10.20; the preset dropped early-fire keys in 0.10.19 and changed the default `dive_dwell_s` to 0.3 in 0.10.20; curtain keys were removed in 0.10.18). The plain-language explanation of how the AI works and what to turn for which effect is in [hf-ai-tuning-guide.md](hf-ai-tuning-guide.md); this file is the complete key list with the code defaults. Edit while the game is closed; `"enabled": false` turns hf_ai off. Older release packs retain their original DLLs.
 
 ## Missing keys and how to revert to vanilla
 
-**You do not have to list every key.** Every top-level key, nested block and key inside a block may be omitted; hf_ai supplies the code default shown below. Since v0.10.11, the shipped `hf_ai.json` has been trimmed repeatedly; the current v0.10.19 preset lists 38 gameplay settings plus `logging.log_panic` (39 total leaf settings). Internal timing/math parameters use their compiled defaults unless explicitly added. An empty `{}` is also valid. If the file is absent, hf_ai tries to create it with the full defaults; if the JSON is invalid, it logs an error and uses the defaults.
+**You do not have to list every key.** Every top-level key, nested block and key inside a block may be omitted; hf_ai supplies the code default shown below. Since v0.10.11, the shipped `hf_ai.json` has been trimmed repeatedly; the current v0.10.20 preset lists 38 gameplay settings plus `logging.log_panic` (39 total leaf settings). Internal timing/math parameters use their compiled defaults unless explicitly added. An empty `{}` is also valid. If the file is absent, hf_ai tries to create it with the full defaults; if the JSON is invalid, it logs an error and uses the defaults.
 
 **Player default does not mean vanilla.** Missing keys use the active player profile; flares, tactics and missile dumping are enabled by default. Use the explicit values below when you want stock behaviour. There is no general `-1` disable convention.
 
@@ -109,7 +109,7 @@ and `launch_flares_*` keys are ignored by the parser and do nothing.
 | `dive_over` | `true` | Uses player default `true`. | React to a target hanging above the ship. |
 | `dive_chance` | `0.8` | Uses player default `0.8`. | Chance (`0.0..1.0`) that a dive sidestep starts after `dive_dwell_s` in the cone (applies to both `dive_under` and `dive_over`). On a failed roll, the ship waits `dive_cooldown_s` and re-evaluates. |
 | `dive_range` | `600.0` | Uses player default `600.0`. | Maximum distance (units) at which a target above/below triggers dive avoidance (`100..3000`). |
-| `dive_dwell_s` | `0.5` | Uses player default `0.5`. | Seconds the target must stay in the vertical cone before rolling `dive_chance` (`0..30`). |
+| `dive_dwell_s` | `0.3` | Uses player default `0.3`. | Seconds the target must stay in the vertical cone before rolling `dive_chance` (`0..30`). |
 | `dive_cooldown_s` | `2.0` | Uses player default `2.0`. | Pause in seconds after a dive sidestep (or declined roll) before the next roll (`0..120`). |
 | `dive_boost` | `2.0` | Uses player default `2.0`. | Engine boost multiplier while dive-dodging (`1.0..4.0`). Above `1.0` the ship also dashes along the sidestep: both engine banks and the swivel servos are aimed at the dodge direction and floored at this strength, bypassing the stock velocity controller's speed target. `1.0` disables both. Independent of `ai_flares.enabled`. |
 | `aim_enabled` | `true` | Uses player default `true`. | Universal aim awareness: during each ship's staggered awareness window, it checks all hostile shooters (player and AI) and slips off the closest active aim ray crossing it. |
@@ -136,7 +136,7 @@ The keys below were removed from the default `hf_ai.json` preset in v0.10.11 or 
 | `ai_flares.launch_flares_shelter` | `true` | Retired. Ships without flares no longer steer behind a flare-dropping ally; they still evade/retreat from the missile directly. |
 | `ai_flares.launch_flares_shelter_range` | `1200.0` | Retired with `launch_flares_shelter`. |
 | `tactics.dive_under_chance` | `1.0` | Merged into `tactics.dive_chance` (`0.8`). |
-| `tactics.dive_under_dwell_s` | `0.5` | Merged into `tactics.dive_dwell_s` (`0.5`). |
+| `tactics.dive_under_dwell_s` | `0.5` | Merged into `tactics.dive_dwell_s` (current default `0.3`). |
 
 #### 2. Internal tuning keys (omitted from `hf_ai.json`; still accepted by the parser if added manually)
 

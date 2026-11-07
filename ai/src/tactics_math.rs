@@ -104,7 +104,7 @@ impl Default for TacticsParams {
             dive_chance: 0.8,
             dive_cone_deg: 45.0,
             dive_range: 600.0,
-            dive_dwell_s: 0.5,
+            dive_dwell_s: 0.3,
             dive_min_s: 1.5,
             dive_max_s: 3.0,
             dive_cooldown_s: 2.0,

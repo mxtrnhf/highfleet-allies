@@ -1,7 +1,7 @@
-# Tuning hf_ai: a plain-language guide (source: v0.10.19)
+# Tuning hf_ai: a plain-language guide (source: v0.10.20)
 
 > **IMPORTANT — UPDATE YOUR `Modloader/config/hf_ai.json` WHEN UPGRADING TO v0.10.11+**
-> When upgrading from before v0.10.11, replace your old `Modloader/config/hf_ai.json` with the new preset (or delete it so the mod generates fresh defaults). `v0.10.11` trims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging across all ships, merges dive settings, and retires flare-curtain sheltering. v0.10.12 through v0.10.16 keep that preset's values unchanged; v0.10.17 renamed the `launch_flares_*` keys to `curtain_*`, v0.10.18 retired the curtain subsystem, and v0.10.19 removes offensive early fire, leaving 39 total leaf settings (38 gameplay plus `logging.log_panic`). No new release pack is published for these follow-ups.
+> When upgrading from before v0.10.11, replace your old `Modloader/config/hf_ai.json` with the new preset (or delete it so the mod generates fresh defaults). `v0.10.11` trims the preset from 80 to 49 total leaf settings (48 gameplay settings plus `logging.log_panic`), reworks aim dodging across all ships, merges dive settings, and retires flare-curtain sheltering. v0.10.12 through v0.10.16 keep that preset's values unchanged; v0.10.17 renamed the `launch_flares_*` keys to `curtain_*`, v0.10.18 retired the curtain subsystem, v0.10.19 removed offensive early fire (leaving 39 total leaf settings: 38 gameplay plus `logging.log_panic`), and v0.10.20 changes the default `dive_dwell_s` to `0.3` s. No new release pack is published for these follow-ups.
 
 Written for the person who tunes the AI, not for the person who reads the code. Every setting below is a key in `Modloader/config/hf_ai.json`; the full key reference (including retired/internal keys) is in [hf-ai-config-reference.md](hf-ai-config-reference.md).
 
@@ -31,7 +31,7 @@ Triggers when a missile locked onto the ship comes within `trigger_range` (`400.
 * Rolled once per panic: `panic_evasion_probability` (`0.1`) triggers a full-course escape: one committed direction, full thrust along it at `panic_boost` (`2.0`), for `panic_evasion_seconds` (`5.0` s). `barrel_roll_probability` (`0.001`) triggers a `barrel_roll_seconds` (`2.0` s) spin.
 
 ### 3.2 Dive avoidance ("deny the dive", `tactics.dive_*`)
-If a ship's target stays within 45° of straight below (`dive_under: true`) or straight above (`dive_over: true`), closer than `dive_range` (`600.0`), for `dive_dwell_s` (`0.5` s), the ship rolls `dive_chance` (`0.8`):
+If a ship's target stays within 45° of straight below (`dive_under: true`) or straight above (`dive_over: true`), closer than `dive_range` (`600.0`), for `dive_dwell_s` (`0.3` s), the ship rolls `dive_chance` (`0.8`):
 * **Success (`DIVE`):** Sidesteps horizontally (picking the wrong-foot direction against a fast-moving target, or away from a nearby arena wall) while pulling toward the target's altitude, dashing along that sidestep at `dive_boost` (`2.0`), for `1.5..3.0` s, followed by `dive_cooldown_s` (`2.0` s). Since v0.10.15, the target must be in airborne combat mode; a landed/taking-off target cancels an existing dive too. Tactical courses cannot descend past `min(ground_y - ground_clearance, ground_hard_y)`. At/below that floor, tactical boosts/dashes stop to preserve native braking/lift. The floor is a fixed reference, not terrain sampling; stock and missile-panic movement are not protected by this guard.
 * **Declined (`DIVE-SKIP`):** Since v0.10.11, a failed roll pauses for `dive_cooldown_s` (`2.0` s) and then re-evaluates if the target is still hovering in the cone, instead of latching off forever.
 
@@ -60,7 +60,7 @@ Reworked in v0.10.11 so **all sides dodge each other's gun aim**:
 |---|---|
 | AI ships dodge my cannon shots too often | Lower `tactics.aim_chance` (default `0.75` -> `0.4`) or narrow `tactics.aim_tolerance` (`200.0` -> `120.0`). |
 | AI ships never dodge until I'm already shooting | Set `tactics.aim_require_fire: false` so they react to hostile aim lines even before the trigger is pulled. |
-| Ships still let me camp directly underneath them | Lower `tactics.dive_dwell_s` (`0.5` -> `0.25`) or raise `tactics.dive_chance` (`0.8` -> `1.0`). |
+| Ships still let me camp directly underneath them | Lower `tactics.dive_dwell_s` (`0.3` -> `0.15`) or raise `tactics.dive_chance` (`0.8` -> `1.0`). |
 | Heavy ships never dodge | Lower top-level `twr_cutoff` (`2.0` -> `1.5`, or `0.0` to allow all ships). |
 
 ## 6. Retired settings
@@ -71,7 +71,7 @@ Moved out of the default `hf_ai.json` in v0.10.11 or later (see [hf-ai-config-re
   * `tactics.aim_fire_probability`, `tactics.aim_fire_range`, `tactics.aim_fire_s` — offensive early fire was retired in v0.10.19. Old keys are ignored; native firing is untouched.
   * `ai_flares.curtain_*` / `launch_flares_*` — the preventive flare curtain was retired in v0.10.18. Old keys are ignored; reactive panic flares, evasion and panic evasion remain.
   * `ai_flares.launch_flares_shelter`, `ai_flares.launch_flares_shelter_range` — sheltering behind another ship's flare curtain was removed; ships without flares still evade/retreat from the missile directly.
-  * `tactics.dive_under_chance`, `tactics.dive_under_dwell_s` — merged into `tactics.dive_chance` (`0.8`) and `tactics.dive_dwell_s` (`0.5`).
+  * `tactics.dive_under_chance`, `tactics.dive_under_dwell_s` — merged into `tactics.dive_chance` (`0.8`) and `tactics.dive_dwell_s` (current default `0.3`).
 * **Internal tuning keys (omitted from `hf_ai.json` for clarity, but still accepted if added manually):**
   * `ai_flares`: `stray_missile_radius` (`150.0`), `stray_missile_eta_s` (`3.0`), `stray_missile_range` (`1200.0`).
   * `tactics`: `ground_y` (`200.0`), `ground_clearance` (`450.0`), `ground_hard_y` (`120.0`), `edge_margin` (`300.0`), `dive_cone_deg` (`45.0`), `dive_min_s` (`1.5`), `dive_max_s` (`3.0`), `dive_weight` (`8.0`), `dive_wrongfoot_speed` (`40.0`), `dive_level_weight` (`0.7`), `aim_window_s` (`1.5`), `aim_gap_min_s` (`2.5`), `aim_gap_max_s` (`3.5`), `aim_weight` (`12.0`).

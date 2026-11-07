@@ -285,9 +285,6 @@ struct Config {
     /// Enemy slots active at once (vanilla 3, 1..=40). `Battle_DeployFromReserve` uses this for the
     /// initial group and for the refill after the 30 s timer. The weight budget is `3 * group_size`.
     enemy_group_size: u32,
-    /// Set the 30 s reinforcement timer to 0, so refills start immediately instead of after 30 s.
-    /// Does not change the total list or the active group size.
-    enemy_all_at_once: bool,
     /// Text drawn next to ship number 1 on the pre-combat screen (the flagship, always your own ship); "" = none.
     marker_text: String,
     /// Diagnostic switches grouped for the config file.
@@ -326,7 +323,6 @@ impl Default for Config {
             plane_aa_angle: 0.35,
             plane_aa_speed: 1.5,
             enemy_group_size: 3,
-            enemy_all_at_once: false,
             marker_text: "PLAYER".to_string(),
             logging: LoggingConfig::default(),
             intercept_ignore_oids: vec!["MDL_MISSILE_03".to_string()],
@@ -3642,7 +3638,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     if let Err(error) = intercept::install(&mut session, &config.intercept_ignore_oids) {
         log::warn!("hf_ally: {error}");
     }
-    enemy_waves::install(&mut session, config.enemy_group_size, config.enemy_all_at_once);
+    enemy_waves::install(&mut session, config.enemy_group_size);
     if config.plane_loadouts {
         match plane_loadouts::install(&mut session) {
             Ok(()) => {

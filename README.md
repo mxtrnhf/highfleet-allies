@@ -12,7 +12,7 @@ Both are optional, independent DLLs. Everything is reverse-engineered, so **Stea
 
 > **UPGRADING TO PACK v0.15.0 — CONFIG CLEANUP, LOCALIZED RADIO, HONOR SHARING**
 > **From v0.14.22 or any later development build:** replace `Modloader/config/ally.json` with the v0.15.0 preset. `enabled` is the only master switch; `spawn_ally`, `ally_toggle`, `ally_reticles`, `max_enemy_ships`, `plane_bombers`, `marker_seam`, `marker_delay_ms` and the retired logging keys are ignored. `ally_reticle_scale: 0` hides ally target boxes; the new `ally_honor_share` (default `0.5`) gives deployed allies 50% of the player's battle honor/XP. Ally radio lines follow the game language (`Media/Snd/RADIO` in Russian, `Media/Snd/RADIO_ENG` in English); custom voice paths and custom audio are planned for a future version.
-> **From v0.14.13 or older:** also replace `Modloader/config/hf_ai.json`. The preset changed in `hf_ai v0.10.18` (curtain keys removed) and `hf_ai v0.10.19` (early-fire keys removed); older files still load, but the retired keys do nothing.
+> **From v0.14.13 or older:** also replace `Modloader/config/hf_ai.json`. The preset changed in `hf_ai v0.10.18` (curtain keys removed), `hf_ai v0.10.19` (early-fire keys removed) and `hf_ai v0.10.20` (`dive_dwell_s` default `0.3`); older files still load, but the retired keys do nothing.
 
 Release pack **v0.15.0** contains **hf_ally v0.15.0** and **hf_ai v0.10.15** ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). The hf_ally config cleanup, Russian/English radio selection and ally honor sharing were validated in game on 2026-11-07. hf_ai and QoL are unchanged.
 

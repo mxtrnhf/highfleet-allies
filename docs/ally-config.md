@@ -43,7 +43,6 @@ For individual features, use this table. Settings for an already-disabled parent
 | Ally ship bombing runs | `ally_bombers: false` | Default off. Restores vanilla ship bomb use; carrier aircraft are independent. |
 | Allied damage-number colour | `ally_damage_color: "#A8FC00"` | Restores the stock lime **appearance**. There is no separate off switch for the recolour hooks; use the master switch for original code paths. |
 | Enemy ships active at once / wave weight budget | `enemy_group_size: 3` | Actual vanilla value; also leaves the vanilla weight budget unchanged. |
-| Initial 30-second enemy-wave delay | `enemy_all_at_once: false` | Vanilla wave timing remains. |
 | Carrier loadout buttons, inventory charging and chosen-armament behaviour | `plane_loadouts: false` | Complete revert for the loadout bundle, including guns-only rewriting, rocket-draw suppression, Shipworks stock handling and mod-managed tactical K-13 behaviour. |
 | Mod-managed bomb/rocket tactical attacks | `plane_loadouts: false` | `plane_attack_delay: 0.0` removes only the added wait; it does not restore vanilla plane behaviour. |
 | Extra 37 mm gunpod and post-payload strafing | `extra_gunpod: false` | Other chosen-loadout attack behaviour remains while `plane_loadouts` is on. |
@@ -118,7 +117,6 @@ modloader log messages and the basic crash reporter remain available.
 | `plane_aa_speed` | `1.5` | Uses player default `1.5`. | Speed factor for K-13 planes (1.0 = vanilla); the pack uses 1.5 so they can catch missiles and planes. |
 | `ally_ai_ammo` | `true` | Uses player default `true`. | Allies roll the AI's AP / proximity shell doctrine once, like enemy ships do at spawn. Default on. |
 | `enemy_group_size` | `3` | Uses player default `3`. | Enemy slots active at once (vanilla 3, clamped 1..=40). This controls both the initial group and the refill after the 30 s timer; the wave weight budget is set to `3 × group_size`. The actual count can be lower because ships cost 1–3 weight. |
-| `enemy_all_at_once` | `false` | Uses player default `false`. | Set the 30 s reinforcement timer to 0, so refills start immediately instead of after 30 s. Does not change the initial group size. |
 | `plane_loadouts` | `true` | Uses player default `true`. | Pre-combat buttons that pick the armament of a carrier's planes (charged to the inventory), one button per plane type the ship carries, in a column right of the ALLY button. The plane types, their loadouts, item counts and the bomb / rocket / K-13 kind of each item are read from the game's own tables when first needed, so **custom aircraft and re-priced loadouts registered through the QoL `planes` option get buttons too** (up to six plane types per card; a plane with no plain-gun loadout gets the game's 37 mm gun for "guns only"). A chosen loadout carries exactly its listed parts: the vanilla class-3 stock auto-draw is disabled for it, so a FAB plane no longer also draws NAR-122 from another loadout of the same craft. Clicking a loadout button plays the stock `button_01` UI click. Default on. |
 | `ally_damage_color` | `"#00E4FF"` | Uses player default `"#00E4FF"`. | Colour of the damage numbers popping up over ALLIED ships (instead of the enemy's yellow-green), as HEX: `"#00E4FF"`, `"00E4FF"` and `"0x00E4FF"` all work. An 8-digit value is read as `AARRGGBB` and its alpha is ignored. A plain number from an old config (e.g. `58623`) is still accepted and means `0xRRGGBB`. |
 | `ally_panels` | `true` | Uses player default `true`. | Draw a half-size copy of the ship panel for each ally currently in the battle (at most two), stacked in the empty column right of the player's own panel: name, speed, timer, counters and the live part schematic. They appear only while an ally is present and disappear when the last one leaves. The game's own target panel is unchanged. |
@@ -131,11 +129,11 @@ modloader log messages and the basic crash reporter remain available.
 
 `intercept_ignore_oids` is a list of part names (`m_oid` from `OL.seria`, case-sensitive) that the AI of both sides never treats as a strategic launch to shoot at, player default `["MDL_MISSILE_03"]` (the stock R-9 Sprint), in both code and the release preset.
 
-Enemy waves: normal tactical combat has no total enemy-ship cap — the enemy list is every ship in the engagement. `enemy_group_size` is the number of enemy slots active at once: `Battle_DeployFromReserve` uses it for the initial group and then, after the 30 s timer, tops the live group up to that size every tick as enemies die or leave. `enemy_all_at_once` sets that timer to 0, so refills start immediately. The weight budget is `3 × group_size`, so a group of expensive ships can be smaller than the configured number.
+Enemy waves: normal tactical combat has no total enemy-ship cap — the enemy list is every ship in the engagement. `enemy_group_size` is the number of enemy slots active at once: `Battle_DeployFromReserve` uses it for the initial group and then, after the stock 30 s timer, tops the live group up to that size every tick as enemies die or leave. The weight budget is `3 × group_size`, so a group of expensive ships can be smaller than the configured number.
 
 ## Retired settings
 
-`auto_retreat` was removed in v0.16.0; `spawn_ally` and `ally_toggle` were
+`enemy_all_at_once` was removed in v0.16.1; the stock 30 s reinforcement delay now always applies. `auto_retreat` was removed in v0.16.0; `spawn_ally` and `ally_toggle` were
 removed in v0.14.24; `ally_reticles` was removed in v0.14.25; `plane_bombers`,
 `marker_seam` and `marker_delay_ms` were removed in v0.14.20; `max_enemy_ships`
 was removed in v0.14.22. They are ignored in older configs. `enabled` is now the

@@ -1,5 +1,15 @@
 # hf_ai changelog
 
+## v0.10.20 — earlier default dive dwell
+
+- Change the default `tactics.dive_dwell_s` from `0.5` to `0.3` seconds in
+  both the compiled defaults and the tracked preset. Dive avoidance now rolls
+  `dive_chance` after 0.3 s of the target staying inside the vertical cone.
+- No other settings or behaviour changes. A config that already sets
+  `dive_dwell_s` keeps its explicit value.
+- Cross-build only; no regression tests were authorized. In-game validation
+  pending.
+
 ## v0.10.19 — retire offensive early fire
 
 - Remove the offensive early-fire subsystem entirely: the group-0 range-gate

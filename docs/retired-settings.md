@@ -3,6 +3,16 @@
 These keys were removed from `ally.json`. Older config files may still contain
 them; they load without error and the keys are ignored.
 
+## `enemy_all_at_once` (retired in v0.16.1)
+
+`enemy_all_at_once` only replaced the stock 30-second timer before the first
+enemy reinforcement wave with zero. It did not change the engagement list, the
+active group size or the later refill cadence, so the separate switch was not
+worth keeping.
+
+The stock 30-second delay now always applies. An old `enemy_all_at_once` is
+ignored. Use `enemy_group_size` to control how many enemies are active at once.
+
 ## `auto_retreat` (retired in v0.16.0)
 
 `auto_retreat` was only an enable/disable wrapper around `flagship_leaves`.
