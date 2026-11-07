@@ -2,7 +2,6 @@
   "enabled": true,
   "ally_bombers": false,
   "ally_delay_seconds": 1.5,
-  "auto_retreat": true,
   "flagship_leaves": "handover",
   "retreat_key": 119,
   "max_allies": 2,

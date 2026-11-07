@@ -31,7 +31,7 @@ For individual features, use this table. Settings for an already-disabled parent
 | Allies in a battle | **Per-ship toggle** | Ship 2 starts switched on. Turn its ALLY toggle off on the pre-combat card to skip the wingman; the choice persists until you toggle it back on. There is no global ally-only switch; `enabled: false` turns off the whole mod. |
 | Ally arrival delay only | `ally_delay_seconds: 0.0` | Allies still deploy immediately. |
 | Number of allies | **No zero/disable value** | `max_allies: 0` is clamped to one. Use the per-ship ALLY toggle to skip the wingman. |
-| Automatic flagship-leaves retreat/handover | `auto_retreat: false` | `flagship_leaves` then has no effect. |
+| Automatic flagship-leaves handling | **No separate off switch** | `flagship_leaves` always applies; `enabled: false` turns off the whole mod. |
 | F8 ally retreat hotkey | `retreat_key: 0` | Automatic and fuel-triggered retreat remain independently configurable. |
 | Manual ship switching | `ship_switching: false` | Disables 1/2/TAB handoffs; automatic flagship handover remains unchanged. |
 | Low-fuel ally retreat | `ally_fuel_retreat_percent: 0.0` | F8 and flagship-leaves behaviour remain. |
@@ -102,8 +102,7 @@ modloader log messages and the basic crash reporter remain available.
 |---|---|---|---|
 | `enabled` | `true` | Uses player default `true`. | Master switch for every gameplay feature, including the wingman. `false` installs no gameplay hooks; the crash reporter still loads. |
 | `ally_delay_seconds` | `1.5` | Uses player default `1.5`. | Game seconds the player's ship must have been in the battle before the ally arrives. |
-| `auto_retreat` | `true` | Uses player default `true`. | When the flagship leaves alive, perform the action selected by `flagship_leaves`; when false, the game promotes the ally and the retreat point is lost. |
-| `flagship_leaves` | `"handover"` | Uses player default `"handover"`. | What `auto_retreat` does when the flagship leaves alive: "retreat" = the ally is extracted with it and the battle ends as a retreat; "handover" = the ally is promoted to your ship (the game's own behaviour) and the retreat point the flagship used up is put back, so the new flagship can still retreat. |
+| `flagship_leaves` | `"handover"` | Uses player default `"handover"`. | What the mod does when the flagship leaves the arena alive: `"handover"` = the ally is promoted to your ship (the game's own behaviour) and the retreat point the flagship used up is put back, so the new flagship can still retreat; `"retreat"` = the ally is extracted with it and the battle ends as a retreat. An invalid value logs a warning and uses `"handover"`. |
 | `retreat_key` | `119` | Uses player default `119`. | Virtual-key code of the "ally, retreat" key (0x77 = F8); 0 disables the key. |
 | `max_allies` | `2` | Uses player default `2`. | How many AI allies may fight at the same time. Ships switched on beyond that wait in the reserve and step in, in ship-number order, when an ally is destroyed or has left. |
 | `spare_prizes` | `true` | Uses player default `true`. | Allies never keep a prize ship (the ships the player may capture and sell after the battle: the game flags them at creature +0xc19) as a target: they pick another enemy, or hold fire when only prizes are left. |

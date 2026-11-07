@@ -3,6 +3,23 @@
 These keys were removed from `ally.json`. Older config files may still contain
 them; they load without error and the keys are ignored.
 
+## `auto_retreat` (retired in v0.16.0)
+
+`auto_retreat` was only an enable/disable wrapper around `flagship_leaves`.
+When false, the mod did nothing when the flagship left alive: the stock game
+promoted an ally and the retreat point stayed consumed. That is the vanilla
+behaviour the ally mod exists to fix, so the wrapper was retired.
+
+`flagship_leaves` is now always active:
+
+- `"handover"` (default) = the ally is promoted to your ship and the retreat
+  point the flagship used up is restored, so the new flagship can still retreat.
+- `"retreat"` = the ally is extracted with the flagship and the battle ends as
+  a retreat.
+
+An old `auto_retreat` is ignored. Use `flagship_leaves` to choose the behaviour,
+or `enabled: false` to turn off the whole mod.
+
 ## `ally_reticles` (retired in v0.14.25)
 
 The boolean was the on/off switch for the ally target boxes. It duplicated the

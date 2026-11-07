@@ -229,12 +229,10 @@ struct Config {
     ally_bombers: bool,
     /// Game seconds the player's ship must have been in the battle before the ally arrives.
     ally_delay_seconds: f64,
-    /// When the flagship leaves the arena alive, order the ally out too (otherwise the battle goes on with the
-    /// ally promoted to your ship and the retreat is lost).
-    auto_retreat: bool,
-    /// What `auto_retreat` does when the flagship leaves alive: "retreat" = the ally is extracted with it and the
-    /// battle ends as a retreat; "handover" = the ally is promoted to your ship (the game's own behaviour) and the
-    /// retreat point the flagship used up is put back, so the new flagship can still retreat.
+    /// What to do when the flagship leaves the arena alive: "handover" (default) = the ally is promoted to your
+    /// ship and the retreat point the flagship used up is put back, so the new flagship can still retreat;
+    /// "retreat" = the ally is extracted with it and the battle ends as a retreat. An invalid value logs a
+    /// warning and uses "handover".
     flagship_leaves: String,
     /// Virtual-key code of the "ally, retreat" key (0x77 = F8); 0 disables the key.
     retreat_key: u32,
@@ -306,7 +304,6 @@ impl Default for Config {
             enabled: true,
             ally_bombers: false,
             ally_delay_seconds: 1.5,
-            auto_retreat: true,
             flagship_leaves: "handover".to_string(),
             retreat_key: 0x77,
             max_allies: 2,
@@ -466,7 +463,6 @@ static HANDOVER: AtomicBool = AtomicBool::new(false);
 /// The retreat point (x, y as two f32 packed in a u64) the game keeps at 0x147fc7638; zeroed when a ship uses it.
 const RETREAT_POINT: usize = 0x1_47fc_7638;
 static RETREAT_POINT_SAVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static AUTO_RETREAT: AtomicBool = AtomicBool::new(false);
 static RETREAT_KEY: AtomicU32 = AtomicU32::new(0);
 static KEY_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 /// The ally of this battle (stays set until the next battle), the flagship last seen and whether it was alive.
@@ -2906,10 +2902,6 @@ unsafe fn retreat_logic(ships: &[usize]) {
     }
     let allies: Vec<usize> = ALLIES.lock().map(|v| v.iter().copied().filter(|p| ships.contains(p)).collect()).unwrap_or_default();
     fuel_retreat(&allies);
-    // with no ally left the flagship still has to be followed (its leaving restores the retreat point)
-    if allies.is_empty() && !AUTO_RETREAT.load(Ordering::Relaxed) {
-        return;
-    }
     let key = RETREAT_KEY.load(Ordering::Relaxed);
     if key != 0 {
         let down = GetAsyncKeyState(key as i32) as u16 & 0x8000 != 0;
@@ -2938,9 +2930,6 @@ unsafe fn retreat_logic(ships: &[usize]) {
         } else if !down {
             KEY_WAS_DOWN.store(false, Ordering::Relaxed);
         }
-    }
-    if !AUTO_RETREAT.load(Ordering::Relaxed) {
-        return;
     }
     let point: u64 = read(RETREAT_POINT);
     if point != 0 {
@@ -3428,9 +3417,16 @@ unsafe extern "C" fn init() -> bool {
         env!("CARGO_PKG_VERSION"),
         serde_json::to_string(&config).unwrap_or_default()
     );
-    AUTO_RETREAT.store(config.auto_retreat, Ordering::Relaxed);
     FUEL_RETREAT_PERCENT.store(config.ally_fuel_retreat_percent.clamp(0.0, 100.0).to_bits(), Ordering::Relaxed);
-    HANDOVER.store(config.flagship_leaves == "handover", Ordering::Relaxed);
+    let handover = match config.flagship_leaves.as_str() {
+        "handover" => true,
+        "retreat" => false,
+        other => {
+            log::warn!("hf_ally: flagship_leaves {other:?} is not \"handover\" or \"retreat\"; using \"handover\"");
+            true
+        }
+    };
+    HANDOVER.store(handover, Ordering::Relaxed);
     RETREAT_KEY.store(config.retreat_key, Ordering::Relaxed);
     ALLY_DELAY.store(config.ally_delay_seconds.max(0.0).to_bits(), Ordering::Relaxed);
 
