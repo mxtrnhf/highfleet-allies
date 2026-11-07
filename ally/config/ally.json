@@ -15,6 +15,7 @@
   "ally_reticle_scale": 0.8,
   "ally_sounds": true,
   "ally_fuel_retreat_percent": 30.0,
+  "ally_honor_share": 0.5,
 
   "plane_loadouts": true,
   "extra_gunpod": true,

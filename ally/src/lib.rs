@@ -41,6 +41,7 @@ mod debug_overlay;
 mod debug_state;
 mod diag;
 mod enemy_waves;
+mod honor_share;
 mod intercept;
 mod missile_guard;
 mod native_layout;
@@ -266,6 +267,9 @@ struct Config {
     /// An ally leaves the battle (same order as the retreat key) when its COMBAT fuel (the ship's own tank, the
     /// one the battle burns; not the map fuel of the fleet) falls to this percent. 0 = off. Allies only.
     ally_fuel_retreat_percent: f32,
+    /// Share of the player's battle honor/XP given to every deployed ally: 0 = off, 0.5 = 50% (default),
+    /// 1 = 100%. The player keeps the full award; each ally receives its own `share * player award`.
+    ally_honor_share: f32,
     /// Pre-combat button that picks the armament of a carrier's planes (charged to the inventory). Default on.
     plane_loadouts: bool,
     /// Give a chosen bomb / rocket loadout a 37 mm gunpod and keep the plane in the fight after the payload is gone:
@@ -315,6 +319,7 @@ impl Default for Config {
             ally_reticle_scale: 0.8,
             ally_sounds: true,
             ally_fuel_retreat_percent: 30.0,
+            ally_honor_share: 0.5,
             plane_loadouts: true,
             extra_gunpod: true,
             plane_k13: true,
@@ -3412,6 +3417,10 @@ unsafe extern "C" fn init() -> bool {
     MAX_ALLIES.store(config.max_allies.max(1), Ordering::Relaxed);
     AMMO_ON.store(config.ally_ai_ammo, Ordering::Relaxed);
     missile_guard::set_autofire(config.ally_zenith_autofire);
+    let honor_share = honor_share::set_share(config.ally_honor_share);
+    if honor_share != config.ally_honor_share {
+        log::warn!("hf_ally: ally_honor_share {} is outside 0..=1 or not finite; using {honor_share}", config.ally_honor_share);
+    }
     log::info!(
         "hf_ally v{} config: {}",
         env!("CARGO_PKG_VERSION"),
@@ -3703,5 +3712,11 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
             ReturnType::None,
         )
         .map_err(|e| e.to_string())?;
+    if honor_share::share() > 0.0 {
+        honor_share::verify_native()?;
+        // SAFETY: the 1.163 site bytes were just checked; this is mod initialization.
+        unsafe { honor_share::install(&mut session)? };
+        log::info!("hf_ally: ally honor sharing at {:.0}%", honor_share::share() * 100.0);
+    }
     session.install_permanently().map_err(|e| e.to_string())
 }

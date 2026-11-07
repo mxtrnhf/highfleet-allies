@@ -36,6 +36,7 @@ For individual features, use this table. Settings for an already-disabled parent
 | Manual ship switching | `ship_switching: false` | Disables 1/2/TAB handoffs; automatic flagship handover remains unchanged. |
 | Low-fuel ally retreat | `ally_fuel_retreat_percent: 0.0` | F8 and flagship-leaves behaviour remain. |
 | Ally radio sounds | `ally_sounds: false` | Ordinary log messages remain. |
+| Ally battle honor sharing | `ally_honor_share: 0.0` | Player keeps 100%; deployed allies earn no battle honor. |
 | Ally AP/proximity ammo doctrine | `ally_ai_ammo: false` | Mod-deployed allies use plain shells. |
 | Prize-ship sparing | `spare_prizes: false` | Restores unmodified ally target selection. |
 | Ally Zenith autofire | `ally_zenith_autofire: true` | Vanilla: AI-run allies launch their own ship missiles. `false` makes them hold their racks; a ship you fly can still launch manually. |
@@ -126,6 +127,7 @@ modloader log messages and the basic crash reporter remain available.
 | `ally_reticle_scale` | `0.8` | Uses player default `0.8`. | Draw the game's native `sign_aim` target box around the enemy each ally is currently targeting, in the ally colour (`ally_damage_color`). Size relative to the native 62 × 62 frame: `0.8` is about 50 × 50 pixels, `1.0` is native size; `0` disables the ally boxes. Negative or non-finite values fall back to `0.8`. The player's own lime box is unchanged and drawn first. |
 | `ally_sounds` | `true` | Uses player default `true`. | Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed. Lines follow the game's language setting: Russian uses `Media/Snd/RADIO`, English uses `Media/Snd/RADIO_ENG`; a language change in the options applies to the next line. |
 | `ally_fuel_retreat_percent` | `30.0` | Uses player default `30.0`. | An ally leaves the battle (same order as the retreat key) when its COMBAT fuel (the ship's own tank, the one the battle burns; not the map fuel of the fleet) falls to this percent. 0 = off. Allies only. |
+| `ally_honor_share` | `0.5` | Uses player default `0.5`. | Share of the player's battle honor/XP given to every deployed ally: `0` = off, `0.5` = 50% (default), `1` = 100%. The player keeps the full award; each ally receives `share ×` the player's award as it is earned. Values outside 0..=1 are clamped; non-finite values use 0.5. |
 | `marker_text` | `"PLAYER"` | Uses player default `"PLAYER"`. | Text drawn next to ship number 1 on the pre-combat screen (the flagship, always your own ship); "" = none. The label and plane-loadout labels draw at the fixed B23 seam. |
 
 `intercept_ignore_oids` is a list of part names (`m_oid` from `OL.seria`, case-sensitive) that the AI of both sides never treats as a strategic launch to shoot at, player default `["MDL_MISSILE_03"]` (the stock R-9 Sprint), in both code and the release preset.
