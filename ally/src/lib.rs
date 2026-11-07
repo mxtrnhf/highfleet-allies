@@ -260,7 +260,8 @@ struct Config {
     /// Ally target box size relative to the native 62 x 62 frame. 0 = off; positive values
     /// scale the box; negative or non-finite values fall back to 0.8.
     ally_reticle_scale: f32,
-    /// Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed.
+    /// Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed. Lines follow
+    /// the game's language: Russian from `Media/Snd/RADIO`, English from `Media/Snd/RADIO_ENG`.
     ally_sounds: bool,
     /// An ally leaves the battle (same order as the retreat key) when its COMBAT fuel (the ship's own tank, the
     /// one the battle burns; not the map fuel of the fleet) falls to this percent. 0 = off. Allies only.
@@ -480,12 +481,21 @@ const SCENE_FLAGS: [usize; 3] = [0x1_47fc_6fd0, 0x1_47fc_6fda, 0x1_43a1_1902];
 // --- sounds: radio lines (v0.10.0) and pre-combat button clicks ---
 // `playSFXSound_` (0x1402e30e0) is what the stock battle radio (`PlayRadioSounds_`, 0x1402d5910) ends in; the call
 // below repeats its last call exactly: kind 0xb, the sound resource name from `Media/Snd/sound.res`, the global GUI
-// node, a base volume, then the stack arguments 1.0, a status float it writes into, and zeros.
+// node, a base volume, then the stack arguments 1.0, a status float it writes into, and zeros. The stock radio also
+// appends `_eng` to its names when the game is in English, so `play_radio` does the same (v0.14.26).
 const PLAY_SFX: usize = 0x1_402e_30e0;
 const PLAY_SFX_PROLOGUE: [u8; 15] = [0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18];
 /// Kind 0xb: the stock radio and the ClickFunc UI sounds all play through it.
 const SFX_KIND_STOCK: i32 = 0xb;
 type PlaySfxFn = unsafe extern "C" fn(i32, *const u8, usize, f32, f32, *mut f32, u64, u8, i32, u8, u8, f32, u8) -> f32;
+/// `coreLanguage`: 1 = Russian, 2 = English. The options language button writes it live (`ClickFunc`
+/// 0x140131af8), and the stock radio appends `_eng` exactly when it is 2 (`String_AppendEngSuffix`
+/// 0x1401b20f0). Read it per line so a live language change applies without a restart.
+const CORE_LANGUAGE: usize = 0x1_403c_0e1c;
+const LANGUAGE_ENGLISH: i32 = 2;
+/// `sound.res` maps the plain names to `Media/Snd/RADIO` (Russian) and the `_eng` names to
+/// `Media/Snd/RADIO_ENG` (English); every line the mod plays has an `_eng` variant.
+const ENG_SUFFIX: &[u8] = b"_eng";
 /// Ally radio lines: the retreat key, an ally joining the fight, an ally destroyed.
 static RADIO_SOUNDS: AtomicBool = AtomicBool::new(false);
 /// Pre-combat ALLY and plane-loadout button clicks (independent of `ally_sounds`).
@@ -520,11 +530,26 @@ unsafe fn play_sfx(name: &[u8], volume: f32, what: &str) {
     log::info!("ALLY sound ({what}) {} -> {result}", String::from_utf8_lossy(&name[..name.len() - 1]));
 }
 
-/// Plays a radio sound by its `sound.res` name.
-unsafe fn play_radio(name: &[u8], what: &str) {
-    if RADIO_SOUNDS.load(Ordering::Relaxed) {
-        play_sfx(name, 60.0, what);
+/// Appends `_eng` to a stock radio name in English, matching `String_AppendEngSuffix` and the
+/// `sound.res` entries that point at `Media/Snd/RADIO_ENG`. Returns a NUL-terminated name.
+unsafe fn localized_radio_name(name: &[u8]) -> Vec<u8> {
+    let base = name.strip_suffix(&[0]).unwrap_or(name);
+    let mut localized = Vec::with_capacity(base.len() + ENG_SUFFIX.len() + 1);
+    localized.extend_from_slice(base);
+    if read::<i32>(CORE_LANGUAGE) == LANGUAGE_ENGLISH {
+        localized.extend_from_slice(ENG_SUFFIX);
     }
+    localized.push(0);
+    localized
+}
+
+/// Plays a radio sound by its `sound.res` name, in the player's language.
+unsafe fn play_radio(name: &[u8], what: &str) {
+    if !RADIO_SOUNDS.load(Ordering::Relaxed) {
+        return;
+    }
+    let localized = localized_radio_name(name);
+    play_sfx(&localized, 60.0, what);
 }
 
 /// Plays the stock UI click for one of our pre-combat buttons.
