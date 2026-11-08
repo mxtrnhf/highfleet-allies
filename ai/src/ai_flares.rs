@@ -619,6 +619,7 @@ impl Snapshot {
 
 /// Called from the per-creature update, on the game thread, once per creature per frame.
 unsafe extern "C" fn on_creature_update(creature: *mut u8) {
+    let _profile = crate::profiling::Span::new(1);
     guarded("creature update", || creature_update(creature as usize));
 }
 
@@ -793,6 +794,7 @@ static TRACKS: Mutex<Option<Tracks>> = Mutex::new(None);
 
 /// Updates the tracks of all live guided missiles at most ten times a second (shared by all ships).
 unsafe fn update_tracks(runtime: &Runtime, now: f64) {
+    let _profile = crate::profiling::Span::new(3);
     let mut guard = TRACKS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let tracks = guard.get_or_insert_with(|| Tracks { next_scan: 0.0, last_scan: 0.0, map: HashMap::new() });
     if now < tracks.last_scan {
@@ -948,6 +950,7 @@ unsafe fn panic_waypoint_inner(creature: usize, now: f64, wanted: (f32, f32), sh
 /// raises the strength of the `0x66` and `0x67` commands to the configured boost, the way the
 /// player's Shift key does.
 unsafe extern "C" fn on_engine_commands(creature: *mut u8, command: *mut f32) {
+    let _profile = crate::profiling::Span::new(4);
     guarded("engine commands", || engine_commands(creature as usize, command));
 }
 
@@ -1177,6 +1180,7 @@ unsafe fn friendly_stray(memory: &mut Region, creature: usize, body: usize, targ
 /// ([`Region`]), the body count is capped, and the `is_active` function pointer must point into readable memory
 /// before it is called.
 unsafe fn threatened(runtime: &Runtime, creature: usize, ignored: &[usize]) -> ThreatScan {
+    let _profile = crate::profiling::Span::new(2);
     let mut memory = Region::new();
     let Some(count): Option<u32> = memory.read(runtime.body_count) else {
         return ThreatScan { threat: None, any_in_range: false };

@@ -1,5 +1,14 @@
 # hf_ai changelog
 
+## v1.0.1 — optional inclusive profiling
+
+- Add a compile-time `profiling` feature for five bounded QPC span categories,
+  sent to an already-loaded hf_perf v0.4.0 scalar-only export. No DLL loading,
+  gameplay/config/native-layout changes, disk I/O or allocation per span.
+- Spans include native calls and nest; they are not Rust-only CPU time or a
+  complete hf_ai overhead total. See the benchmark profiling guide.
+- Build/check validation only; no in-game validation performed.
+
 ## v1.0.0 — first stable release
 
 - No behaviour changes since v0.10.20. This release packages the completed

@@ -50,6 +50,13 @@ and default to true. Update both DLLs together. Stock upstream QoL does not cont
 these two additions; the fleet guards are not a confirmed fix for every merge crash.
 
 ## Build (developers)
+
+Optional `ai` research build: `cargo xwin build --release --features profiling`
+records inclusive steering, creature-update, threat-scan, tracking and boost spans
+through an already-loaded `hf_perf_v0.4.0.dll`. No gameplay/config changes. These
+are nested wall timings including native callees, not a complete Rust CPU total.
+Build without that feature for normal releases. Source/evidence and CSV analysis:
+`highfleet-benchmark/docs/frame-profiling.md` in the development workspace.
 Rust nightly/stable ≥ 1.88 with `cargo-xwin` (cross-compiles to Windows MSVC from Linux; works on Windows too):
 
     cd ally && cargo xwin build --release --target x86_64-pc-windows-msvc

@@ -32,6 +32,7 @@ mod native_layout;
 mod panic_math;
 mod plane_group;
 mod plane_group_math;
+mod profiling;
 mod rng;
 mod tactics;
 mod tactics_config;
@@ -125,6 +126,7 @@ unsafe fn target_info(node: usize) -> Option<(usize, (f32, f32))> {
 /// Stages: the stock waypoint -> [`decide`] (tactics) -> the ported missile panic (`ai_flares::panic_waypoint`, which overrides
 /// tactics while a ship is evading) -> the waypoint goes back to the tick.
 unsafe extern "C" fn on_steering(creature: usize) {
+    let _profile = profiling::Span::new(0);
     // A Rust panic must never unwind into the game.
     if catch_unwind(AssertUnwindSafe(|| apply_steering_overrides(creature))).is_err() && !LOGGED_STEER_PANIC.swap(true, Ordering::Relaxed) {
         log::error!("hf_ai: a panic was caught in the steering hook and ignored");
@@ -373,6 +375,7 @@ unsafe extern "C" fn version(version: *const c_char) -> bool {
 #[no_mangle]
 unsafe extern "C" fn init() -> bool {
     log::info!("hf_ai v{} (build {})", env!("CARGO_PKG_VERSION"), env!("HF_AI_BUILD"));
+    log::info!("hf_ai: profiling feature={}", cfg!(feature = "profiling"));
     if !GAME_IS_STEAM_1_163.load(Ordering::Relaxed) {
         log::error!("hf_ai: needs Steam 1.163, not starting");
         return false;

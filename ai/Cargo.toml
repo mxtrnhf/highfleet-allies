@@ -1,12 +1,15 @@
 [package]
 name = "hf-ai"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "Tactical AI layer for Highfleet 1.163: overrides the outputs of the stock per-ship AI tick (steering waypoint, engine strength, fire, launches). Standalone; not part of QoL."
 
 [lib]
 name = "hf_ai"
 crate-type = ["cdylib"]
+
+[features]
+profiling = ["windows-sys/Win32_System_Performance"]
 
 [dependencies]
 highfleet = { git = "https://github.com/logdot/highfleet-rs.git", rev = "05c62078c6f896c141713a68b3991663e121b7bf" }
