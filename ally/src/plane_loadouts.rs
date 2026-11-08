@@ -687,8 +687,10 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
             w.push((plane, arm.kind == Kind::Bombs, gunpod, false, now));
         }
     }
-    if let Ok(mut v) = VERIFY.try_lock() {
-        v.push((plane, now + 1.0, wanted));
+    if crate::diag::debug() {
+        if let Ok(mut v) = VERIFY.try_lock() {
+            v.push((plane, now + 1.0, wanted));
+        }
     }
 }
 
@@ -786,7 +788,9 @@ pub unsafe extern "C" fn on_update(logic: usize, body: usize) {
         ensure_gunpod(logic);
         attackers_to_mode_3(logic);
     }
-    census(crate::read::<f64>(crate::CLOCK)); // the body array is only stable inside the aircraft update
+    if crate::diag::debug() {
+        census(crate::read::<f64>(crate::CLOCK)); // the body array is only stable inside the aircraft update
+    }
     let Ok(aa) = AA.try_lock() else { return };
     if aa.is_empty() || !crate::plausible(logic) || !crate::plausible(body) {
         return;
@@ -811,7 +815,7 @@ pub unsafe extern "C" fn on_update(logic: usize, body: usize) {
         return;
     }
     let n = AA_TICKS.fetch_add(1, Ordering::Relaxed);
-    if n % 150 == 0 && n < 20000 {
+    if crate::diag::debug() && n.is_multiple_of(150) && n < 20000 {
         log::info!(
             "PLANE AA watch: logic {logic:#x} mode {} state {} AA list {} target {:#x} distance to carrier {:.0}",
             rd::<i32>(logic + LOGIC_MODE),
@@ -845,7 +849,12 @@ pub unsafe extern "C" fn on_update(logic: usize, body: usize) {
             }
         }
     }
-    if mode == 0 && target != 0 && n % 15 == 0 && AA_LOGS.load(Ordering::Relaxed) < 200 {
+    if crate::diag::debug()
+        && mode == 0
+        && target != 0
+        && n.is_multiple_of(15)
+        && AA_LOGS.load(Ordering::Relaxed) < 200
+    {
         log::info!(
             "PLANE AA engaged: logic {logic:#x} state {state} target {target:#x} id {} dist(body+0x2c) {:.0} timer(+0xb8) {:.2} K-13 list {list} plane speed {:.0}",
             rd::<i32>(target + OFF_BODY_LOGIC),
@@ -899,32 +908,36 @@ const SET_LINK: usize = 0x1_4019_4de0;
 const BODY_ARRAY: usize = 0x1_43a3_3c90;
 const BODY_COUNT: usize = 0x1_43a5_1150;
 
-/// All active bodies: (body, logic id `+0x3c4`, side float `+0x248`, x, y).
-unsafe fn bodies() -> Vec<(usize, i32, f32, f32, f32)> {
+/// Callback-local, allocation-free view: (body, logic id `+0x3c4`, side, x, y).
+///
+/// # Safety
+/// Consume only inside the aircraft update while the native body array is stable. The iterator
+/// borrows game identities without taking ownership and must not escape this callback or be
+/// retained for another aircraft update. Preserve the native active predicate, not just a state
+/// approximation (hf_notes/docs/findings/aircraft/carrier-plane-loadouts.md, section 18c).
+unsafe fn bodies() -> impl Iterator<Item = (usize, i32, f32, f32, f32)> {
     let count = rd::<u32>(BODY_COUNT).min(15000) as usize;
-    let mut out = Vec::new();
-    for i in 0..count {
+    (0..count).filter_map(|i| {
         let body: usize = rd(BODY_ARRAY + i * 8);
         if !crate::plausible(body) || rd::<usize>(body + offset_of!(Body, layer)) == 0 {
-            continue;
+            return None;
         }
         let vt: usize = rd(body);
         if !crate::plausible(vt) {
-            continue;
+            return None;
         }
         let active: unsafe extern "win64" fn(usize) -> i32 = std::mem::transmute(rd::<usize>(vt + 0x78));
         if active(body) & 0xff == 0 {
-            continue;
+            return None;
         }
-        out.push((
+        Some((
             body,
             rd(body + OFF_BODY_LOGIC),
             rd(body + 0x248),
             rd(body + OFF_PLANE_POS.0),
             rd(body + OFF_PLANE_POS.1),
-        ));
-    }
-    out
+        ))
+    })
 }
 
 /// The side float of the ship that launched `body` (0 when unknown). rel.32 log: a Zenith's own `+0x248` is 0, so the owner
@@ -1197,6 +1210,9 @@ pub unsafe fn tick() {
 
 /// Called every battle tick: one second after an arming, logs what the plane's loadout string says now.
 pub unsafe fn verify(now: f64) {
+    if !crate::diag::debug() {
+        return;
+    }
     let Ok(mut v) = VERIFY.try_lock() else { return };
     if v.is_empty() {
         return;

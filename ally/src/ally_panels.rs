@@ -15,6 +15,7 @@
 //!
 //! Rendering one frame before compositing matches the stock panels, which also show the previous frame.
 
+use std::collections::{HashMap, HashSet};
 use std::mem::offset_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -275,10 +276,40 @@ struct TemporaryMarkers {
     layers: Vec<(usize, i32)>,
 }
 
-/// Type-2 markers the native panel can already see for this ally. Do not add duplicates for these:
-/// the panel draws with blend mode 6, so drawing the same sprite twice lightens it ("milky" panels).
-unsafe fn existing_panel_markers(ally: usize) -> Vec<(usize, usize)> {
-    let mut existing = Vec::new();
+/// Borrowed identities for one render callback, never a cross-frame pointer cache.
+/// Keep body discovery order for native draw ordering, but index duplicate membership.
+#[derive(Default)]
+struct PanelParts {
+    bodies: Vec<usize>,
+    body_set: HashSet<usize>,
+    existing_markers: HashSet<(usize, usize)>,
+}
+
+/// Project the native tables into both ally panels in one pass per table.
+///
+/// # Safety
+/// Called on the game thread with current, validated ally identities. The render tables and
+/// their objects must remain alive throughout discovery. No game-owned allocations are copied
+/// or dropped. Guarded owner reads are memoized only until this function returns; native panel
+/// rendering starts afterward. See hf_notes/docs/rendering/battle-ship-panels.md.
+unsafe fn collect_panel_parts(allies: &[usize; MAX_PANELS]) -> [PanelParts; MAX_PANELS] {
+    let mut panels: [PanelParts; MAX_PANELS] = std::array::from_fn(|_| PanelParts::default());
+    let mut owners = HashMap::new();
+    let mut panel_slot = |part: usize| -> Option<usize> {
+        if !crate::plausible(part) {
+            return None;
+        }
+        // SAFETY: discovery stays inside this game-thread callback, before native rendering.
+        // Only an optional scalar pointer is cached, never an owning native object.
+        let owner = *owners
+            .entry(part)
+            .or_insert_with(|| unsafe { crate::diag::rd::<usize>(part + OFF_PART_OWNER) });
+        let owner = owner?;
+        allies.iter().position(|&ally| ally != 0 && ally == owner)
+    };
+
+    // Native markers already present must not be inserted again: blend mode 6 would lighten
+    // duplicate sprites. Collect both allies before appending any temporary records.
     for layer in 1..=PANEL_LAYER_LAST {
         let count = rd::<i32>(HUD_MARKER_COUNTS + layer * 4);
         if count < 0 || count as usize > HUD_MARKER_LIMIT {
@@ -291,28 +322,19 @@ unsafe fn existing_panel_markers(ally: usize) -> Vec<(usize, usize)> {
                 continue;
             }
             let part = rd::<usize>(marker + HUD_MARKER_OWNER);
-            if !crate::plausible(part) {
-                continue;
-            }
-            let Some(part_owner) = crate::diag::rd::<usize>(part + OFF_PART_OWNER) else {
+            let Some(slot) = panel_slot(part) else {
                 continue;
             };
-            if part_owner != ally {
-                continue;
-            }
             let part_index = rd::<i32>(marker + HUD_MARKER_INDEX);
             if part_index >= 0 {
-                existing.push((part, part_index as usize));
+                panels[slot]
+                    .existing_markers
+                    .insert((part, part_index as usize));
             }
         }
     }
-    existing
-}
 
-/// All part bodies of the ally. Prefer the main battle render grid (the source the enemy target
-/// view uses); fall back to the creature's mounted-part vector if the grid has nothing.
-unsafe fn part_bodies(ally: usize) -> Vec<usize> {
-    let mut bodies = Vec::new();
+    // Hull bodies can exist only in the render grid, not in the mounted-part vector.
     for layer in 0..RENDER_BODY_LAYERS {
         let count = rd::<i32>(RENDER_BODY_COUNTS + layer * 4);
         if count < 0 || count as usize > RENDER_BODY_LIMIT {
@@ -321,38 +343,35 @@ unsafe fn part_bodies(ally: usize) -> Vec<usize> {
         let base = RENDER_BODY_GRID + layer * RENDER_BODY_LIMIT * RENDER_BODY_STRIDE;
         for index in 0..count as usize {
             let part = rd::<usize>(base + index * RENDER_BODY_STRIDE);
-            if !crate::plausible(part) || bodies.contains(&part) {
-                continue;
-            }
-            let Some(owner) = crate::diag::rd::<usize>(part + OFF_PART_OWNER) else {
+            let Some(slot) = panel_slot(part) else {
                 continue;
             };
-            if owner == ally {
-                bodies.push(part);
+            if panels[slot].body_set.insert(part) {
+                panels[slot].bodies.push(part);
             }
         }
     }
-    let (begin, end): (usize, usize) = (rd(ally + OFF_PART_LIST.0), rd(ally + OFF_PART_LIST.1));
-    if begin < 0x10000 || end < begin {
-        return bodies;
-    }
-    let bytes = end - begin;
-    if !bytes.is_multiple_of(crate::LINK_STRIDE) || bytes / crate::LINK_STRIDE > PART_LIST_LIMIT {
-        return bodies;
-    }
-    for entry in (begin..end).step_by(crate::LINK_STRIDE) {
-        let part = rd::<usize>(entry + offset_of!(Link, target));
-        if !crate::plausible(part) || bodies.contains(&part) {
+
+    for (slot, &ally) in allies.iter().enumerate() {
+        if ally == 0 {
             continue;
         }
-        let Some(owner) = crate::diag::rd::<usize>(part + OFF_PART_OWNER) else {
+        let (begin, end): (usize, usize) = (rd(ally + OFF_PART_LIST.0), rd(ally + OFF_PART_LIST.1));
+        if begin < 0x10000 || end < begin {
             continue;
-        };
-        if owner == ally {
-            bodies.push(part);
+        }
+        let bytes = end - begin;
+        if !bytes.is_multiple_of(crate::LINK_STRIDE) || bytes / crate::LINK_STRIDE > PART_LIST_LIMIT {
+            continue;
+        }
+        for entry in (begin..end).step_by(crate::LINK_STRIDE) {
+            let part = rd::<usize>(entry + offset_of!(Link, target));
+            if panel_slot(part) == Some(slot) && panels[slot].body_set.insert(part) {
+                panels[slot].bodies.push(part);
+            }
         }
     }
-    bodies
+    panels
 }
 
 /// The stage the native registration starts from: the part's own `+0x8d8` plus those of its Body
@@ -367,7 +386,11 @@ unsafe fn inherited_stage(part: usize) -> i32 {
 /// The top layer is the sprite's stage plus four times the part's floor plus the inherited stage.
 /// A sprite whose `+0x50` bit 0 is set also reaches down into the four-layer depth steps below it,
 /// with the scale shrinking by 0.05 per step; every other sprite gets a single record.
-unsafe fn sprite_marker_layers(part: usize, sprite: usize, stage: i32) -> Vec<(usize, f32)> {
+unsafe fn sprite_marker_layers(
+    part: usize,
+    sprite: usize,
+    stage: i32,
+) -> impl Iterator<Item = (usize, f32)> {
     let floor = rd::<i32>(part + OFF_BODY_FLOOR);
     let base = (floor * 4 + stage).clamp(0, HUD_MARKER_LAYER_MAX);
     let sprite_stage = rd::<i32>(sprite + OFF_SPRITE_STAGE);
@@ -382,13 +405,10 @@ unsafe fn sprite_marker_layers(part: usize, sprite: usize, stage: i32) -> Vec<(u
             range_start
         };
     }
-    let mut layers = Vec::new();
-    while layer <= top {
+    (layer..=top).step_by(4).map(move |layer| {
         let scale = (1.0 - 0.05 * (top - layer) as f32).clamp(0.0, 1.0);
-        layers.push((layer as usize, scale));
-        layer += 4;
-    }
-    layers
+        (layer as usize, scale)
+    })
 }
 
 /// One type-2 record: `{type, 4 bytes pad, owner, sprite index, scale}`.
@@ -418,22 +438,20 @@ fn marker_record(part: usize, index: usize, scale: f32) -> [u8; HUD_MARKER_STRID
 /// and scale rules. Records for parts the table already holds are skipped, so a ship that was
 /// registered natively (for example the previous player ship after a control handoff) is never
 /// drawn twice.
-unsafe fn insert_layer_markers(ally: usize) -> Option<TemporaryMarkers> {
-    let parts_list = part_bodies(ally);
-    if parts_list.is_empty() {
+unsafe fn insert_layer_markers(ally: usize, parts: &PanelParts) -> Option<TemporaryMarkers> {
+    if parts.bodies.is_empty() {
         return None;
     }
-    let already_visible = existing_panel_markers(ally);
 
     let mut per_layer: Vec<Vec<[u8; HUD_MARKER_STRIDE]>> =
         (0..HUD_MARKER_LAYERS).map(|_| Vec::new()).collect();
-    let parts = parts_list.len();
+    let part_count = parts.bodies.len();
     let mut parts_used = 0usize;
     let mut inactive = 0usize;
     let mut hp_low = f32::INFINITY;
     let mut hp_high = 0.0f32;
 
-    for part in parts_list {
+    for &part in &parts.bodies {
         // Both the native registration and `Hud_DrawChildMarker` ignore a part below state 2, so
         // its records would never be drawn anyway.
         if rd::<i32>(part + OFF_NODE_STATE) <= 1 {
@@ -460,7 +478,7 @@ unsafe fn insert_layer_markers(ally: usize) -> Option<TemporaryMarkers> {
         let stage = inherited_stage(part);
         let mut used = false;
         for index in 0..sprite_bytes / 8 {
-            if already_visible.contains(&(part, index)) {
+            if parts.existing_markers.contains(&(part, index)) {
                 continue;
             }
             let sprite = rd::<usize>(sprites_begin + index * 8);
@@ -523,8 +541,8 @@ unsafe fn insert_layer_markers(ally: usize) -> Option<TemporaryMarkers> {
     if !PANEL_MARKERS_LOGGED.swap(true, Ordering::Relaxed) {
         let hp_low = if hp_low.is_finite() { hp_low } else { 1.0 };
         log::info!(
-            "ALLY panel c={ally:#x}: {parts_used} parts -> {added} part markers in layers {lowest}..{highest} ({parts} parts, {inactive} inactive, hp {hp_low:.2}..{hp_high:.2}, {} already visible)",
-            already_visible.len()
+            "ALLY panel c={ally:#x}: {parts_used} parts -> {added} part markers in layers {lowest}..{highest} ({part_count} parts, {inactive} inactive, hp {hp_low:.2}..{hp_high:.2}, {} already visible)",
+            parts.existing_markers.len()
         );
     }
     Some(TemporaryMarkers { layers: touched })
@@ -558,6 +576,7 @@ unsafe extern "C" fn render_allies() {
     let set_link: crate::SetLinkFn = std::mem::transmute(crate::SET_LINK);
     let target_link = player + crate::OFF_TARGET_LINK;
     let saved_target = rd::<usize>(player + crate::OFF_TARGET);
+    let parts = collect_panel_parts(&allies);
     for native in panels.iter_mut().flatten() {
         native.rendered_ship = 0;
     }
@@ -568,7 +587,7 @@ unsafe extern "C" fn render_allies() {
         let Some(native) = panels[slot].as_mut() else { continue };
         // Use the native link operation: a raw +0xb00 write leaves the link registered on the old
         // target's link list and its saved id stale.
-        let temporary = insert_layer_markers(ally);
+        let temporary = insert_layer_markers(ally, &parts[slot]);
         set_link(target_link, ally);
         panel(native.surface_a, native.surface_b, PANEL_MODE_TARGET);
         set_link(target_link, saved_target);

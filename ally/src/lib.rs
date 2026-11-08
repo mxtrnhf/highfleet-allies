@@ -739,7 +739,7 @@ unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
         scene(),
         read::<f64>(CLOCK)
     );
-    diag::snapshot(&format!("spawn caller_rva={:#x}", caller.wrapping_sub(IMAGE_BASE)));
+    diag::snapshot(format_args!("spawn caller_rva={:#x}", caller.wrapping_sub(IMAGE_BASE)));
     // spawns are rare and the point of the exercise: their own budget, never shared with ADD lines
     let level = level_name();
     let spawn_n = SPAWN_LINES.fetch_add(1, Ordering::Relaxed);
@@ -889,7 +889,7 @@ impl Probe {
     }
 
     /// One text line for the log.
-    unsafe fn line(&mut self, tag: &str, now: f64) -> String {
+    unsafe fn line(&mut self, tag: &str, now: f64, creatures: &ProbeCreatures) -> String {
         let ship = self.who;
         let pos = (read::<f32>(ship + OFF_POS_X), read::<f32>(ship + OFF_POS_Y));
         let dt = (now - self.last_t).max(0.001) as f32;
@@ -899,7 +899,7 @@ impl Probe {
         let target: usize = read(ship + OFF_TARGET);
         // A target link alone does not establish a live creature. Non-creature or
         // stale targets have an unknown distance; never follow them for logging.
-        let target_dist = if probe_ship_in_battle(target) {
+        let target_dist = if probe_ship_in_battle(target, creatures) {
             ((pos.0 - read::<f32>(target + OFF_POS_X)).powi(2) + (pos.1 - read::<f32>(target + OFF_POS_Y)).powi(2)).sqrt()
         } else {
             -1.0
@@ -925,57 +925,72 @@ impl Probe {
     }
 }
 
-/// Validates a cached diagnostic pointer against the current creature list before
-/// inspecting the object. Readable memory or a nonzero active field is not identity.
+/// Current creature identities for one diagnostic callback. Never retained across ticks.
+/// An unreadable or malformed list is not evidence that any cached object is alive.
+struct ProbeCreatures {
+    begin: usize,
+    end: usize,
+}
+
+impl ProbeCreatures {
+    /// # Safety
+    /// The validated native span must remain alive and unchanged on the game thread. Only
+    /// scalar pointer values are borrowed; callers must establish membership before following one.
+    unsafe fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        (self.begin..self.end).step_by(LINK_STRIDE).map(|entry| {
+            // SAFETY: construction checked every page of the bounded list, and the caller
+            // guarantees its lifetime for this callback. This does not copy a native Link.
+            unsafe { read::<usize>(entry + 8) }
+        })
+    }
+}
+
+/// Validate a bounded, callback-local view of the current native creature list.
 ///
 /// # Safety
 /// Call only from the battle hook on the game thread, while the native creature
 /// list and its objects cannot be removed concurrently. No native ownership is taken.
-unsafe fn probe_ship_in_battle(ship: usize) -> bool {
-    if !plausible(ship) {
-        return false;
-    }
+unsafe fn probe_creatures() -> Option<ProbeCreatures> {
     let (Some(begin), Some(end)) = (diag::rd::<usize>(CREATURES_BEGIN), diag::rd::<usize>(CREATURES_END)) else {
-        return false;
+        return None;
     };
     if begin < 0x10000 || end < begin {
-        return false;
+        return None;
     }
     let list_bytes = end - begin;
     if !list_bytes.is_multiple_of(LINK_STRIDE) || list_bytes / LINK_STRIDE > CREATURE_LIST_LIMIT {
+        return None;
+    }
+    // SAFETY: the header has been range/stride/cap checked above. This is the game-thread
+    // battle callback, with no intervening native mutations during diagnostic collection.
+    if !diag::readable_span(begin, list_bytes) {
+        return None;
+    }
+    Some(ProbeCreatures { begin, end })
+}
+
+/// Validate membership before inspecting any cached pointer; readable memory is not identity.
+///
+/// # Safety
+/// `creatures` must be this callback's validated native list view, on the game thread,
+/// with no intervening native operation that can destroy or replace its objects.
+unsafe fn probe_ship_in_battle(ship: usize, creatures: &ProbeCreatures) -> bool {
+    if !plausible(ship) || !creatures.iter().any(|current| current == ship) {
         return false;
     }
-    for entry in (begin..end).step_by(LINK_STRIDE) {
-        let Some(current) = diag::rd::<usize>(entry + 8) else { return false };
-        if current != ship {
-            continue;
-        }
-        // SAFETY: current list membership is established above, on the game thread.
-        // Only borrowed scalar fields are read, using the existing guarded reader.
-        return diag::rd::<u8>(ship + OFF_CODE).is_some_and(|class| class & 0x2f == 0x2f)
-            && diag::rd::<i32>(ship + OFF_ACTIVE).is_some_and(|active| active != 0)
-            && diag::rd::<i32>(ship + OFF_STATE).is_some_and(|state| !matches!(state, 6 | 7));
-    }
-    false
+    diag::rd::<u8>(ship + OFF_CODE).is_some_and(|class| class & 0x2f == 0x2f)
+        && diag::rd::<i32>(ship + OFF_ACTIVE).is_some_and(|active| active != 0)
+        && diag::rd::<i32>(ship + OFF_STATE).is_some_and(|state| !matches!(state, 6 | 7))
 }
 
 /// The enemy nearest to `from`: side below zero, in the level.
 ///
 /// # Safety
 /// `from` must be a current creature validated on the game thread by the caller.
-unsafe fn nearest_enemy(from: usize) -> usize {
-    let (cb, ce): (usize, usize) = (read(CREATURES_BEGIN), read(CREATURES_END));
-    if cb < 0x10000 || ce < cb {
-        return 0;
-    }
-    let list_bytes = ce - cb;
-    if !list_bytes.is_multiple_of(LINK_STRIDE) || list_bytes / LINK_STRIDE > CREATURE_LIST_LIMIT {
-        return 0;
-    }
+unsafe fn nearest_enemy(from: usize, creatures: &ProbeCreatures) -> usize {
     let (fx, fy) = (read::<f32>(from + OFF_POS_X), read::<f32>(from + OFF_POS_Y));
     let mut best = (usize::MAX as f32, 0usize);
-    for a in (cb..ce).step_by(LINK_STRIDE) {
-        let Some(p) = diag::rd::<usize>(a + 8) else { return 0 };
+    for p in creatures.iter() {
         if !plausible(p)
             || !diag::rd::<u8>(p + OFF_CODE).is_some_and(|class| class & 0x2f == 0x2f)
             || !diag::rd::<i32>(p + OFF_ACTIVE).is_some_and(|active| active != 0)
@@ -1005,8 +1020,11 @@ unsafe fn track_ally(ships: &[usize]) {
         TRACK_ALLY.store(0, Ordering::Relaxed);
         return;
     }
+    let Some(creatures) = probe_creatures() else {
+        return;
+    };
     // every frame: count launches and shots of the ally and of its nearest enemy
-    if !probe_ship_in_battle(ally) {
+    if !probe_ship_in_battle(ally, &creatures) {
         return;
     }
     if let (Ok(mut a), Ok(mut e)) = (PROBE_ALLY.lock(), PROBE_ENEMY.lock()) {
@@ -1016,16 +1034,16 @@ unsafe fn track_ally(ships: &[usize]) {
         }
         // Check membership first: never read an old enemy's fields to decide
         // whether that pointer still belongs to an enemy ship.
-        if !probe_ship_in_battle(e.who) || !diag::rd::<f32>(e.who + OFF_SIDE).is_some_and(|side| side < 0.0) {
-            let enemy = nearest_enemy(ally);
+        if !probe_ship_in_battle(e.who, &creatures) || !diag::rd::<f32>(e.who + OFF_SIDE).is_some_and(|side| side < 0.0) {
+            let enemy = nearest_enemy(ally, &creatures);
             e.reset(enemy, now);
         }
         a.count();
         e.count();
         if now >= f64::from_bits(TRACK_NEXT.load(Ordering::Relaxed)) {
-            log::info!("{}", a.line("ally ", now));
+            log::info!("{}", a.line("ally ", now, &creatures));
             if e.who != 0 {
-                log::info!("{}", e.line("enemy", now));
+                log::info!("{}", e.line("enemy", now, &creatures));
             }
         }
     }
@@ -1120,6 +1138,8 @@ type StyleFn = unsafe extern "win64" fn(*const std::ffi::c_char, f32, i32, u32) 
 type RenderTextFn = unsafe extern "win64" fn(*mut u8, f32, f32, u32, *const std::ffi::c_char, *mut f32, *mut f32, i32, f32) -> f32;
 /// The buttons exist and are shown (set when they are placed, cleared when they are hidden).
 static PRECOMBAT_LIVE: AtomicBool = AtomicBool::new(false);
+// A partial exit scan can hide known members, but must retry until ownership is fully checked.
+static PRECOMBAT_HIDE_PENDING: AtomicBool = AtomicBool::new(false);
 static PLACED_SIG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// The card positions the buttons were last moved to (a change means "move them with the cards this frame").
 static PLACED_LAYOUT_SIG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1250,12 +1270,29 @@ const REFUND_GUN_LISTS: [usize; 2] = [
 static PRECOMBAT_BUILDS: AtomicU32 = AtomicU32::new(0);
 
 /// A NUL-terminated ASCII name at `address`, at most 48 bytes, printable only.
+const GUI_NAME_READ_LIMIT: usize = 48;
+
 unsafe fn cstr(address: usize) -> String {
-    (0..48)
+    (0..GUI_NAME_READ_LIMIT)
         .map(|i| read::<u8>(address + i))
         .take_while(|&b| (0x20..0x7f).contains(&b))
         .map(|b| b as char)
         .collect()
+}
+
+/// Compare a fixed GUI identifier with the same 48-byte printable-ASCII boundary as `cstr`,
+/// without allocating a name for every element in a per-frame scan.
+unsafe fn cstr_is(address: usize, expected: &[u8]) -> bool {
+    if expected.len() > GUI_NAME_READ_LIMIT {
+        return false;
+    }
+    for (index, &byte) in expected.iter().enumerate() {
+        if read::<u8>(address + index) != byte {
+            return false;
+        }
+    }
+    expected.len() == GUI_NAME_READ_LIMIT
+        || !(0x20..0x7f).contains(&read::<u8>(address + expected.len()))
 }
 
 /// Runs right before the pre-combat screen is handed to the GUI dispatcher: every control exists now.
@@ -1567,16 +1604,24 @@ unsafe fn scan_cards(quiet: bool) -> CardScan {
         if read::<i32>(element + OFF_ACTIVE) == 0 {
             continue;
         }
-        let name = cstr(element + GUI_NAME);
+        let is_card = cstr_is(element + GUI_NAME, b"PRECOMBAT_A");
+        let is_other = !quiet
+            && [b"PRECOMBAT_B".as_slice(), b"MINIFIG_NUMBER", b"MES_APP"]
+                .iter()
+                .any(|name| cstr_is(element + GUI_NAME, name));
+        if !is_card && !is_other {
+            continue;
+        }
         let entry = (
             read::<f32>(element + offset_of!(Body, position_x)),
             read::<f32>(element + offset_of!(Body, position_y)),
             read::<f32>(element + 0x218),
             read::<f32>(element + 0x21c),
         );
-        if name == "PRECOMBAT_A" {
+        if is_card {
             cards.push(entry);
-        } else if !quiet && (name == "PRECOMBAT_B" || name == "MINIFIG_NUMBER" || name == "MES_APP") {
+        } else {
+            let name = cstr(element + GUI_NAME);
             other.push(format!("{name} ({:.0},{:.0} {:.0}x{:.0})", entry.0, entry.1, entry.2, entry.3));
         }
     }
@@ -1705,7 +1750,7 @@ unsafe fn card_ship_list() -> Vec<(f32, usize)> {
 unsafe fn card_ships_from(listed: &[usize]) -> Vec<(f32, usize)> {
     let mut out = Vec::new();
     for &element in listed {
-        if read::<i32>(element + OFF_ACTIVE) != 0 && cstr(element + GUI_NAME) == "PRECOMBAT_A" {
+        if read::<i32>(element + OFF_ACTIVE) != 0 && cstr_is(element + GUI_NAME, b"PRECOMBAT_A") {
             out.push((read::<f32>(element + offset_of!(Body, position_x)), plane_loadouts::ship_of_link(read::<usize>(element + GUI_LINK_TARGET))));
         }
     }
@@ -2078,11 +2123,7 @@ static CARDS_MISSING_SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 
 /// True (after hiding our elements) when the pre-combat screen has been torn down without a click we saw (Esc then quit,
 /// a save load, a scene change): `PRECOMBAT_LIVE` would stay set and our text would be drawn over the city view.
-unsafe fn screen_gone() -> bool {
-    if !PRECOMBAT_LIVE.load(Ordering::Relaxed) {
-        return false;
-    }
-    let scan = scan_cards(true);
+unsafe fn screen_gone(scan: &CardScan) -> bool {
     if !scan.complete {
         warn_incomplete_scan(scan.visited, scan.limit);
         CARDS_MISSING_SINCE.store(0, Ordering::Relaxed);
@@ -2233,16 +2274,19 @@ unsafe fn gui_health_tick(scan: &CardScan, cards: &[(f32, f32, f32, f32)], now: 
 }
 
 unsafe fn precombat_tick(source: usize) {
-    if screen_gone() {
+    if !PRECOMBAT_LIVE.load(Ordering::Relaxed) {
+        if PRECOMBAT_HIDE_PENDING.load(Ordering::Relaxed) {
+            hide_toggles("pending screen exit");
+        }
         return;
     }
-    if !PRECOMBAT_LIVE.load(Ordering::Relaxed) {
+    let scan = scan_cards(true);
+    if screen_gone(&scan) {
         return;
     }
     if TICKS_SEEN[source].fetch_add(1, Ordering::Relaxed) == 0 {
         toggle_line(format!("ALLY precombat tick: first call from hook {source} (0 = input task, 1 = battle manager)"));
     }
-    let scan = scan_cards(true);
     if !scan.complete {
         // no placement, hiding or health decision from a partial list
         warn_incomplete_scan(scan.visited, scan.limit);
@@ -2410,9 +2454,14 @@ unsafe fn hide_plane_buttons(keep: &[usize]) {
     if !scan.complete {
         warn_incomplete_scan(scan.visited, scan.limit);
     }
+    hide_plane_buttons_from(&scan.elements, keep);
+}
+
+/// Hide only members established by this callback's native GUI list scan.
+unsafe fn hide_plane_buttons_from(listed: &[usize], keep: &[usize]) {
     // keep is computed only from a complete placement scan, or is empty on an explicit screen exit.
     // A partial exit scan can hide known members safely; it must not trigger an unbounded fallback search.
-    for &element in &scan.elements {
+    for &element in listed {
         if read::<i32>(element + OFF_ACTIVE) != 2 {
             continue;
         }
@@ -2426,9 +2475,11 @@ unsafe fn hide_plane_buttons(keep: &[usize]) {
 
 /// Hides only currently listed owned toggles. Scene teardown may already have freed retained addresses.
 unsafe fn hide_toggles(why: &str) {
-    PRECOMBAT_LIVE.store(false, Ordering::Relaxed);
+    let was_live = PRECOMBAT_LIVE.swap(false, Ordering::Relaxed);
+    if !was_live && !PRECOMBAT_HIDE_PENDING.load(Ordering::Relaxed) {
+        return;
+    }
     MARKER_SHOW.store(false, Ordering::Relaxed);
-    hide_plane_buttons(&[]);
     if let Ok(mut labels) = PLANE_LABELS.lock() {
         labels.clear();
     }
@@ -2436,6 +2487,8 @@ unsafe fn hide_toggles(why: &str) {
     if !scan.complete {
         warn_incomplete_scan(scan.visited, scan.limit);
     }
+    PRECOMBAT_HIDE_PENDING.store(!scan.complete, Ordering::Relaxed);
+    hide_plane_buttons_from(&scan.elements, &[]);
     let mut hidden = 0;
     for (i, name) in TOGGLE_NAMES.iter().enumerate() {
         let gui = TOGGLE_GUIS[i].load(Ordering::Relaxed);
@@ -2605,7 +2658,7 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
     let name = cstr(gui + GUI_NAME);
     crumb!("CLICK {name} gui={gui:#x} button={button} id={_id:#x} {}", scene());
     restore_orders("click", false);
-    diag::snapshot(&format!("click {name}"));
+    diag::snapshot(format_args!("click {name}"));
     if GUI_INSPECT.load(Ordering::Relaxed) {
         inspect_gui(&format!("click {name}"));
     }
@@ -2706,7 +2759,7 @@ unsafe fn reserve_to_front(k: usize) -> bool {
 unsafe fn precombat_dump(which: &str) {
     crumb!("PRECOMBAT seam {which} {}", scene());
     restore_orders("pre-combat screen", false);
-    diag::snapshot(&format!("precombat {which}"));
+    diag::snapshot(format_args!("precombat {which}"));
     // the screen before a fight: the previous battle is over, log its summary now if the battle hook never saw it end
     emit_summary(f64::from_bits(SUM_LAST.load(Ordering::Relaxed)));
     if which.starts_with("B2") && PRECOMBAT_UI_READY.load(Ordering::Relaxed) {

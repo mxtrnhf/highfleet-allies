@@ -90,7 +90,7 @@ modloader log messages and the basic crash reporter remain available.
 
 | Key inside `logging` | Default | Purpose |
 |---|---|---|
-| `debug_log` | `false` | Runtime debug switch. `true` starts the megalog `hf_ally_megalog_<time>.log`, the watchdog, the crash minidump `hf_ally_crash_<time>.dmp`, pre-combat GUI lists, per-second probes and the lifted line budget. Dumps may contain paths/campaign data; delete after sending. The legacy `megalog` cargo feature does not force it on. |
+| `debug_log` | `false` | Runtime debug switch. `true` starts the megalog `hf_ally_megalog_<time>.log`, the watchdog, the crash minidump `hf_ally_crash_<time>.dmp`, pre-combat GUI lists, per-second probes and the lifted line budget. Since v0.16.2, aircraft census/watch and delayed loadout-verification diagnostics also require this switch. Dumps may contain paths/campaign data; delete after sending. The legacy `megalog` cargo feature does not force it on. |
 | `debug_overlay` | `false` | Battle debug overlay: rings, driver-state labels and AI waypoints. Independent of `ally_reticle_scale`; see [debug overlay](debug-overlay.md). |
 | `gui_inspect` | `false` | Full GUI lists on clicks and native ammo-selector rebuilds. |
 | `log_creatures` | `false` | Creature add/remove log (very noisy). |

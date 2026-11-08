@@ -283,8 +283,8 @@ fn watchdog() {
         std::thread::sleep(Duration::from_millis(100));
         tick += 1;
         // only scalar globals and pointer values are read here: nothing a game thread can free under us
-        let (state, heartbeat) = unsafe {
-            let state = format!(
+        let state = unsafe {
+            format!(
                 "sel={} fl={}{}{} result={} roster={} reserve={}",
                 read::<u32>(SCENE_SELECTOR),
                 read::<u8>(SCENE_FLAGS[0]),
@@ -293,23 +293,24 @@ fn watchdog() {
                 read::<i32>(BATTLE_RESULT),
                 count(ROSTER_BEGIN, ROSTER_END, 0x18),
                 read::<usize>(RESERVE + 8),
-            );
-            let heartbeat = format!(
-                "HB t={:.2} {state} creatures={} hook={}",
-                read::<f64>(CLOCK),
-                count(CREATURES_BEGIN, CREATURES_END, 0x18),
-                current_hook()
-            );
-            (state, heartbeat)
+            )
         };
         if state != last {
             write_file(&format!("STATE {state} t={:.2}", unsafe { read::<f64>(CLOCK) }), false);
             last = state;
         }
-        if tick % 5 == 0 {
+        if tick.is_multiple_of(5) {
+            let heartbeat = unsafe {
+                format!(
+                    "HB t={:.2} {last} creatures={} hook={}",
+                    read::<f64>(CLOCK),
+                    count(CREATURES_BEGIN, CREATURES_END, 0x18),
+                    current_hook()
+                )
+            };
             write_file(&heartbeat, false);
         }
-        if tick % 3 == 0 {
+        if tick.is_multiple_of(3) {
             crate::flush_log();
         }
     }
@@ -381,6 +382,32 @@ pub unsafe fn rd<T: Copy>(addr: usize) -> Option<T> {
     Some((addr as *const T).read_unaligned())
 }
 
+/// Check every page of a bounded native span without manufacturing an owning container.
+///
+/// # Safety
+/// Readability alone is not lifetime or identity. The caller must establish native ownership,
+/// keep the span alive on its owning thread, and bound `bytes` before calling. Do not cache the
+/// result across native mutations, callbacks or threads.
+pub unsafe fn readable_span(address: usize, bytes: usize) -> bool {
+    if address < 0x1_0000 {
+        return false;
+    }
+    let Some(end) = address.checked_add(bytes) else {
+        return false;
+    };
+    let mut cursor = address;
+    while cursor < end {
+        if !readable(cursor) {
+            return false;
+        }
+        let Some(next_page) = (cursor / PAGE_SIZE + 1).checked_mul(PAGE_SIZE) else {
+            return false;
+        };
+        cursor = next_page;
+    }
+    true
+}
+
 /// One line per ship of a fleet: the creature behind each list entry with the flags a landing or a battle uses
 /// (`m_incity` +0xb6c, `m_landing` +0xb6d, AI flag +0xbd4, order +0xd70, state +0xbdc, side +0xad4).
 unsafe fn ships_of(fleet: usize) -> String {
@@ -421,7 +448,7 @@ unsafe fn ships_of(fleet: usize) -> String {
 
 /// Logs every fleet of the profile (side marker, flags, ships and their flags) and the player-side fleet vector the
 /// landing scene reads, but only when something changed since the last snapshot. Call from game-thread hooks only.
-pub unsafe fn snapshot(why: &str) {
+pub unsafe fn snapshot(why: std::fmt::Arguments<'_>) {
     if !debug() {
         return;
     }
