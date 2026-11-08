@@ -1,5 +1,14 @@
 # hf_ai changelog
 
+## v1.0.0 — first stable release
+
+- No behaviour changes since v0.10.20. This release packages the completed
+  0.10.x line: the reactive-only missile defence after the flare-curtain
+  retirement, aim dodging and dive avoidance without offensive early fire,
+  and the earlier default dive dwell of 0.3 s.
+- In-game validation passed on 2026-11-08 with the current build.
+- Release pack v1.0.0.
+
 ## v0.10.20 — earlier default dive dwell
 
 - Change the default `tactics.dive_dwell_s` from `0.5` to `0.3` seconds in

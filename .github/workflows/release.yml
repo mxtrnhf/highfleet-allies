@@ -64,7 +64,7 @@ jobs:
       - name: Package only the GitHub-built DLLs with tracked player presets
         env:
           PACK_VERSION: ${{ inputs.version }}
-        run: python3 tools/package_release.py --version "$PACK_VERSION" --validation "Maintainer in-game validation passed (2026-11-07); see NOTES.md." --output release-artifacts
+        run: python3 tools/package_release.py --version "$PACK_VERSION" --validation "Maintainer in-game validation passed (2026-11-08); see NOTES.md." --output release-artifacts
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

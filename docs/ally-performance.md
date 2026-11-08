@@ -96,12 +96,12 @@ Validation performed on 2026-11-08:
 - `cargo fmt --check`: fails on repository-wide formatting differences, also reproduced on the
   untouched v0.16.1 export (267 diff sections). No crate-wide formatting rewrite was applied.
 
-The normal release DLL is retained at
-`/tmp/opencode/ally-performance-2026-11-08/hf_ally_v0.16.2.dll`; it was not installed in Steam or
-packaged as a public release. Validation logs and the baseline export are in the same run folder.
+The v0.16.2 build was installed in Steam and included in the 1.0.0 release pack. Validation logs
+and the baseline export are in `/tmp/opencode/ally-performance-2026-11-08/`.
 
 Cross-builds and static checks cannot validate native hook execution, frame timing or appearance.
-The game was not run. No regression tests were added (repository policy requires explicit
-permission). Before release, check two allies with large hulls, damage and destruction, control
-handoffs, retreat, RETRY, precombat shuffles and K-13 acquisition with debug both off and on.
-No measured FPS or millisecond claim is made.
+The maintainer ran the current build in game on 2026-11-08 and confirmed that the mod works. The
+detailed stress checklist was not individually logged: two allies with large hulls, damage and
+destruction, control handoffs, retreat, RETRY, precombat shuffles and K-13 acquisition with debug
+both off and on remain useful regression scenarios. No regression tests were added (repository
+policy requires explicit permission). No measured FPS or millisecond claim is made.

@@ -2,40 +2,47 @@
 
 For **HighFleet Steam 1.163**.
 
-> ## What this pack is
-> `hf_ally v@ALLY_VERSION@`, `hf_ai v@AI_VERSION@`, and the bundled QoL build. This is the first public pack since v0.14.22. It retires the redundant ally config switches, makes ally radio lines follow the game language, and adds battle honor/XP sharing for deployed allies. `hf_ai` and QoL are unchanged.
+> ## 1.0.0 — first stable release
+> `hf_ally v@ALLY_VERSION@`, `hf_ai v@AI_VERSION@`, and the bundled QoL build.
 >
-> **Validated in game** on 2026-11-07: config cleanup and pre-combat UI, Russian/English radio line selection, and ally honor/XP sharing. Back up your `Saves` folder before installing.
+> **Validated in game** on 2026-11-08: the current build runs and plays correctly. Back up your `Saves` folder before installing.
 
-## Changes since v0.14.22
+## What changed since pack v0.15.0
 
-### `ally.json` changes
-- `enabled` is the only master switch. `spawn_ally` and `ally_toggle` are retired and ignored. When enabled, the wingman deploys and the pre-combat ALLY/plane-loadout UI is installed; use the per-ship ALLY toggle to skip the wingman.
-- `ally_reticles` is retired; `ally_reticle_scale` controls both size and visibility of the ally target boxes. `0` = off; positive values set the size; negative or non-finite values fall back to `0.8`.
-- `max_enemy_ships` is retired. It patched `SCR_BOMBERS`, the strategic bomber scene, not normal tactical combat; normal combat has no total enemy cap. Use `enemy_group_size` for the number of enemies active at once.
-- `plane_bombers`, `marker_seam`, `marker_delay_ms` and the retired logging keys (`logging.max_lines`, `logging.log_precombat`, `logging.probe_lines`, `logging.log_colors`, `logging.dead_node`) are ignored. `debug_overlay` lives under `logging`.
-- `ally_damage_color` is written as HEX (`"#00E4FF"`); numeric values from older configs still load.
-- The pre-combat ALLY and plane-loadout buttons use a per-button 120 ms debounce, so one physical click cannot toggle twice and a second button is not swallowed.
-- The pack's `Modloader/config/ally.json` is the current grouped preset and contains no retired keys.
+### `hf_ally v1.0.0`
 
-### Ally radio lines follow the game language
-- Russian uses `Media/Snd/RADIO`; English uses `Media/Snd/RADIO_ENG`. This is the stock `_eng` `sound.res` selection and follows a live language change in the options.
-- The pack keeps the existing custom Russian `Media/Snd/RADIO/radio_stall_01.wav`; English uses the stock English line.
-- **Custom voice paths and custom audio for ally lines are planned for a future version; they are not in this pack.**
-- The pre-combat `button_01` UI click is unchanged and is not localized.
+- **`auto_retreat` retired.** `flagship_leaves` always applies: `"handover"` (default) promotes an ally and restores the retreat point; `"retreat"` extracts the squad and ends the battle as a retreat.
+- **`enemy_all_at_once` retired.** It only skipped the stock 30-second wait before the first reinforcement wave. `enemy_group_size` still controls how many enemies are active at once; the stock refill delay now always applies.
+- **Battle-side performance pass (v0.16.2).** Panel and HUD-marker discovery now shares one validated view per callback instead of walking the same native tables repeatedly. Interceptor target selection streams the active-body list instead of building an all-body snapshot every hunt. Precombat cleanup runs on screen exit rather than on every armed combat tick. Debug probes are bounded and logging-only diagnostics respect `logging.debug_log`. No config keys, dependencies or persistent native-pointer caches were added.
+- **Warning cleanup.** Removed four unused constants/helpers and fixed a function-pointer cast warning. No behaviour change.
+- Existing ally features remain: wingman deployment, pre-combat ALLY and plane-loadout buttons, language-aware radio lines, ally panels and target boxes, ship switching, carrier loadouts, K-13 interceptors, optional ally ship bombers, fuel retreat, prize sparing, and battle honor/XP sharing (`ally_honor_share`, default `0.5`).
 
-### Battle honor / XP sharing
-- New `ally_honor_share` (default `0.5`). The player keeps 100% of the honor/XP earned; every deployed ally receives 50% of the player's award as it is earned.
-- `0` disables sharing; `1` gives allies the full award; values outside 0..=1 are clamped; non-finite values use `0.5`.
-- The share uses the native battle honor field (`Creature+0x1a24`), which the game converts to each ship's persistent `m_xp`, stars and promotions after the battle. Late-joining allies share from deployment; a ship that leaves stops earning.
-- The battle-end `ALLY SUMMARY` line prints the player's earned honor and the total shared with allies.
+### `hf_ai v1.0.0`
 
-### Validation
-- In-game validated on 2026-11-07 with `hf_ally v@ALLY_VERSION@`:
-  - config cleanup and pre-combat UI;
-  - Russian/English radio line switch;
-  - honor sharing: the summary reported `honor 512.9 (allies 256.5)` with one ally and `honor 1166.3 (allies 1166.3)` with two allies; the post-battle save contained an ally `m_xp=583.167`, matching half of the two-ally award.
-- `hf_ai` and QoL are unchanged from the previous pack; their validation status is unchanged.
+- **Preventive flare curtain retired.** The proactive pre-lock flare cloud and its `curtain_*` / `launch_flares_*` settings are gone. Reactive missile defence remains: flare bursts, ordinary evasion, panic evasion, barrel rolls, per-missile reaction rolls and stray-missile evasion.
+- **Offensive early fire retired.** The group-0 range-permission hook and the `aim_fire_probability` / `aim_fire_range` / `aim_fire_s` settings are gone. Native firing is untouched; aim dodging and dive avoidance remain.
+- **Default `dive_dwell_s` is now `0.3` s** (was `0.5`). Dive avoidance rolls sooner when a target stays in the vertical cone.
+- Existing AI features remain: universal aim dodging, dive avoidance, reactive missile defence, carrier launch groups and Zenith burst dumping.
+
+### QoL
+
+The bundled QoL build is unchanged from pack v0.15.0.
+
+## Config compatibility
+
+Replace both config files with the 1.0.0 presets:
+
+- `Modloader/config/ally.json`
+- `Modloader/config/hf_ai.json`
+
+Old keys are accepted but ignored: `auto_retreat`, `enemy_all_at_once`, `spawn_ally`, `ally_toggle`, `ally_reticles`, `max_enemy_ships`, `plane_bombers`, `marker_seam`, `marker_delay_ms`, the retired logging keys, `curtain_*` / `launch_flares_*`, and `aim_fire_*`.
+
+If you keep an old `hf_ai.json`, its explicit `dive_dwell_s: 0.5` still wins; use the new preset to get `0.3`.
+
+## Validation
+
+- In-game validated on 2026-11-08 with the current 1.0.0 build: the mod runs and plays correctly.
+- Earlier ally validation on 2026-11-07 covered the config cleanup, pre-combat UI, Russian/English radio selection and battle honor/XP sharing.
 - No automated regression tests are included. Cross-build success is not a substitute for in-game validation.
 
 ## Pack contents
@@ -47,11 +54,10 @@ For **HighFleet Steam 1.163**.
 1. Back up your `Saves` folder.
 2. Extract the pack into the folder containing `Highfleet.exe`.
 3. Remove any older `hf_ai_v*.dll`, `hf_ally_v*.dll` and duplicate `highfleet_qol.dll` from `Modloader/mods/` so only one of each is present.
-4. Use the pack's `Modloader/config/ally.json` as the new preset, or merge it into your custom profile. Retired keys are ignored if left in an old file.
+4. Use the pack's `Modloader/config/ally.json` and `Modloader/config/hf_ai.json` as the new presets, or merge them into your custom profile. Retired keys are ignored if left in an old file.
 5. Keep the QoL flare crash fix enabled (default).
 
 ## Notes
 
-- `Modloader/config/hf_ai.json` is unchanged since `hf_ai v0.10.11`.
 - Steam 1.163 only.
 - Research notes: https://github.com/mxtrnhf/hf_notes
