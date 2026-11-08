@@ -72,20 +72,22 @@ VALIDATION
 INSTALL
 ===============================================================================
 1. Back up Saves.
-2. Install logdot's Modloader v4:
+2. Read Allies_Manual.pdf.
+3. Install logdot's Modloader v4:
    https://github.com/logdot/Highfleet-Modloader
-3. Extract this ZIP directly into the folder containing Highfleet.exe. Merge
+4. Extract this ZIP directly into the folder containing Highfleet.exe. Merge
    Modloader/ and Media/, and remove previous hf_ally_v*.dll / hf_ai_v*.dll
    files from Modloader/mods/ so only ONE of each is present.
-4. Use the included Modloader/config/ally.json and hf_ai.json as the new
+5. Use the included Modloader/config/ally.json and hf_ai.json as the new
    presets, or merge them into your existing custom profile. Do not keep the
    retired keys.
-5. Keep the QoL flare crash fix enabled. The optional highfleet_qol.dll is our
+6. Keep the QoL flare crash fix enabled. The optional highfleet_qol.dll is our
    logdot QoL main + manual editor elevation and firing-arc rules build.
 
 ===============================================================================
 FILES
 ===============================================================================
+- Allies_Manual.pdf: player manual (14 pages)
 - Modloader/mods/hf_ally_v@ALLY_VERSION@.dll, hf_ai_v@AI_VERSION@.dll, highfleet_qol.dll
 - Modloader/config/ally.json, hf_ai.json, logging.json, qol.full.json
 - Media/Snd/RADIO/radio_stall_01.wav: our Russian voice line, replacing that game file

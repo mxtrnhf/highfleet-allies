@@ -47,15 +47,16 @@ If you keep an old `hf_ai.json`, its explicit `dive_dwell_s: 0.5` still wins; us
 
 ## Pack contents
 
-`hf_ally v@ALLY_VERSION@`, `hf_ai v@AI_VERSION@`, and the bundled QoL build. The pack also keeps the existing custom Russian `Media/Snd/RADIO/radio_stall_01.wav`.
+`hf_ally v@ALLY_VERSION@`, `hf_ai v@AI_VERSION@`, and the bundled QoL build. The pack also includes the player manual `Allies_Manual.pdf` (14 pages) and keeps the existing custom Russian `Media/Snd/RADIO/radio_stall_01.wav`.
 
 ## Installation
 
 1. Back up your `Saves` folder.
-2. Extract the pack into the folder containing `Highfleet.exe`.
-3. Remove any older `hf_ai_v*.dll`, `hf_ally_v*.dll` and duplicate `highfleet_qol.dll` from `Modloader/mods/` so only one of each is present.
-4. Use the pack's `Modloader/config/ally.json` and `Modloader/config/hf_ai.json` as the new presets, or merge them into your custom profile. Retired keys are ignored if left in an old file.
-5. Keep the QoL flare crash fix enabled (default).
+2. Read `Allies_Manual.pdf`.
+3. Extract the pack into the folder containing `Highfleet.exe`.
+4. Remove any older `hf_ai_v*.dll`, `hf_ally_v*.dll` and duplicate `highfleet_qol.dll` from `Modloader/mods/` so only one of each is present.
+5. Use the pack's `Modloader/config/ally.json` and `Modloader/config/hf_ai.json` as the new presets, or merge them into your custom profile. Retired keys are ignored if left in an old file.
+6. Keep the QoL flare crash fix enabled (default).
 
 ## Notes
 
