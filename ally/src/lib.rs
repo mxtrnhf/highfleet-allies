@@ -257,7 +257,7 @@ struct Config {
     /// Draw a half-size ship panel for each ally beside the player's own panel while the ally is in the battle.
     ally_panels: bool,
     /// Ally target box size relative to the native 62 x 62 frame. 0 = off; positive values
-    /// scale the box; negative or non-finite values fall back to 0.8.
+    /// scale the box; negative or non-finite values fall back to 0.6.
     ally_reticle_scale: f32,
     /// Radio sounds for ally events: the retreat key, an ally joining the fight, an ally destroyed. Lines follow
     /// the game's language: Russian from `Media/Snd/RADIO`, English from `Media/Snd/RADIO_ENG`.
@@ -299,7 +299,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: true,
-            ally_bombers: false,
+            ally_bombers: true,
             ally_delay_seconds: 1.5,
             flagship_leaves: "handover".to_string(),
             retreat_key: 0x77,
@@ -310,7 +310,7 @@ impl Default for Config {
             ally_ai_ammo: true,
             ally_damage_color: "#00E4FF".to_string(),
             ally_panels: true,
-            ally_reticle_scale: 0.8,
+            ally_reticle_scale: 0.6,
             ally_sounds: true,
             ally_fuel_retreat_percent: 30.0,
             ally_honor_share: 0.5,

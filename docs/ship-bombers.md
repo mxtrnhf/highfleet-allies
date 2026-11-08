@@ -1,8 +1,8 @@
 # Ally ship bombing runs (Steam 1.163)
 
-Enable `"ally_bombers": true` in `Modloader/config/ally.json`. Default off until
-flight safety, release accuracy and stock/mod interactions have been tested in game.
-This is **FAB1000-carrying ships**, not carrier aircraft or their FAB loadout buttons.
+Enabled by default in the 1.0.0 pack (`"ally_bombers": true` in
+`Modloader/config/ally.json`). Set it to `false` to disable. This is
+**FAB1000-carrying ships**, not carrier aircraft or their FAB loadout buttons.
 The game classifies carried ship bombs through its `+0x1438` vector, not a ship-name rule.
 
 ## Behaviour

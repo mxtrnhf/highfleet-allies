@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "ally_bombers": false,
+  "ally_bombers": true,
   "ally_delay_seconds": 1.5,
   "flagship_leaves": "handover",
   "retreat_key": 119,
@@ -11,11 +11,10 @@
   "ally_ai_ammo": true,
   "ally_damage_color": "#00E4FF",
   "ally_panels": true,
-  "ally_reticle_scale": 0.8,
+  "ally_reticle_scale": 0.6,
   "ally_sounds": true,
   "ally_fuel_retreat_percent": 30.0,
   "ally_honor_share": 0.5,
-
   "plane_loadouts": true,
   "extra_gunpod": true,
   "plane_k13": true,
@@ -24,18 +23,14 @@
   "plane_aa_delay": 1.0,
   "plane_aa_angle": 0.35,
   "plane_aa_speed": 1.5,
-
   "enemy_group_size": 3,
-
   "marker_text": "PLAYER",
-
   "logging": {
     "debug_log": false,
     "debug_overlay": false,
     "gui_inspect": false,
     "log_creatures": false
   },
-
   "intercept_ignore_oids": [
     "MDL_MISSILE_03"
   ]

@@ -18,6 +18,10 @@ hf_ally
 - enemy_all_at_once retired. It only skipped the stock 30 s wait before the
   first reinforcement wave. enemy_group_size still controls enemies active at
   once; the stock refill delay now always applies.
+- Ally ship bombers are enabled by default (ally_bombers: true), and the
+  default ally target-box scale is 0.6. Both values mirror the maintainer's
+  validated in-game configuration. Set ally_bombers: false to disable ship
+  bombing.
 - Battle-side performance pass (v0.16.2): shared callback-local views for panel
   and HUD-marker discovery, streaming interceptor target selection, precombat
   cleanup on screen exit, and bounded debug work. No config changes.
@@ -57,6 +61,9 @@ aim_fire_*.
 
 If you keep an old hf_ai.json, its explicit dive_dwell_s: 0.5 still wins; use
 the new preset to get 0.3.
+
+The 1.0.0 ally.json also enables ally_bombers and uses ally_reticle_scale: 0.6;
+older explicit values still win until you replace the file.
 
 ===============================================================================
 VALIDATION

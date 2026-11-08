@@ -13,6 +13,7 @@ For **HighFleet Steam 1.163**.
 
 - **`auto_retreat` retired.** `flagship_leaves` always applies: `"handover"` (default) promotes an ally and restores the retreat point; `"retreat"` extracts the squad and ends the battle as a retreat.
 - **`enemy_all_at_once` retired.** It only skipped the stock 30-second wait before the first reinforcement wave. `enemy_group_size` still controls how many enemies are active at once; the stock refill delay now always applies.
+- **Ally ship bombers are enabled by default** (`ally_bombers: true`), and the default ally target-box scale is `0.6`. Both values mirror the maintainer's validated in-game configuration. Set `ally_bombers: false` to disable ship bombing.
 - **Battle-side performance pass (v0.16.2).** Panel and HUD-marker discovery now shares one validated view per callback instead of walking the same native tables repeatedly. Interceptor target selection streams the active-body list instead of building an all-body snapshot every hunt. Precombat cleanup runs on screen exit rather than on every armed combat tick. Debug probes are bounded and logging-only diagnostics respect `logging.debug_log`. No config keys, dependencies or persistent native-pointer caches were added.
 - **Warning cleanup.** Removed four unused constants/helpers and fixed a function-pointer cast warning. No behaviour change.
 - Existing ally features remain: wingman deployment, pre-combat ALLY and plane-loadout buttons, language-aware radio lines, ally panels and target boxes, ship switching, carrier loadouts, K-13 interceptors, optional ally ship bombers, fuel retreat, prize sparing, and battle honor/XP sharing (`ally_honor_share`, default `0.5`).
@@ -38,6 +39,8 @@ Replace both config files with the 1.0.0 presets:
 Old keys are accepted but ignored: `auto_retreat`, `enemy_all_at_once`, `spawn_ally`, `ally_toggle`, `ally_reticles`, `max_enemy_ships`, `plane_bombers`, `marker_seam`, `marker_delay_ms`, the retired logging keys, `curtain_*` / `launch_flares_*`, and `aim_fire_*`.
 
 If you keep an old `hf_ai.json`, its explicit `dive_dwell_s: 0.5` still wins; use the new preset to get `0.3`.
+
+The 1.0.0 `ally.json` also enables `ally_bombers` and uses `ally_reticle_scale: 0.6`; older explicit values still win until you replace the file.
 
 ## Validation
 

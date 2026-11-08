@@ -27,8 +27,8 @@ guides to disable specific behavior.
 
 Allies (`hf_ally v1.0.0`): up to two wingmen, 1.5 s arrival delay,
 three enemy slots active at once, K-13/loadout buttons on, ally ship panels and ally target
-boxes on (`ally_reticle_scale: 0.8`), ship switching on, ally ship bombers off,
-`ally_zenith_autofire` on (vanilla autonomous launches), bomb/rocket and AA attack
+boxes on (`ally_reticle_scale: 0.6`), ship switching on, ally ship bombers on
+(`ally_bombers: true`), `ally_zenith_autofire` on (vanilla autonomous launches), bomb/rocket and AA attack
 delays of 1 s, fuel retreat at 30%, and battle honor sharing at 50%
 (`ally_honor_share: 0.5`). The Sprint exception is `MDL_MISSILE_03`.
 `ally_damage_color` is `"#00E4FF"`. `logging.debug_overlay` defaults to `false`.

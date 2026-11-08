@@ -122,7 +122,7 @@ unsafe fn draw_ally_targets() {
 }
 
 /// Ally boxes are off at exactly 0. Positive finite scales are the box size; negative or non-finite
-/// values fall back to the 0.8 default.
+/// values fall back to the 0.6 default.
 fn normalize_scale(scale: f32) -> (f32, bool) {
     if scale == 0.0 {
         return (0.0, false);
@@ -130,8 +130,8 @@ fn normalize_scale(scale: f32) -> (f32, bool) {
     if scale.is_finite() && scale > 0.0 {
         return (scale, true);
     }
-    log::warn!("hf_ally: invalid ally_reticle_scale {scale}; using 0.8");
-    (0.8, true)
+    log::warn!("hf_ally: invalid ally_reticle_scale {scale}; using 0.6");
+    (0.6, true)
 }
 
 /// Installs the single battle HUD post-pass. `scale` selects the ally box size and `overlay` the debug
