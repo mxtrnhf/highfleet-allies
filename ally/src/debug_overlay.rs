@@ -3,11 +3,11 @@
 //! Configured by its own `"debug_overlay"` block in `ally.json` (default off): `enable` is the
 //! master switch, `circles` is the ring-radius list in world units (empty = no rings),
 //! `ai_waypoint` turns the AI waypoint markers on/off, and `prediction_marker` turns the hostile
-//! lead (aim-assist) markers on/off. The old `logging.debug_overlay` boolean still loads as
-//! `enable`. The drawing runs from the per-frame battle HUD pass `0x14029c5c0`
-//! (`afterBattleStars??`, also the native target-box pass), which is wrapped by
-//! [`crate::ally_reticles`] at the call site `0x14029a8c1`. That pass owns the battle camera
-//! projection, so every label and ring is computed from the same world-to-screen
+//! lead (aim-assist) markers and their "put guns here" bearing circles on/off. The old
+//! `logging.debug_overlay` boolean still loads as `enable`. The drawing runs from the per-frame
+//! battle HUD pass `0x14029c5c0` (`afterBattleStars??`, also the native target-box pass), which is
+//! wrapped by [`crate::ally_reticles`] at the call site `0x14029a8c1`. That pass owns the battle
+//! camera projection, so every label and ring is computed from the same world-to-screen
 //! function (`0x1401adfc0`) and follows the ship while the camera moves.
 //!
 //! Native details (Steam 1.163):
@@ -90,8 +90,15 @@ const AMMO_LIST: usize = 0x1_43a1_3be0;
 /// Ceiling on the records read from the ammo list; a longer list means the header is corrupt.
 const AMMO_LIST_LIMIT: usize = 10_000;
 /// Lead marker on hostile ships: the game's hostile red, a half-strength halo and the flight time.
+/// Each lead marker also draws a small "put guns here" bearing circle just outside the player's
+/// own hull, so the gun angle is readable at the ship itself.
 const PREDICTION_COLOR: u32 = 0xffff_dd27;
 const PREDICTION_HALO_COLOR: u32 = 0x60ff_dd27;
+const BEARING_MARGIN_PX: f32 = 12.0;
+const BEARING_MIN_PX: f32 = 24.0;
+const BEARING_MAX_PX: f32 = 150.0;
+const BEARING_RING_PX: f32 = 3.0;
+const BEARING_HALO_PX: f32 = 6.0;
 /// Keep the draw bounded if the native creature vector header is corrupt (the mod allows up to 127 enemies).
 const MAX_SHIPS: usize = 256;
 
@@ -439,12 +446,15 @@ unsafe fn gun_muzzle_speed(gun: usize) -> Option<f32> {
     (speed.is_finite() && speed > 0.0).then_some(speed)
 }
 
-/// What the lead markers are computed from each frame: the player-flown ship's hull centre, its
-/// root body's velocity and the muzzle speed of its first gun's loaded ammo.
+/// What the lead markers are computed from each frame: the player-flown ship's hull centre and
+/// its screen position, its root body's velocity, the muzzle speed of its first gun's loaded ammo,
+/// and the pixel distance the gun-bearing circles sit from the hull centre at the current zoom.
 struct PlayerGuns {
     world: [f32; 2],
+    screen: [f32; 2],
     velocity: [f32; 2],
     muzzle_speed: f32,
+    bearing_distance_px: f32,
 }
 
 /// The player-shooting state the prediction markers need, or `None` when the player ship, its root
@@ -467,7 +477,33 @@ unsafe fn player_guns(player: usize) -> Option<PlayerGuns> {
     {
         return None;
     }
-    Some(PlayerGuns { world, velocity, muzzle_speed })
+
+    // the bearing circle needs the hull's screen position and size at this frame's camera zoom
+    let mut screen = world;
+    let mut reference = [world[0] + SCALE_REFERENCE_WORLD, world[1]];
+    project(&mut screen);
+    project(&mut reference);
+    let mut bearing_distance_px = 0.0;
+    if screen[0].is_finite()
+        && screen[1].is_finite()
+        && reference[0].is_finite()
+        && reference[1].is_finite()
+    {
+        let dx = reference[0] - screen[0];
+        let dy = reference[1] - screen[1];
+        let pixels_per_world = (dx * dx + dy * dy).sqrt() / SCALE_REFERENCE_WORLD;
+        let radius = rd::<f32>(player + offset_of!(Creature, bounding_radius));
+        let zoom_ok = pixels_per_world.is_finite() && pixels_per_world > 0.0;
+        let radius_ok = radius.is_finite() && radius > 0.0;
+        if zoom_ok && radius_ok {
+            // just outside the hull's screen radius, so the circle hugs the ship at any zoom
+            let hull_pixels = radius * pixels_per_world;
+            let distance = hull_pixels + BEARING_MARGIN_PX;
+            bearing_distance_px = distance.clamp(BEARING_MIN_PX, BEARING_MAX_PX);
+        }
+    }
+
+    Some(PlayerGuns { world, screen, velocity, muzzle_speed, bearing_distance_px })
 }
 
 /// The lead marker on one hostile ship: where to point the player's first gun to hit it. The
@@ -495,20 +531,45 @@ unsafe fn draw_prediction(ship: usize, world: [f32; 2], guns: &PlayerGuns, font:
     };
     let aim = [world[0] + velocity[0] * flight, world[1] + velocity[1] * flight];
 
-    let mut screen = aim;
-    project(&mut screen);
-    if !screen[0].is_finite() || !screen[1].is_finite() {
-        return;
-    }
-    if !(-100.0..=2020.0).contains(&screen[0]) || !(-100.0..=1180.0).contains(&screen[1]) {
+    let mut aim_screen = aim;
+    project(&mut aim_screen);
+    if !aim_screen[0].is_finite() || !aim_screen[1].is_finite() {
         return;
     }
 
-    draw_ring(screen[0], screen[1], 4.0, PREDICTION_COLOR);
-    draw_ring(screen[0], screen[1], 9.0, PREDICTION_HALO_COLOR);
+    // the bearing circle at the ship itself is useful even when the lead point is off-screen
+    draw_gun_bearing(aim_screen, guns);
+
+    if !(-100.0..=2020.0).contains(&aim_screen[0]) || !(-100.0..=1180.0).contains(&aim_screen[1]) {
+        return;
+    }
+
+    draw_ring(aim_screen[0], aim_screen[1], 4.0, PREDICTION_COLOR);
+    draw_ring(aim_screen[0], aim_screen[1], 9.0, PREDICTION_HALO_COLOR);
     let mut text = LineBuf::new();
     let _ = write!(text, "AIM {flight:.1}s");
-    draw_text(font, screen[0], (screen[1] - 18.0).max(8.0), 2, &text.finish());
+    draw_text(font, aim_screen[0], (aim_screen[1] - 18.0).max(8.0), 2, &text.finish());
+}
+
+/// The "put guns here" circle: a small ring just outside the player's own hull, on the screen
+/// bearing from the ship to the lead marker. One circle per hostile lead solution, in the same
+/// hostile red; skipped when the player's screen position or hull radius could not be read.
+unsafe fn draw_gun_bearing(aim_screen: [f32; 2], guns: &PlayerGuns) {
+    if guns.bearing_distance_px <= 0.0 {
+        return;
+    }
+    let dx = aim_screen[0] - guns.screen[0];
+    let dy = aim_screen[1] - guns.screen[1];
+    let distance = dx.hypot(dy);
+    if !distance.is_finite() || distance < 1.0 {
+        return;
+    }
+
+    let scale = guns.bearing_distance_px / distance;
+    let x = guns.screen[0] + dx * scale;
+    let y = guns.screen[1] + dy * scale;
+    draw_ring(x, y, BEARING_RING_PX, PREDICTION_COLOR);
+    draw_ring(x, y, BEARING_HALO_PX, PREDICTION_HALO_COLOR);
 }
 
 /// Draws rings, state labels, the AI waypoint and (for hostiles) the lead marker for one live

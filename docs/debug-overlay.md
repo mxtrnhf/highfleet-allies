@@ -40,7 +40,11 @@ For every live ship in the battle (player, allies, enemies, neutrals):
   player's own velocity, so the marker is correct while the player ship moves. Unlike the
   native AI lead it uses the raw root-body velocities, not the game's smoothed
   target-velocity ring with its 200-unit speed reduction, and it has no solution when the
-  ship outruns the shell.
+  ship outruns the shell. Each lead marker also places a small "put guns here" bearing
+  circle just outside the player's own hull, on the screen bearing from your ship to the
+  lead point (the hull's screen radius plus a 12 px margin, clamped to 24-150 px, so it
+  stays next to the ship at every zoom); the bearing circle is drawn even when the lead
+  point itself is off-screen.
 
 | Label | Meaning |
 |---|---|
@@ -139,10 +143,10 @@ Relevant code:
 
 ## Validation status
 
-* `cargo xwin build --release --target x86_64-pc-windows-msvc` succeeds (v1.0.1).
-* **The lead markers and the reworked settings block are not yet validated in game.** The build
-  proves the layout and hook compile; it does not prove that the circle drawer, font and hook
-  placement render correctly under every zoom, pause state and end-screen transition.
+* `cargo xwin build --release --target x86_64-pc-windows-msvc` succeeds (v1.0.2).
+* v1.0.1 (settings block, configurable circles, waypoint switch, lead markers) validated in
+  game on 2026-11-09 by the maintainer. The v1.0.2 gun-bearing circles are cross-build only;
+  in-game verification pending.
 * Things to check in game:
   1. rings are centred on hulls and shrink/grow with zoom;
   2. labels stay above the correct ships while the camera pans;
@@ -157,7 +161,9 @@ Relevant code:
      marker/dotted lead-in end where the ship is actually steering;
   8. with `prediction_marker: true`, the `AIM` marker sits where the player's shells actually
      land on a steady-course hostile, reload/ammo changes move it when the muzzle speed
-     changes, and `ai_waypoint: false` / an empty `circles` list draw only what is left.
+     changes, the bearing circle stays just outside the player's hull on the bearing to the
+     marker while the camera zooms, and `ai_waypoint: false` / an empty `circles` list draw
+     only what is left.
 
 ## Development log
 
@@ -234,3 +240,18 @@ Relevant code:
 * Live ships are collected once per frame into a bounded stack array shared by the drawing
   pass and the player lookup; no per-frame allocation.
 * hf_ally version bumped to 1.0.1. Cross-build only; in-game verification pending.
+
+### 2026-11-09 -- gun-bearing circles (v1.0.2)
+
+* Each hostile lead marker now also draws a small "put guns here" ring just outside the
+  player's own hull, on the screen bearing from the ship to the lead point (the projected
+  positions encode the camera rotation, so the direction is correct in screen space).
+* The circle's distance from the hull centre is the hull's screen radius
+  (`Creature::bounding_radius` times the frame's world-to-screen scale) plus a 12 px
+  margin, clamped to 24-150 px, so it stays next to the ship at every zoom; it is skipped
+  when the player's screen position or hull radius cannot be read.
+* The bearing circle is drawn even when the lead point itself is off-screen, so the gun
+  angle stays readable while a fast target's marker is off the view. One circle per
+  hostile lead solution, in the marker's hostile red.
+* v1.0.1 validated in game by the maintainer the same day; v1.0.2 is cross-build only,
+  in-game verification pending.

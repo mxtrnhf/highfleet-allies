@@ -114,7 +114,7 @@ The battle debug overlay has its own settings block (v1.0.1; until v1.0.0 it was
 | `enable` | `false` | Master switch for the whole overlay, independent of `ally_reticle_scale`. |
 | `circles` | `[250.0, 500.0, 1000.0]` | Ring radii in world units around every live ship. An empty list draws no rings; more than 8 entries and non-finite or non-positive radii are ignored. |
 | `ai_waypoint` | `true` | Draw each AI ship's steering waypoint, its dotted lead-in and the distance. |
-| `prediction_marker` | `false` | Lead (aim-assist) marker on every hostile ship: where to point the first gun to hit it, computed from the target's velocity and that gun's loaded ammo muzzle speed. |
+| `prediction_marker` | `false` | Lead (aim-assist) marker on every hostile ship: where to point the first gun to hit it, computed from the target's velocity and that gun's loaded ammo muzzle speed. Each marker also places a small "put guns here" bearing circle just outside the player's own hull, on the bearing to the lead point. |
 
 See [debug overlay](debug-overlay.md) for what each element looks like and the native details.
 
