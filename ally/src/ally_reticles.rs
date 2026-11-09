@@ -140,7 +140,7 @@ pub unsafe fn install(
     session: &mut PatchSession,
     argb: u32,
     scale: f32,
-    overlay: &crate::DebugOverlayConfig,
+    overlay: &crate::config::DebugOverlayConfig,
 ) {
     let (scale, reticles) = normalize_scale(scale);
     ALLY_COLOR.store(argb & 0x00ff_ffff, Ordering::Relaxed);

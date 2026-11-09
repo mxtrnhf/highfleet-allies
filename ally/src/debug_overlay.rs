@@ -130,7 +130,7 @@ type RenderTextFn = unsafe extern "win64" fn(
 ) -> f32;
 
 /// Store the effective overlay settings; called once from [`crate::ally_reticles::install`].
-pub fn configure(config: &crate::DebugOverlayConfig) {
+pub fn configure(config: &crate::config::DebugOverlayConfig) {
     ENABLED.store(config.enable, Ordering::Relaxed);
     AI_WAYPOINT.store(config.ai_waypoint, Ordering::Relaxed);
     PREDICTION_MARKER.store(config.prediction_marker, Ordering::Relaxed);
