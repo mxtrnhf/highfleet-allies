@@ -41,9 +41,9 @@ For every live ship in the battle (player, allies, enemies, neutrals):
   native AI lead it uses the raw root-body velocities, not the game's smoothed
   target-velocity ring with its 200-unit speed reduction, and it has no solution when the
   ship outruns the shell. Each lead marker also places a small "put guns here" bearing
-  circle just outside the player's own hull, on the screen bearing from your ship to the
-  lead point (the hull's screen radius plus a 12 px margin, clamped to 24-150 px, so it
-  stays next to the ship at every zoom); the bearing circle is drawn even when the lead
+  circle around the player's own ship, on the bearing to the lead point, at
+  `bounding_radius + 170` world units out, so it scales with the camera like the rings
+  and clears the hull at every zoom; the bearing circle is drawn even when the lead
   point itself is off-screen.
 
 | Label | Meaning |
@@ -161,9 +161,9 @@ Relevant code:
      marker/dotted lead-in end where the ship is actually steering;
   8. with `prediction_marker: true`, the `AIM` marker sits where the player's shells actually
      land on a steady-course hostile, reload/ammo changes move it when the muzzle speed
-     changes, the bearing circle stays just outside the player's hull on the bearing to the
-     marker while the camera zooms, and `ai_waypoint: false` / an empty `circles` list draw
-     only what is left.
+     changes, the bearing circle stays at `bounding_radius + 170` world units on the bearing
+     to each marker while the camera zooms, and `ai_waypoint: false` / an empty `circles`
+     list draw only what is left.
 
 ## Development log
 
@@ -243,13 +243,12 @@ Relevant code:
 
 ### 2026-11-09 -- gun-bearing circles (v1.0.2)
 
-* Each hostile lead marker now also draws a small "put guns here" ring just outside the
-  player's own hull, on the screen bearing from the ship to the lead point (the projected
-  positions encode the camera rotation, so the direction is correct in screen space).
-* The circle's distance from the hull centre is the hull's screen radius
-  (`Creature::bounding_radius` times the frame's world-to-screen scale) plus a 12 px
-  margin, clamped to 24-150 px, so it stays next to the ship at every zoom; it is skipped
-  when the player's screen position or hull radius cannot be read.
+* Each hostile lead marker now also draws a small "put guns here" ring around the
+  player's own ship, on the world bearing from the hull centre to the lead point,
+  projected with the same camera as everything else.
+* The circle's distance from the hull centre is `Creature::bounding_radius + 170`
+  world units, so it scales with the battle camera and clears the hull at every
+  zoom; a non-finite hull radius falls back to the plain 170-unit distance.
 * The bearing circle is drawn even when the lead point itself is off-screen, so the gun
   angle stays readable while a fast target's marker is off the view. One circle per
   hostile lead solution, in the marker's hostile red.
