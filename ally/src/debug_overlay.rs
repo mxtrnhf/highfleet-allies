@@ -231,10 +231,10 @@ fn state_name(state: i32) -> &'static str {
 
 /// Side/role prefix: P = flown by the player, A = friendly AI, E = enemy, N = neutral.
 unsafe fn side_tag(ship: usize) -> char {
-    if rd::<i32>(ship + crate::OFF_MODE_D70) == 1 {
+    if rd::<i32>(ship + crate::native::OFF_MODE_D70) == 1 {
         return 'P';
     }
-    let side = rd::<f32>(ship + crate::OFF_SIDE);
+    let side = rd::<f32>(ship + crate::native::OFF_SIDE);
     if side > 0.0 {
         'A'
     } else if side < 0.0 {
@@ -360,7 +360,7 @@ unsafe fn draw_rings(
 
 /// Native driver state and hf_ai's extra layer. Returns the y for the line after the last drawn one.
 unsafe fn draw_ship_labels(ship: usize, centre: [f32; 2], y: f32, role: i32, font: *mut u8) -> f32 {
-    let state = rd::<i32>(ship + crate::OFF_STATE);
+    let state = rd::<i32>(ship + crate::native::OFF_STATE);
     let mut text = LineBuf::new();
     let _ = write!(text, "{} {} {}", side_tag(ship), state, state_name(state));
     draw_text(font, centre[0], y, 2, &text.finish());
@@ -368,7 +368,7 @@ unsafe fn draw_ship_labels(ship: usize, centre: [f32; 2], y: f32, role: i32, fon
 
     // hf_ai's own layer: flares/evasion override the tactics stage while active. The player ship is not
     // flown by hf_ai, so a leftover entry for it is not shown.
-    let now = rd::<f64>(crate::CLOCK);
+    let now = rd::<f64>(crate::native::CLOCK);
     if role != 1 {
         if let Some((tactics, flares)) = crate::debug_state::lookup(ship, now) {
             let name = if flares != crate::debug_state::FLARES_NONE {
@@ -453,7 +453,10 @@ unsafe fn first_gun(ship: usize) -> Option<usize> {
     for group in [OFF_GUN_GROUP_0, OFF_GUN_GROUP_1] {
         let begin = rd::<usize>(ship + group);
         let end = rd::<usize>(ship + group + size_of::<usize>());
-        if !crate::plausible(begin) || end <= begin || (end - begin) % size_of::<Link>() != 0 {
+        if !crate::native::plausible(begin)
+            || end <= begin
+            || (end - begin) % size_of::<Link>() != 0
+        {
             continue;
         }
         if (end - begin) / size_of::<Link>() > MAX_GUNS_PER_GROUP
@@ -463,7 +466,8 @@ unsafe fn first_gun(ship: usize) -> Option<usize> {
         }
         for address in (begin..end).step_by(size_of::<Link>()) {
             let gun = rd::<usize>(address + offset_of!(Link, target));
-            if !crate::plausible(gun) || !crate::diag::readable_span(gun, size_of::<Body>()) {
+            if !crate::native::plausible(gun) || !crate::diag::readable_span(gun, size_of::<Body>())
+            {
                 continue;
             }
             if rd::<usize>(gun + NODE_OWNER) == ship
@@ -487,7 +491,7 @@ unsafe fn gun_ballistics(gun: usize) -> Option<(f32, f32)> {
     let ammo_size = size_of::<Ammo>();
     let begin = rd::<usize>(AMMO_LIST);
     let end = rd::<usize>(AMMO_LIST + size_of::<usize>());
-    if !crate::plausible(begin) || end <= begin || (end - begin) % ammo_size != 0 {
+    if !crate::native::plausible(begin) || end <= begin || (end - begin) % ammo_size != 0 {
         return None;
     }
     let count = (end - begin) / ammo_size;
@@ -699,7 +703,7 @@ unsafe fn draw_ship(
         return false;
     }
 
-    let side = rd::<f32>(ship + crate::OFF_SIDE);
+    let side = rd::<f32>(ship + crate::native::OFF_SIDE);
     let rgb = if side > 0.0 {
         FRIENDLY_RGB
     } else if side < 0.0 {
@@ -717,7 +721,7 @@ unsafe fn draw_ship(
         }
     }
 
-    let role = rd::<i32>(ship + crate::OFF_MODE_D70);
+    let role = rd::<i32>(ship + crate::native::OFF_MODE_D70);
     let label_y = (centre[1] + FONT_OFFSET_Y).max(8.0);
     let next_y = draw_ship_labels(ship, centre, label_y, role, font);
     if AI_WAYPOINT.load(Ordering::Relaxed) {
@@ -751,16 +755,19 @@ pub unsafe fn draw() {
     };
 
     // collect live ships once; the drawing pass and the player lookup share the same list
-    let (begin, end): (usize, usize) = (rd(crate::CREATURES_BEGIN), rd(crate::CREATURES_END));
+    let (begin, end): (usize, usize) = (
+        rd(crate::native::CREATURES_BEGIN),
+        rd(crate::native::CREATURES_END),
+    );
     if begin != 0 && end > begin {
         let entries = ((end - begin) / 0x18)
-            .min(crate::CREATURE_LIST_LIMIT)
+            .min(crate::native::CREATURE_LIST_LIMIT)
             .min(MAX_SHIPS);
         let mut live = [0usize; MAX_SHIPS];
         let mut count = 0;
         for index in 0..entries {
             let ship = rd::<usize>(begin + index * 0x18 + 8);
-            if !crate::live_ship(ship) {
+            if !crate::native::live_ship(ship) {
                 continue;
             }
             live[count] = ship;
@@ -772,7 +779,7 @@ pub unsafe fn draw() {
             live[..count]
                 .iter()
                 .copied()
-                .find(|&ship| rd::<i32>(ship + crate::OFF_MODE_D70) == 1)
+                .find(|&ship| rd::<i32>(ship + crate::native::OFF_MODE_D70) == 1)
                 .and_then(|ship| player_guns(ship))
         } else {
             None

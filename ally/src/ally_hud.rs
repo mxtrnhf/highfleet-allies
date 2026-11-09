@@ -30,7 +30,7 @@ unsafe fn rd<T: Copy>(a: usize) -> T {
 
 /// True when `ship` is a creature (ship) on the player's side that the player is not flying.
 unsafe fn friendly_ship(ship: usize) -> bool {
-    if !crate::plausible(ship) || rd::<u8>(ship + NODE_CODE) & 0x2f != 0x2f {
+    if !crate::native::plausible(ship) || rd::<u8>(ship + NODE_CODE) & 0x2f != 0x2f {
         return false; // shells, missiles and drones keep their colour: +0xad4 is not a side there
     }
     rd::<f32>(ship + offset_of!(Creature, side)) > 0.0
@@ -39,7 +39,7 @@ unsafe fn friendly_ship(ship: usize) -> bool {
 
 /// True when the popup `entry` belongs to a friendly ship the player is not flying.
 unsafe fn friendly(entry: usize) -> bool {
-    crate::plausible(entry) && friendly_ship(rd(entry + 8))
+    crate::native::plausible(entry) && friendly_ship(rd(entry + 8))
 }
 
 unsafe extern "C" fn hp_color(entry: usize) -> u32 {
@@ -60,7 +60,7 @@ const SET_SPRITE_COLOR: usize = 0x1_4017_2ae0;
 
 unsafe extern "C" fn leader_color(entry: usize) {
     let sprite: usize = rd(LEADER_SPRITE);
-    if !crate::plausible(sprite) {
+    if !crate::native::plausible(sprite) {
         return;
     }
     let argb = if friendly(entry) { BLUE.load(Ordering::Relaxed) } else { LIME };

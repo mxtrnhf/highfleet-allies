@@ -7,7 +7,8 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::{pick, read, GUI_ROOT};
+use crate::native::{read, GUI_ROOT};
+use crate::pick;
 
 const PLAY_SFX: usize = 0x1_402e_30e0;
 const PLAY_SFX_PROLOGUE: [u8; 15] = [

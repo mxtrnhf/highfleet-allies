@@ -12,14 +12,13 @@ use std::{
     },
 };
 
+use crate::battle::{emit_summary, last_summary_time, restore_orders};
 use crate::diag;
+use crate::native::{plausible, read, GUI_ROOT, IMAGE_BASE, OFF_ACTIVE};
 use crate::native_layout::{Body, Gui, Link, Node};
 use crate::plane_loadouts;
 use crate::sound;
-use crate::{
-    emit_summary, now_ms, plausible, read, restore_orders, scene, GUI_ROOT, IMAGE_BASE, OFF_ACTIVE,
-    SUM_LAST,
-};
+use crate::{now_ms, scene};
 
 /// Stores the configured slot-1 label the way the native render seam expects it: printable
 /// ASCII only, `@` (the game's line break) removed, NUL-terminated.
@@ -1827,7 +1826,7 @@ pub(super) unsafe extern "C" fn on_click_pre(
     // the end-of-battle screen and the way out of the game: the summary of the battle that just ended
     // (its result code is still fresh here); the battle hook never sees a real fight end
     if name.starts_with("RETRY_") || name.starts_with("QUIT_") {
-        emit_summary(f64::from_bits(SUM_LAST.load(Ordering::Relaxed)));
+        emit_summary(last_summary_time());
         return false;
     }
     if name == "PRECOMBAT_OK" || name == "PRECOMBAT_BACK" {
@@ -1909,7 +1908,7 @@ unsafe fn precombat_dump(which: &str) {
     restore_orders("pre-combat screen", false);
     diag::snapshot(format_args!("precombat {which}"));
     // the screen before a fight: the previous battle is over, log its summary now if the battle hook never saw it end
-    emit_summary(f64::from_bits(SUM_LAST.load(Ordering::Relaxed)));
+    emit_summary(last_summary_time());
     if which.starts_with("B2") && PRECOMBAT_UI_READY.load(Ordering::Relaxed) {
         crumb!("ensure_toggles: enter");
         ensure_toggles();

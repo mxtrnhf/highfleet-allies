@@ -11,12 +11,13 @@ use std::{
     },
 };
 
-use crate::native_layout::{Body, Creature};
-use crate::{
-    diag, plausible, read, CLOCK, CREATURES_BEGIN, CREATURES_END, CREATURE_LIST_LIMIT, LINK_STRIDE,
+use crate::diag;
+use crate::native::{
+    plausible, read, CLOCK, CREATURES_BEGIN, CREATURES_END, CREATURE_LIST_LIMIT, LINK_STRIDE,
     OFF_ACTIVE, OFF_AGGRESSION, OFF_AI_FLAG, OFF_CODE, OFF_FLAGS, OFF_MODE_D70, OFF_POS_X,
     OFF_POS_Y, OFF_SIDE, OFF_STATE, OFF_TARGET, SHIP_LIST_LIMIT,
 };
+use crate::native_layout::{Body, Creature};
 
 // --- probe fields (all [code]/guess, see the findings note) ---
 const OFF_RETARGET: usize = offset_of!(Creature, retarget_timer); // f32 seconds until the next target re-roll

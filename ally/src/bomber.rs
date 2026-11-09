@@ -8,10 +8,12 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use crate::battle;
 use crate::bomber_math::{Flight, Phase, Run, PULL_OUT_S, RELEASE_HEIGHT};
 use crate::diag::rd;
+use crate::native::plausible;
 use crate::native_layout::{Body, Creature, Link, Node};
-use crate::{plausible, tracked_ally, PatchSession, ReturnType, Trampoline};
+use crate::{PatchSession, ReturnType, Trampoline};
 
 // After hf_ai's waypoint hook: an armed bomber keeps its course instead of evading missiles.
 const WAYPOINT_SITE: usize = 0x1_4006_4a96;
@@ -140,24 +142,25 @@ unsafe fn boost_available(ship: usize) -> bool {
 
 unsafe fn live(ship: usize) -> bool {
     plausible(ship)
-        && rd::<u8>(ship + crate::OFF_CODE).is_some_and(|code| code & 0x2f == 0x2f)
+        && rd::<u8>(ship + crate::native::OFF_CODE).is_some_and(|code| code & 0x2f == 0x2f)
         && rd::<i32>(ship + offset_of!(Node, state)).is_some_and(|active| active != 0)
-        && rd::<i32>(ship + crate::OFF_STATE).is_some_and(|state| !matches!(state, 6 | 7))
+        && rd::<i32>(ship + crate::native::OFF_STATE).is_some_and(|state| !matches!(state, 6 | 7))
 }
 
 unsafe fn landed_enemy(target: usize) -> bool {
     live(target)
-        && rd::<f32>(target + crate::OFF_SIDE).is_some_and(|side| side.is_finite() && side < 0.0)
-        && rd::<u8>(target + crate::OFF_PRIZE) == Some(0)
-        && rd::<i32>(target + crate::OFF_MODE) == Some(3)
+        && rd::<f32>(target + crate::native::OFF_SIDE)
+            .is_some_and(|side| side.is_finite() && side < 0.0)
+        && rd::<u8>(target + crate::native::OFF_PRIZE) == Some(0)
+        && rd::<i32>(target + crate::native::OFF_MODE) == Some(3)
 }
 
 /// Preserve native target-link registration; no raw owning Link writes.
 unsafe fn set_target(ship: usize, target: usize) {
-    let set_link: crate::SetLinkFn = std::mem::transmute(crate::SET_LINK);
+    let set_link: crate::native::SetLinkFn = std::mem::transmute(crate::native::SET_LINK);
     // SAFETY: synchronous AI callback, validated live ship/target, native borrowed Link;
     // native SetLink updates registration and retains all allocation/ownership handling.
-    set_link(ship + crate::OFF_TARGET_LINK, target);
+    set_link(ship + crate::native::OFF_TARGET_LINK, target);
 }
 
 /// Bounded equivalent of Node_GetRootPart: only follow Body masters, not owner links.
@@ -173,7 +176,7 @@ pub(crate) unsafe fn root_part(mut node: usize) -> Option<usize> {
         if !plausible(parent) {
             return None;
         }
-        if rd::<u8>(parent + crate::OFF_CODE)? & 0xf != 0xf {
+        if rd::<u8>(parent + crate::native::OFF_CODE)? & 0xf != 0xf {
             return Some(node);
         }
         node = parent;
@@ -208,10 +211,11 @@ unsafe fn first_bomb(ship: usize) -> Option<usize> {
 
 unsafe fn flight(ship: usize) -> Option<(usize, Flight)> {
     if !live(ship)
-        || rd::<u8>(ship + crate::OFF_AI_FLAG)? == 0
-        || rd::<i32>(ship + crate::OFF_MODE)? != 1
-        || rd::<i32>(ship + crate::OFF_STATE)? != 1
-        || !rd::<f32>(ship + crate::OFF_SIDE).is_some_and(|side| side.is_finite() && side > 0.0)
+        || rd::<u8>(ship + crate::native::OFF_AI_FLAG)? == 0
+        || rd::<i32>(ship + crate::native::OFF_MODE)? != 1
+        || rd::<i32>(ship + crate::native::OFF_STATE)? != 1
+        || !rd::<f32>(ship + crate::native::OFF_SIDE)
+            .is_some_and(|side| side.is_finite() && side > 0.0)
     {
         return None;
     }
@@ -228,11 +232,11 @@ unsafe fn flight(ship: usize) -> Option<(usize, Flight)> {
         if let Some((target, (position, radius))) = recovery {
             (target, [position.0, position.1], radius)
         } else {
-            let node: usize = rd(ship + crate::OFF_TARGET)?;
+            let node: usize = rd(ship + crate::native::OFF_TARGET)?;
             if !plausible(node) {
                 return None;
             }
-            let target = if rd::<u8>(node + crate::OFF_CODE)? & 0x2f == 0x2f {
+            let target = if rd::<u8>(node + crate::native::OFF_CODE)? & 0x2f == 0x2f {
                 node
             } else {
                 rd(node + OFF_OWNER)?
@@ -242,17 +246,17 @@ unsafe fn flight(ship: usize) -> Option<(usize, Flight)> {
             }
             (
                 target,
-                rd::<[f32; 2]>(target + crate::OFF_POS_X)?,
+                rd::<[f32; 2]>(target + crate::native::OFF_POS_X)?,
                 rd::<f32>(target + OFF_RADIUS)?,
             )
         };
     let root = root_part(ship)?;
-    let position: [f32; 2] = rd(ship + crate::OFF_POS_X)?;
+    let position: [f32; 2] = rd(ship + crate::native::OFF_POS_X)?;
     let velocity: [f32; 2] = rd(root + offset_of!(Body, velocity_x))?;
     let own_radius: f32 = rd(ship + OFF_RADIUS)?;
     let mass: f32 = rd(ship + OFF_MASS)?;
     let thrust: [f32; 2] = rd(ship + OFF_THRUST)?;
-    let now: f64 = rd(crate::CLOCK)?;
+    let now: f64 = rd(crate::native::CLOCK)?;
     if !now.is_finite()
         || !position
             .into_iter()
@@ -296,7 +300,7 @@ unsafe fn log_gate(ship: usize) {
     if !crate::diag::debug() {
         return;
     }
-    let Some(now) = rd::<f64>(crate::CLOCK).filter(|now| now.is_finite()) else {
+    let Some(now) = rd::<f64>(crate::native::CLOCK).filter(|now| now.is_finite()) else {
         return;
     };
     let next = f64::from_bits(NEXT_GATE_LOG.load(Ordering::Relaxed));
@@ -304,9 +308,9 @@ unsafe fn log_gate(ship: usize) {
         return;
     }
     NEXT_GATE_LOG.store((now + 3.0).to_bits(), Ordering::Relaxed);
-    let node = rd::<usize>(ship + crate::OFF_TARGET).filter(|node| plausible(*node));
+    let node = rd::<usize>(ship + crate::native::OFF_TARGET).filter(|node| plausible(*node));
     let target = node.and_then(|node| {
-        if rd::<u8>(node + crate::OFF_CODE)? & 0x2f == 0x2f {
+        if rd::<u8>(node + crate::native::OFF_CODE)? & 0x2f == 0x2f {
             Some(node)
         } else {
             rd::<usize>(node + OFF_OWNER).filter(|target| plausible(*target))
@@ -314,10 +318,10 @@ unsafe fn log_gate(ship: usize) {
     });
     log::info!(
         "ALLY bomber gate: c={ship:#x} flight={:?} state={:?} ai={:?} bomb={:?} target={target:?} target_flight={:?} prize={:?} mass={:?} thrust={:?}",
-        rd::<i32>(ship + crate::OFF_MODE), rd::<i32>(ship + crate::OFF_STATE),
-        rd::<u8>(ship + crate::OFF_AI_FLAG), first_bomb(ship),
-        target.and_then(|target| rd::<i32>(target + crate::OFF_MODE)),
-        target.and_then(|target| rd::<u8>(target + crate::OFF_PRIZE)),
+        rd::<i32>(ship + crate::native::OFF_MODE), rd::<i32>(ship + crate::native::OFF_STATE),
+        rd::<u8>(ship + crate::native::OFF_AI_FLAG), first_bomb(ship),
+        target.and_then(|target| rd::<i32>(target + crate::native::OFF_MODE)),
+        target.and_then(|target| rd::<u8>(target + crate::native::OFF_PRIZE)),
         rd::<f32>(ship + OFF_MASS), rd::<[f32; 2]>(ship + OFF_THRUST),
     );
 }
@@ -401,16 +405,16 @@ unsafe fn begin_escape(entry: &mut Entry, flight: &Flight) {
 }
 
 unsafe fn steer(ship: usize) {
-    if FAILED.load(Ordering::Relaxed) || !tracked_ally(ship) {
+    if FAILED.load(Ordering::Relaxed) || !battle::tracked(ship) {
         return;
     }
     // Native target selection runs periodically. Keep a valid bombing target stable, especially
     // while recovering, rather than restarting a dive whenever that selector changes its mind.
     if first_bomb(ship).is_some()
         && live(ship)
-        && rd::<u8>(ship + crate::OFF_AI_FLAG).is_some_and(|flag| flag != 0)
-        && rd::<i32>(ship + crate::OFF_STATE) == Some(1)
-        && rd::<i32>(ship + crate::OFF_MODE) == Some(1)
+        && rd::<u8>(ship + crate::native::OFF_AI_FLAG).is_some_and(|flag| flag != 0)
+        && rd::<i32>(ship + crate::native::OFF_STATE) == Some(1)
+        && rd::<i32>(ship + crate::native::OFF_MODE) == Some(1)
     {
         let desired = RUNS.try_lock().ok().and_then(|runs| {
             runs.iter()
@@ -420,7 +424,7 @@ unsafe fn steer(ship: usize) {
                 .map(|entry| entry.target)
         });
         if let Some(target) = desired.filter(|target| landed_enemy(*target)) {
-            if rd::<usize>(ship + crate::OFF_TARGET) != Some(target) {
+            if rd::<usize>(ship + crate::native::OFF_TARGET) != Some(target) {
                 set_target(ship, target);
             }
         }
@@ -580,7 +584,7 @@ unsafe fn owns_course(entry: &Entry, target: usize, now: f64) -> bool {
 }
 
 unsafe fn raise_dive_speed(ship: usize) {
-    if FAILED.load(Ordering::Relaxed) || !tracked_ally(ship) {
+    if FAILED.load(Ordering::Relaxed) || !battle::tracked(ship) {
         return;
     }
     let Some((target, flight)) = flight(ship) else {
@@ -623,7 +627,7 @@ unsafe extern "C" fn on_speed(ship: usize) {
 }
 
 unsafe fn boost_engines(ship: usize, command: usize) {
-    if FAILED.load(Ordering::Relaxed) || !tracked_ally(ship) {
+    if FAILED.load(Ordering::Relaxed) || !battle::tracked(ship) {
         return;
     }
     let Some((target, flight)) = flight(ship) else {
@@ -725,7 +729,7 @@ unsafe extern "C" fn on_engines(ship: usize, command: usize) {
 /// hf_ai's engine hook has returned. Restore this tick's native stack commands before applying
 /// bomber thrust, so panic boost/spin cannot take over an armed bombing or recovery course.
 unsafe fn restore_engines(ship: usize, command: usize) {
-    if FAILED.load(Ordering::Relaxed) || !tracked_ally(ship) {
+    if FAILED.load(Ordering::Relaxed) || !battle::tracked(ship) {
         return;
     }
     let Some((target, flight)) = flight(ship) else {
@@ -771,8 +775,8 @@ unsafe fn predict_bomb(
     bomb: usize,
     flight: &Flight,
 ) -> Option<Prediction> {
-    let begin: usize = rd(crate::CREATURES_BEGIN)?;
-    let end: usize = rd(crate::CREATURES_END)?;
+    let begin: usize = rd(crate::native::CREATURES_BEGIN)?;
+    let end: usize = rd(crate::native::CREATURES_END)?;
     let length = end.checked_sub(begin)?;
     let frame_rate: f32 = rd(FRAME_RATE)?;
     if !plausible(begin)
@@ -793,7 +797,7 @@ unsafe fn predict_bomb(
     }
     // Native release starts below the bomb body, not at the carrier's centre of mass.
     position[1] += radius + 5.0;
-    let profile: unsafe extern "C" fn() -> usize = std::mem::transmute(crate::GET_PROFILE);
+    let profile: unsafe extern "C" fn() -> usize = std::mem::transmute(crate::native::GET_PROFILE);
     let ejection_speed: f32 = rd(profile() + 0xac)?;
     let root = root_part(ship)?;
     let angle: f32 = rd(root + offset_of!(Body, angle))?;
@@ -828,7 +832,7 @@ unsafe fn predict_bomb(
         target,
         &position,
         &velocity,
-        rd(ship + crate::OFF_SIDE)?,
+        rd(ship + crate::native::OFF_SIDE)?,
         ship,
     );
     (prediction.horizontal_miss.is_finite() && prediction.horizontal_miss != f32::MAX)
@@ -925,8 +929,8 @@ unsafe fn release(ship: usize) {
 
 unsafe extern "C" fn on_release(ship: usize) {
     // Non-allied ships retain the original AI release, including enemy bombers.
-    let allied = if crate::ARMED.load(Ordering::Relaxed) {
-        let Ok(allies) = crate::ALLIES.try_lock() else {
+    let allied = if battle::armed() {
+        let Some(allies) = battle::try_allies() else {
             return;
         };
         allies.contains(&ship)
@@ -951,7 +955,7 @@ unsafe extern "C" fn on_release(ship: usize) {
 /// # Safety
 /// `ship` must be the live owner read from a launcher during the native launch call.
 pub unsafe fn blocks_launch(ship: usize) -> bool {
-    if FAILED.load(Ordering::Relaxed) || !tracked_ally(ship) {
+    if FAILED.load(Ordering::Relaxed) || !battle::tracked(ship) {
         return false;
     }
     let Some((target, flight)) = flight(ship) else {
@@ -983,7 +987,10 @@ pub unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
         (ENGINE_SITE, &ENGINE_BYTES[..]),
         (FINAL_ENGINE_SITE, &FINAL_ENGINE_BYTES[..]),
         (RELEASE_SITE, &RELEASE_BYTES[..]),
-        (crate::SET_LINK, &crate::SET_LINK_PROLOGUE[..]),
+        (
+            crate::native::SET_LINK,
+            &crate::native::SET_LINK_PROLOGUE[..],
+        ),
         (
             PREDICT_HIT,
             &[

@@ -228,30 +228,30 @@ fn vanilla_table() -> Table {
 /// The in-order nodes of an MSVC `std::map` global (`{ head*, size }`); empty when it looks unfilled or unreadable.
 unsafe fn map_nodes(global: usize) -> Vec<usize> {
     let (head, size): (usize, usize) = (rd(global), rd(global + 8));
-    if size == 0 || size > 4096 || !crate::plausible(head) {
+    if size == 0 || size > 4096 || !crate::native::plausible(head) {
         return Vec::new();
     }
     let isnil = |n: usize| rd::<u8>(n + offset_of!(PlaneNode, is_sentinel)) != 0;
     let mut out = Vec::new();
     let mut node: usize = rd(head); // head->left = the leftmost node
     while node != head && out.len() <= size {
-        if !crate::plausible(node) {
+        if !crate::native::plausible(node) {
             return Vec::new();
         }
         out.push(node);
         let right: usize = rd(node + offset_of!(PlaneNode, right));
-        if crate::plausible(right) && !isnil(right) {
+        if crate::native::plausible(right) && !isnil(right) {
             node = right;
             loop {
                 let left: usize = rd(node);
-                if !crate::plausible(left) || isnil(left) {
+                if !crate::native::plausible(left) || isnil(left) {
                     break;
                 }
                 node = left;
             }
         } else {
             let mut parent: usize = rd(node + offset_of!(PlaneNode, parent));
-            while crate::plausible(parent) && !isnil(parent) && node == rd::<usize>(parent + offset_of!(PlaneNode, right)) {
+            while crate::native::plausible(parent) && !isnil(parent) && node == rd::<usize>(parent + offset_of!(PlaneNode, right)) {
                 node = parent;
                 parent = rd(node + offset_of!(PlaneNode, parent));
             }
@@ -268,7 +268,7 @@ unsafe fn map_nodes(global: usize) -> Vec<usize> {
 unsafe fn ammo_classes() -> HashMap<String, i32> {
     let mut out = HashMap::new();
     let (b, e): (usize, usize) = (rd(AMMO_LIST), rd(AMMO_LIST + 8));
-    if b < 0x10000 || !crate::plausible(b) || e < b {
+    if b < 0x10000 || !crate::native::plausible(b) || e < b {
         return out;
     }
     let list_bytes = e - b;
@@ -307,7 +307,7 @@ unsafe fn read_table() -> Option<Table> {
         }
         let mut guns_only: Option<String> = None;
         for lo in (b..e).step_by(8).map(|a| rd::<usize>(a)) {
-            if !crate::plausible(lo) {
+            if !crate::native::plausible(lo) {
                 return None;
             }
             let (pb, pe): (usize, usize) = (rd(lo + LO_PARTS.0), rd(lo + LO_PARTS.1));
@@ -445,7 +445,7 @@ unsafe fn string_at(addr: usize) -> Option<String> {
         addr
     } else {
         let p: usize = rd(addr);
-        if !crate::plausible(p) {
+        if !crate::native::plausible(p) {
             return None;
         }
         p
@@ -456,14 +456,14 @@ unsafe fn string_at(addr: usize) -> Option<String> {
 /// The plane parts of a carrier creature.
 unsafe fn planes_of(ship: usize) -> Vec<usize> {
     // a creature (class code with bits 0x2f), not any pointer a stale card link may hold
-    if !crate::plausible(ship) || rd::<u8>(ship + crate::native_layout::NODE_CODE) & 0x2f != 0x2f {
+    if !crate::native::plausible(ship) || rd::<u8>(ship + crate::native_layout::NODE_CODE) & 0x2f != 0x2f {
         return Vec::new();
     }
     let (b, e): (usize, usize) = (rd(ship + OFF_PLANES.0), rd(ship + OFF_PLANES.1));
     if b < 0x10000 || e < b || (e - b) / size_of::<Link>() > 64 {
         return Vec::new();
     }
-    (b..e).step_by(size_of::<Link>()).map(|a| rd::<usize>(a + offset_of!(Link, target))).filter(|p| crate::plausible(*p)).collect()
+    (b..e).step_by(size_of::<Link>()).map(|a| rd::<usize>(a + offset_of!(Link, target))).filter(|p| crate::native::plausible(*p)).collect()
 }
 
 unsafe fn profile() -> usize {
@@ -474,7 +474,7 @@ unsafe fn profile() -> usize {
 /// Items of `item` the player owns (0 when none).
 pub unsafe fn owned(item: &str) -> i32 {
     let profile = profile();
-    if !crate::plausible(profile) {
+    if !crate::native::plausible(profile) {
         return 0;
     }
     let mut name = item.as_bytes().to_vec();
@@ -486,7 +486,7 @@ pub unsafe fn owned(item: &str) -> i32 {
 /// Takes `count` of `item` from the player's stock (the shop's own call).
 unsafe fn take(item: &str, count: i32) {
     let profile = profile();
-    if !crate::plausible(profile) {
+    if !crate::native::plausible(profile) {
         return;
     }
     let mut name = item.as_bytes().to_vec();
@@ -497,7 +497,7 @@ unsafe fn take(item: &str, count: i32) {
 
 /// The ship creature behind a card's link value (`PRECOMBAT_A +0xbc0`, a Property pointer), 0 when it is not one.
 pub unsafe fn ship_of_link(link: usize) -> usize {
-    if (link >> 47) != 0 && (link >> 47) != 0x1ffff || !crate::plausible(link) {
+    if (link >> 47) != 0 && (link >> 47) != 0x1ffff || !crate::native::plausible(link) {
         return 0;
     }
     let f: unsafe extern "win64" fn(usize) -> usize = std::mem::transmute(LINKED_OBJECT);
@@ -520,7 +520,7 @@ pub unsafe fn has_craft(ship: usize, craft: usize) -> bool {
 
 /// One line for the log: why the button is or is not shown for `ship` (plane parts and crafts, the profile inventory).
 pub unsafe fn describe(ship: usize) -> String {
-    if !crate::plausible(ship) || rd::<u8>(ship + crate::native_layout::NODE_CODE) & 0x2f != 0x2f {
+    if !crate::native::plausible(ship) || rd::<u8>(ship + crate::native_layout::NODE_CODE) & 0x2f != 0x2f {
         return format!("card link gives {ship:#x}, not a creature");
     }
     let planes = planes_of(ship);
@@ -620,7 +620,7 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
     let Some(arm_i) = picked else {
         drop(choices);
         // no choice = "GUNS ONLY": the game would otherwise roll a loadout from the weights in `qol.json` (bombs, rockets, K-13)
-        if crate::ARMED.load(Ordering::Relaxed) && crate::plausible(owner) && rd::<f32>(owner + OFF_SIDE) > 0.0 && rd::<usize>(plane + OFF_LOGIC) == 0 {
+        if crate::battle::armed() && crate::native::plausible(owner) && rd::<f32>(owner + OFF_SIDE) > 0.0 && rd::<usize>(plane + OFF_LOGIC) == 0 {
             if let Some(c) = crafts().iter().find(|c| Some(c.name.as_str()) == craft_name.as_deref()) {
                 write_loadout(plane, &c.guns_only);
                 no_rockets(plane);
@@ -637,7 +637,7 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
         log::info!("PLANE arm: plane {plane:#x} already has its logic, loadout ignored by the game: nothing charged");
         return;
     }
-    if !crate::ARMED.load(Ordering::Relaxed) {
+    if !crate::battle::armed() {
         return;
     }
     let Some(craft) = string_at(plane + OFF_CRAFT) else { return };
@@ -647,7 +647,7 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
     }
     let Some(fallback) = crafts().iter().find(|c| c.name == craft).map(|c| c.guns_only.clone()) else { return };
     let wanted = arm.key.clone();
-    let now = crate::read::<f64>(crate::CLOCK);
+    let now = crate::native::read::<f64>(crate::native::CLOCK);
     let Ok(mut charged) = CHARGED.try_lock() else { return };
     let repeat = charged.iter().any(|(p, t)| *p == plane && (now - *t).abs() < SAME_LAUNCH_S);
     if !repeat {
@@ -702,12 +702,12 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
 /// must be set in the same step. The delay lets the plane take off and leave the carrier first.
 unsafe fn attackers_to_mode_3(logic: usize) {
     let Ok(w) = WATCH.try_lock() else { return };
-    let Some(t0) = w.iter().find(|(p, _, _, _, _)| crate::plausible(*p) && rd::<usize>(*p + OFF_LOGIC) == logic).map(|e| e.4) else { return };
+    let Some(t0) = w.iter().find(|(p, _, _, _, _)| crate::native::plausible(*p) && rd::<usize>(*p + OFF_LOGIC) == logic).map(|e| e.4) else { return };
     drop(w);
     if rd::<i32>(logic + LOGIC_MODE) != 6 || rd::<usize>(logic + LOGIC_TARGET) == 0 || (rd::<u64>(logic + LOGIC_BOMB_COUNT) == 0 && rd::<u64>(logic + LOGIC_ROCKET_COUNT) == 0) {
         return;
     }
-    if crate::read::<f64>(crate::CLOCK) - t0 < f32::from_bits(ATTACK_DELAY_S.load(Ordering::Relaxed)) as f64 {
+    if crate::native::read::<f64>(crate::native::CLOCK) - t0 < f32::from_bits(ATTACK_DELAY_S.load(Ordering::Relaxed)) as f64 {
         return;
     }
     (logic as *mut i32).byte_add(LOGIC_MODE).write_unaligned(3);
@@ -776,7 +776,7 @@ unsafe fn ensure_gunpod(logic: usize) {
         return;
     }
     let Ok(w) = WATCH.try_lock() else { return };
-    let applies = w.iter().any(|(p, _, gunpod, _, _)| *gunpod && crate::plausible(*p) && rd::<usize>(*p + OFF_LOGIC) == logic);
+    let applies = w.iter().any(|(p, _, gunpod, _, _)| *gunpod && crate::native::plausible(*p) && rd::<usize>(*p + OFF_LOGIC) == logic);
     drop(w);
     if applies {
         install_gunpod(logic);
@@ -784,21 +784,21 @@ unsafe fn ensure_gunpod(logic: usize) {
 }
 
 pub unsafe extern "C" fn on_update(logic: usize, body: usize) {
-    if crate::plausible(logic) {
+    if crate::native::plausible(logic) {
         ensure_gunpod(logic);
         attackers_to_mode_3(logic);
     }
     if crate::diag::debug() {
-        census(crate::read::<f64>(crate::CLOCK)); // the body array is only stable inside the aircraft update
+        census(crate::native::read::<f64>(crate::native::CLOCK)); // the body array is only stable inside the aircraft update
     }
     let Ok(aa) = AA.try_lock() else { return };
-    if aa.is_empty() || !crate::plausible(logic) || !crate::plausible(body) {
+    if aa.is_empty() || !crate::native::plausible(logic) || !crate::native::plausible(body) {
         return;
     }
-    let Some((plane, owner, armed_at)) = aa.iter().find(|p| crate::plausible(p.0) && rd::<usize>(p.0 + OFF_LOGIC) == logic).copied() else { return };
+    let Some((plane, owner, armed_at)) = aa.iter().find(|p| crate::native::plausible(p.0) && rd::<usize>(p.0 + OFF_LOGIC) == logic).copied() else { return };
     // like the bombers (`plane_attack_delay`): a fresh interceptor flies the game's own script until the delay has passed,
     // else it dives off the deck into the carrier (reported 2026-10-25); the same delay hides it from the hunt below
-    let armed_for = crate::read::<f64>(crate::CLOCK) - armed_at;
+    let armed_for = crate::native::read::<f64>(crate::native::CLOCK) - armed_at;
     let too_early = armed_for < f32::from_bits(AA_DELAY_S.load(Ordering::Relaxed)) as f64;
     drop(aa);
     if rd::<u64>(logic + LOGIC_MISSILE_COUNT) == 0 {
@@ -919,11 +919,11 @@ unsafe fn bodies() -> impl Iterator<Item = (usize, i32, f32, f32, f32)> {
     let count = rd::<u32>(BODY_COUNT).min(15000) as usize;
     (0..count).filter_map(|i| {
         let body: usize = rd(BODY_ARRAY + i * 8);
-        if !crate::plausible(body) || rd::<usize>(body + offset_of!(Body, layer)) == 0 {
+        if !crate::native::plausible(body) || rd::<usize>(body + offset_of!(Body, layer)) == 0 {
             return None;
         }
         let vt: usize = rd(body);
-        if !crate::plausible(vt) {
+        if !crate::native::plausible(vt) {
             return None;
         }
         let active: unsafe extern "win64" fn(usize) -> i32 = std::mem::transmute(rd::<usize>(vt + 0x78));
@@ -947,9 +947,9 @@ unsafe fn owner_side(body: usize) -> f32 {
     let owner: usize = rd(body + OFF_MISSILE_OWNER);
     let direct: usize = rd(body + 0xc0 + 8);
     let link: usize = rd(body + 0xc0);
-    let indirect: usize = if crate::plausible(link) { rd(link + 8) } else { 0 };
+    let indirect: usize = if crate::native::plausible(link) { rd(link + 8) } else { 0 };
     for cand in [owner, direct, indirect] {
-        if crate::plausible(cand) && rd::<u8>(cand + crate::native_layout::NODE_CODE) & 0x2f == 0x2f {
+        if crate::native::plausible(cand) && rd::<u8>(cand + crate::native_layout::NODE_CODE) & 0x2f == 0x2f {
             let v = rd::<f32>(cand + OFF_SIDE);
             if v.is_finite() && v != 0.0 && v.abs() < 1.0e6 {
                 return v;
@@ -967,11 +967,11 @@ unsafe fn dump_owner_candidates(body: usize) {
     let mut found = Vec::new();
     for off in (0..0x600).step_by(8) {
         let q: usize = rd(body + off);
-        if !crate::plausible(q) {
+        if !crate::native::plausible(q) {
             continue;
         }
         for (kind, cand) in [("direct", q), ("link+8", rd::<usize>(q + 8))] {
-            if crate::plausible(cand) && rd::<u8>(cand + crate::native_layout::NODE_CODE) & 0x2f == 0x2f {
+            if crate::native::plausible(cand) && rd::<u8>(cand + crate::native_layout::NODE_CODE) & 0x2f == 0x2f {
                 found.push(format!("+{off:#x} {kind} -> {cand:#x} side {}", rd::<f32>(cand + OFF_SIDE)));
             }
         }
@@ -1116,7 +1116,7 @@ unsafe fn census(now: f64) {
     let mut seen: Vec<(i32, i32, u32)> = Vec::new(); // (logic id, side sign, count)
     for a in (b..e).step_by(0x18) {
         let c: usize = rd(a + 8);
-        if !crate::plausible(c) || rd::<i32>(c + OFF_ACTIVE) == 0 {
+        if !crate::native::plausible(c) || rd::<i32>(c + OFF_ACTIVE) == 0 {
             continue;
         }
         let (id, side) = (rd::<i32>(c + OFF_BODY_LOGIC), rd::<f32>(c + OFF_SIDE));
@@ -1158,11 +1158,11 @@ pub unsafe fn tick() {
         return;
     }
     w.retain_mut(|(plane, bombs, gunpod, seen, _)| {
-        if !crate::plausible(*plane) || rd::<i32>(*plane + OFF_ACTIVE) == 0 {
+        if !crate::native::plausible(*plane) || rd::<i32>(*plane + OFF_ACTIVE) == 0 {
             return false; // destroyed or gone
         }
         let logic: usize = rd(*plane + OFF_LOGIC);
-        if !crate::plausible(logic) {
+        if !crate::native::plausible(logic) {
             return true;
         }
         let bombs_now = rd::<u64>(logic + LOGIC_BOMB_COUNT);
@@ -1220,9 +1220,9 @@ pub unsafe fn verify(now: f64) {
     let due: Vec<_> = v.iter().filter(|e| now >= e.1).cloned().collect();
     v.retain(|e| now < e.1);
     for (plane, _, wanted) in due {
-        if crate::plausible(plane) {
+        if crate::native::plausible(plane) {
             let logic: usize = rd(plane + OFF_LOGIC);
-            let counts = if crate::plausible(logic) {
+            let counts = if crate::native::plausible(logic) {
                 format!(
                     "logic {logic:#x} bombs(+0x128)={} rockets(+0x138)={} AA(+0x148)={} mode(+0x118)={} state(+0x190)={} target(+0x158)={:#x} gun(+0x1a4)={} mag(+0xac)={} reserve(+0xb4)={}",
                     rd::<u64>(logic + LOGIC_BOMB_COUNT),

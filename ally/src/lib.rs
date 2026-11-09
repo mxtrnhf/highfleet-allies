@@ -34,8 +34,8 @@ mod aim_math;
 mod ally_ammo;
 mod ally_hud;
 mod ally_panels;
-mod ship_switch;
 mod ally_reticles;
+mod battle;
 mod battle_diagnostics;
 mod bomber;
 mod bomber_math;
@@ -47,9 +47,11 @@ mod enemy_waves;
 mod honor_share;
 mod intercept;
 mod missile_guard;
+mod native;
 mod native_layout;
 mod plane_loadouts;
 mod precombat;
+mod ship_switch;
 mod sound;
 
 use std::{
@@ -60,16 +62,15 @@ use std::{
     },
 };
 
-use std::mem::{offset_of, size_of};
-
-use native_layout::{Body, Creature, Link, Node};
-
 use config::{parse_hex_color, Config};
+use native::{
+    count, read, CLOCK, CONTROLLED_LINK, CREATURES_BEGIN, CREATURES_END, GET_PROFILE,
+    GET_PROFILE_PROLOGUE, IMAGE_BASE, OFF_AGGRESSION, OFF_AI_FLAG, OFF_MODE, OFF_SIDE, OFF_STATE,
+    OFF_TARGET, SCENE_FLAGS, SCENE_SELECTOR, SET_CONTROLLED, SET_CONTROLLED_PROLOGUE, SET_LINK,
+    SET_LINK_PROLOGUE,
+};
 use patchy::{PatchSession, ProcessModule, ReturnType, Trampoline};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleA;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-
-const IMAGE_BASE: usize = 0x1_4000_0000;
 
 /// `FUN_14006bf60(creature, removing)`: the Creature add-to-level / remove routine (vtable entry).
 const ADD_RVA: usize = 0x6bf60;
@@ -83,59 +84,24 @@ const SPAWN_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74
 /// The pending level name, a game `std::string` (MSVC layout: buffer or pointer at +0, size at
 /// +0x10, capacity at +0x18); written by the level loader `0x14025afd0` through `CopyString`.
 const LEVEL_NAME: usize = 0x1_403c_1390;
-/// Template node: class code (u64).
-const OFF_CODE: usize = native_layout::NODE_CODE;
 
 /// Per-frame arcade battle manager `FUN_1402cc260` (called from the Combat scenario).
 const BATTLE_RVA: usize = 0x2cc260;
 /// `mov rax,rsp; push rdi; sub rsp,0xa0` (11 bytes; the next instruction reads RAX, which the hook preserves).
 const BATTLE_PROLOGUE: [u8; 11] = [0x48, 0x8b, 0xc4, 0x57, 0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00];
-/// Game functions the ally calls, with a prologue check each.
-const DEPLOY: usize = 0x1_402d_6e90; // deploys the front of the reserve (named rammingCheckCollision__ in Ghidra)
-const DEPLOY_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18];
-const SET_CONTROLLED: usize = 0x1_402a_7e30; // (profile, ship, slot): AI flag := not controlled
-const SET_CONTROLLED_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x20];
-const SET_LINK: usize = 0x1_4019_4de0; // (link, node)
-const SET_LINK_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20];
-const GET_PROFILE: usize = 0x1_4029_2a90;
-const GET_PROFILE_PROLOGUE: [u8; 8] = [0x0f, 0xb6, 0x15, 0xea, 0x44, 0xd3, 0x07, 0x0f];
-/// Reserve list of ships waiting to deploy (`std::list`: sentinel at +0, size at +8) and the roster.
-const EXTRACT: usize = 0x1_4020_ef30; // (creature, flag): hands a living ship back to the fleet, removes it from the level
-const EXTRACT_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18];
-const GUI_ROOT: usize = 0x1_47fc_6f88; // pointer to the global node every GUI is added to
+
 /// The AI target choice `FUN_140078b40(ship)` is called from the per-ship driver at two sites (`mov rcx,rbx; call`).
 const TARGET_FN: usize = 0x1_4007_8b40;
 const TARGET_SITES: [(usize, [u8; 5]); 2] = [
     (0x1_4007_3b93, [0xe8, 0xa8, 0x4f, 0x00, 0x00]),
     (0x1_4007_3c73, [0xe8, 0xc8, 0x4e, 0x00, 0x00]),
 ];
-const OFF_PRIZE: usize = 0xc19; // u8: the ship may be captured after the battle (ship names Pollux, Kadesh Mk1, ...)
-const OFF_TARGET_LINK: usize = offset_of!(Creature, target); // the Link whose node is the target at +0xb00
-const RESERVE: usize = 0x1_47fc_73b0;
-const ROSTER_BEGIN: usize = 0x1_47fc_7590;
-const ROSTER_END: usize = 0x1_47fc_7598;
-/// Arena bounds and constants the manager passes to the deploy function.
-const ARENA_X_HIGH: usize = 0x1_403c_2bc0; // f32
-const ARENA_X_LOW: usize = 0x1_403c_2bc8; // f32
-const ARENA_Y_LOW: usize = 0x1_403c_2bcc; // f32
-const DEPLOY_K: usize = 0x1_4035_b974; // f32, -300.0
-const DEPLOY_AGGR: usize = 0x1_4035_24d8; // f32, 1.0
-/// Controlled-ship links, one per control slot (0x18 bytes each).
-const CONTROLLED_LINKS: usize = 0x1_43a1_c260;
-const ALLY_SLOT: usize = 1;
-const OFF_MODE_D70: usize = offset_of!(Creature, order_role); // i32: 1 = flown by the player, 2 = wingman
-const OFF_ACTIVE: usize = offset_of!(Node, state); // i32: non-zero while the ship is in the level
 
-/// Byte stride of one `Link` entry in the native object vectors below: the pointer sits at +8.
-const LINK_STRIDE: usize = size_of::<Link>();
-/// Ceiling on the entries read from one battle roster / ship part / gun list. A real ship has far fewer, so a
-/// larger count means the native vector header is corrupt.
-const SHIP_LIST_LIMIT: usize = 64;
-/// Ceiling on the entries read from the global creature list, for the same reason.
-const CREATURE_LIST_LIMIT: usize = 4096;
-/// Global creature list (`Link` entries, 0x18 bytes, pointer at +8): begin / end.
-const CREATURES_BEGIN: usize = 0x1_43fa_a5d8;
-const CREATURES_END: usize = 0x1_43fa_a5e0;
+/// ammoSelectButtonPress? (0x14026f880): rebuilds the native ammo selector after a press.
+const AMMO_PRESS: usize = 0x1_4026_f880;
+const AMMO_PRESS_STOLEN: [u8; 10] =
+    [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10];
+
 /// Vector of creatures the AI task runs (same entry layout): begin / end.
 const AI_BEGIN: usize = 0x1_43fa_a608;
 const AI_END: usize = 0x1_43fa_a610;
@@ -146,64 +112,22 @@ const ZERO_BEGIN: usize = 0x1_43fa_a650;
 const ZERO_END: usize = 0x1_43fa_a658;
 const POS_BEGIN: usize = 0x1_43fa_a638;
 const POS_END: usize = 0x1_43fa_a640;
-/// Smart-ref `Link` to the creature the player controls (node pointer at +8).
-const CONTROLLED_LINK: usize = 0x1_43a1_c260;
-/// Game clock, `f64` seconds.
-const CLOCK: usize = 0x1_43a1_19c0;
-
-const OFF_SIDE: usize = offset_of!(Creature, side); // f32: negative = AI, positive = player, 0 = neutral
-const OFF_AI_FLAG: usize = offset_of!(Creature, ai_flag); // u8: non-zero = joins the AI vector when added
-const OFF_AGGRESSION: usize = 0xbc4; // f32: >= 0.5 makes the driver call FUN_140079b20(ship, 1)
-const OFF_STATE: usize = offset_of!(Creature, driver_state); // i32: driver state (1/2 run the AI tick)
-const OFF_MODE: usize = offset_of!(Creature, mode); // i32
-const OFF_ORDER: usize = 0xc98; // i32: index given by the Missile scenario
-const OFF_TARGET: usize = offset_of!(Creature, target) + offset_of!(Link, target); // pointer: current target (link)
+/// Order index, `i32`, given by the Missile scenario.
+const OFF_ORDER: usize = 0xc98;
 
 static GAME_IS_STEAM_1_163: AtomicBool = AtomicBool::new(false);
 const MAX_LINES: u32 = 600;
 const DEBUG_MAX_LINES: u32 = 1_000_000;
 static LINES: AtomicU32 = AtomicU32::new(0);
 static SPAWN_LINES: AtomicU32 = AtomicU32::new(0);
-/// The ship mode (`+0xd70`) an ally gets: 0 = the plain AI ship the enemies use. It was the config key `ally_mode`
-/// until v0.12.1; 1 (flown by a player) makes an ally look like the flagship and 2 (strike run) is the retreat order,
-/// so only 0 is valid for an ally (hf_notes docs/findings/battle-ally.md, "ally_mode removed").
-const ALLY_MODE: i32 = 0;
-static ALLY_DONE: AtomicBool = AtomicBool::new(false);
-static ARMED: AtomicBool = AtomicBool::new(false);
+static LAST_LEVEL: Mutex<String> = Mutex::new(String::new());
+/// Signature of the last ADD/REMOVE line and how many identical ones were swallowed since.
+static LAST_SIG: Mutex<(usize, u8, u32, u32, usize)> = Mutex::new((0, 0, 0, 0, 0));
 
 /// The modloader may buffer its log: flush after the lines that matter for a crash report.
 fn flush_log() {
     log::logger().flush();
 }
-/// The player's deploy call site (`0x1402d6f7a` + 5) and the scenario state in which a battle starts.
-const PLAYER_DEPLOY_CALLER_RVA: usize = 0x2d6f7f;
-const BATTLE_START_SELECTOR: u32 = 1;
-const OFF_POS_X: usize = offset_of!(Creature, bounds_center_x); // f32 creature centre
-const OFF_POS_Y: usize = offset_of!(Creature, bounds_center_y);
-const OFF_FLAGS: usize = offset_of!(Creature, trigger_gun_group_0); // 5 control bytes: group 0, group 1, bombs, spare, flares
-/// Game time (f64 bits) at which the player's ship was first seen in this battle; 0 = not yet.
-static HANDOVER: AtomicBool = AtomicBool::new(false);
-/// The retreat point (x, y as two f32 packed in a u64) the game keeps at 0x147fc7638; zeroed when a ship uses it.
-const RETREAT_POINT: usize = 0x1_47fc_7638;
-static RETREAT_POINT_SAVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static RETREAT_KEY: AtomicU32 = AtomicU32::new(0);
-static KEY_WAS_DOWN: AtomicBool = AtomicBool::new(false);
-/// The ally of this battle (stays set until the next battle), the flagship last seen and whether it was alive.
-static ALLY_PTR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-static FLAGSHIP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-static FLAGSHIP_ALIVE: AtomicBool = AtomicBool::new(false);
-static FLAGSHIP_STATE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
-static PLAYER_SEEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static ALLY_DELAY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static LAST_LEVEL: Mutex<String> = Mutex::new(String::new());
-/// Signature of the last ADD/REMOVE line and how many identical ones were swallowed since.
-static LAST_SIG: Mutex<(usize, u8, u32, u32, usize)> = Mutex::new((0, 0, 0, 0, 0));
-/// Scene flags (see hf_probe): campaign / battle bytes, and the scenario state selector.
-const SCENE_SELECTOR: usize = 0x1_47fc_6fc4; // u32
-const SCENE_FLAGS: [usize; 3] = [0x1_47fc_6fd0, 0x1_47fc_6fda, 0x1_43a1_1902];
-
-/// Allies already announced as destroyed (pointer reuse: entries are dropped when the ship leaves the roster).
-static ANNOUNCED_LOST: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
 /// A cheap pick in 0..n (no rand crate): the clock's nanoseconds.
 fn pick(n: usize) -> usize {
@@ -211,73 +135,6 @@ fn pick(n: usize) -> usize {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_nanos() as usize / 7) % n
 }
 
-/// Last state seen per ally still in the roster (a destroyed ship is not flagged 6/7: it just leaves the roster).
-static ALLY_LAST: Mutex<Vec<(usize, i32)>> = Mutex::new(Vec::new());
-
-/// Announces allies that have just been destroyed; runs every battle frame. The game removes a destroyed ship from the
-/// roster with its state still 1 (v0.10.1 test), so an ally that is gone counts as destroyed unless it was
-/// retreating (state 2) or extracted, or no enemy is left (victory tears the roster down). A ship seen in state 6/7
-/// still in the roster counts too.
-unsafe fn ally_sound_events(ships: &[usize]) {
-    let (Ok(mut announced), Ok(mut allies), Ok(mut last)) = (ANNOUNCED_LOST.lock(), ALLIES.lock(), ALLY_LAST.lock()) else { return };
-    announced.retain(|p| ships.contains(p));
-    for &p in allies.iter().filter(|p| ships.contains(p)) {
-        let state = read::<i32>(p + OFF_STATE);
-        match last.iter_mut().find(|e| e.0 == p) {
-            Some(e) => e.1 = state,
-            None => last.push((p, state)),
-        }
-    }
-    let enemies = count(ENEMIES_BEGIN, ENEMIES_END, 0x18);
-    let mut gone = Vec::new();
-    for &p in allies.iter() {
-        let here = ships.contains(&p);
-        let last_state = last.iter().find(|e| e.0 == p).map_or(-1, |e| e.1);
-        let dead = if here {
-            matches!(read::<i32>(p + OFF_STATE), 6 | 7)
-        } else {
-            gone.push(p);
-            let extracted = SUM_FLAGS.load(Ordering::Relaxed) & F_EXTRACTED != 0 || matches!(last_state, 2 | 6 | 7 | -1);
-            if extracted || enemies == 0 {
-                log::info!("ALLY c={p:#x} left the roster, not destroyed (last state {last_state}, enemies {enemies})");
-            }
-            // retreated alive: flying out (state 2) when it vanished, or extracted with the flagship
-            if SUM_FLAGS.load(Ordering::Relaxed) & F_EXTRACTED != 0 || last_state == 2 {
-                sound::retreated();
-            }
-            !extracted && enemies != 0
-        };
-        if !dead || announced.contains(&p) {
-            continue;
-        }
-        announced.push(p);
-        SUM_LOST.fetch_add(1, Ordering::Relaxed);
-        if ALLY_PTR.load(Ordering::Relaxed) == p {
-            SUM_ALLY_STATE.store(6, Ordering::Relaxed);
-        }
-        log::info!("ALLY lost: c={p:#x} destroyed (last state {last_state}, in roster {here}, enemies {enemies})");
-        flush_log();
-        sound::lost();
-    }
-    allies.retain(|p| !gone.contains(p));
-    last.retain(|e| ships.contains(&e.0));
-}
-
-unsafe fn read<T: Copy>(address: usize) -> T {
-    (address as *const T).read_unaligned()
-}
-
-/// Number of `stride`-byte entries between two vector pointers stored at `begin` / `end`.
-unsafe fn count(begin: usize, end: usize, stride: usize) -> usize {
-    let (b, e): (usize, usize) = (read(begin), read(end));
-    if e >= b {
-        (e - b) / stride
-    } else {
-        0
-    }
-}
-
-/// The pending level name, read defensively.
 unsafe fn level_name() -> String {
     let capacity: usize = read(LEVEL_NAME + 0x18);
     let size: usize = read(LEVEL_NAME + 0x10);
@@ -334,75 +191,7 @@ unsafe fn next_line() -> Option<String> {
     Some(level)
 }
 
-/// Called at the start of `0x1402672c0` with the template and the caller's return address.
-unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
-    let _hook = diag::scope("on_spawn");
-    // a new battle begins when the player's ship is deployed at the start (selector 1); the ally's own
-    // deploy goes through the same call site later (selector 2) and must not re-arm
-    if caller.wrapping_sub(IMAGE_BASE) == PLAYER_DEPLOY_CALLER_RVA && read::<u32>(SCENE_SELECTOR) == BATTLE_START_SELECTOR {
-        restore_orders("next battle", true);
-        ALLY_DONE.store(false, Ordering::Relaxed);
-        PLAYER_SEEN.store(0, Ordering::Relaxed);
-        battle_diagnostics::reset();
-        bomber::reset();
-        ally_panels::invalidate();
-        SPAWN_LINES.store(0, Ordering::Relaxed);
-        PRIZE_LINES.store(0, Ordering::Relaxed);
-        let armed = precombat::take_seen();
-        ARMED.store(armed, Ordering::Relaxed);
-        log::info!(
-            "ALLY battle start: scene selector {}, {}",
-            read::<u32>(SCENE_SELECTOR),
-            if armed { "armed (entered through the pre-combat screen)" } else { "NOT armed (no pre-combat screen: re-engaged chase or other battle), the mod stays out of it" }
-        );
-        flush_log();
-        emit_summary(f64::from_bits(SUM_LAST.load(Ordering::Relaxed)));
-        ALLY_PTR.store(0, Ordering::Relaxed);
-        FLAGSHIP.store(0, Ordering::Relaxed);
-        RETREAT_POINT_SAVED.store(0, Ordering::Relaxed);
-        if let Ok(mut v) = ALLIES.lock() {
-            v.clear();
-        }
-        if let Ok(mut v) = AMMO_ROLLED.lock() {
-            v.clear();
-        }
-        if let Ok(mut v) = AMMO_FUNDING.lock() {
-            v.clear();
-        }
-        USED_MASK.store(0, Ordering::Relaxed);
-        LAST_DEPLOY.store(0, Ordering::Relaxed);
-        BATTLE_LOGGED.store(false, Ordering::Relaxed);
-        SUM_SPAWNED.store(0, Ordering::Relaxed);
-        SUM_LOST.store(0, Ordering::Relaxed);
-    }
-    crumb!(
-        "SPAWN template={template:#x} class={:#x} caller_rva={:#x} {} t={:.2}",
-        if template != 0 { read::<u64>(template + OFF_CODE) } else { 0 },
-        caller.wrapping_sub(IMAGE_BASE),
-        scene(),
-        read::<f64>(CLOCK)
-    );
-    diag::snapshot(format_args!("spawn caller_rva={:#x}", caller.wrapping_sub(IMAGE_BASE)));
-    // spawns are rare and the point of the exercise: their own budget, never shared with ADD lines
-    let level = level_name();
-    let spawn_n = SPAWN_LINES.fetch_add(1, Ordering::Relaxed);
-    let budget = line_budget();
-    if spawn_n >= budget {
-        if spawn_n == budget {
-            log::info!("ALLY SPAWN lines: budget reached for this battle, the rest are not logged");
-        }
-        return;
-    }
-    log::info!(
-        "ALLY SPAWN level={level} {} t={:.2} template={template:#x} class={:#x} caller_rva={:#x}",
-        scene(),
-        read::<f64>(CLOCK),
-        if template != 0 { read::<u64>(template + OFF_CODE) } else { 0 },
-        caller.wrapping_sub(IMAGE_BASE),
-    );
-}
 
-/// Called at the start of `FUN_14006bf60` with its two arguments.
 unsafe extern "C" fn on_creature(creature: *const u8, removing: u8) {
     let _hook = diag::scope("on_creature");
     if creature.is_null() {
@@ -448,789 +237,15 @@ unsafe extern "C" fn on_creature(creature: *const u8, removing: u8) {
     );
 }
 
-/// Roster entries (ship pointers).
-unsafe fn roster() -> Vec<usize> {
-    let (b, e): (usize, usize) = (read(ROSTER_BEGIN), read(ROSTER_END));
-    if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
-        return Vec::new();
-    }
-    (0..(e - b) / LINK_STRIDE).map(|i| read::<usize>(b + i * LINK_STRIDE + 8)).filter(|p| *p != 0).collect()
-}
-
-type DeployFn = unsafe extern "C" fn(usize, usize, *mut u64, u64, f32, f32, f32, f32, u32, i32) -> u8;
-type SetControlledFn = unsafe extern "C" fn(usize, usize, u32) -> usize;
-type SetLinkFn = unsafe extern "C" fn(usize, usize);
-type ExtractFn = unsafe extern "C" fn(usize, u32);
-type GetProfileFn = unsafe extern "C" fn() -> usize;
-
-static USED_MASK: AtomicU32 = AtomicU32::new(0);
-static MAX_ALLIES: AtomicU32 = AtomicU32::new(1);
-static ALLIES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
-/// Whether `ship` is an ally this mod deployed and still tracks in the current battle.
-fn tracked_ally(ship: usize) -> bool {
-    ARMED.load(Ordering::Relaxed) && ALLIES.try_lock().is_ok_and(|allies| allies.contains(&ship))
-}
-static AMMO_ON: AtomicBool = AtomicBool::new(false);
-/// Allies that have had their ammunition doctrine rolled this battle.
-static AMMO_ROLLED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
-/// Per-gun ammo index and extra index that the battle reserve was funded with, recorded when the ally is
-/// deployed (before the AI starts re-setting `+0x850`). `(creature, gun, index, extra_index)`.
-static AMMO_FUNDING: Mutex<Vec<(usize, usize, i32, i32)>> = Mutex::new(Vec::new());
-static LAST_DEPLOY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static BATTLE_LOGGED: AtomicBool = AtomicBool::new(false);
-static SUM_SPAWNED: AtomicU32 = AtomicU32::new(0);
-static SUM_LOST: AtomicU32 = AtomicU32::new(0);
-// per-battle summary (logged when the roster empties)
-static SUM_T0: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static SUM_ENEMIES: AtomicU32 = AtomicU32::new(0);
-static SUM_SQUAD: AtomicU32 = AtomicU32::new(0);
-static SUM_ALLY_STATE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
-static SUM_RESULT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-static SUM_FLAGS: AtomicU32 = AtomicU32::new(0);
-static SUM_LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-const F_SPAWNED: u32 = 1;
-const F_HANDOVER: u32 = 2;
-const F_EXTRACTED: u32 = 4;
-const F_OFF: u32 = 8;
-const F_FLAGSHIP_LEFT: u32 = 16;
-const F_RETREAT_KEY: u32 = 32;
-const BATTLE_RESULT: usize = 0x1_47fc_7004;
-const ENEMIES_BEGIN: usize = 0x1_47fc_73d8;
-const ENEMIES_END: usize = 0x1_47fc_73e0;
-/// ammoSelectButtonPress? (0x14026f880): rebuilds the native ammo selector after a press.
-const AMMO_PRESS: usize = 0x1_4026_f880;
-const AMMO_PRESS_STOLEN: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10];
-/// ReturnCreatureGunAmmoToInventory (0x1402698c0, RCX = creature): the end-of-battle refund. It credits each gun's whole
-/// pool (`+0x858` i32, `+0x85c` i32, `+0x860` f32, `+0x868` i32) to the gun's CURRENT ammo index in the profile when that
-/// ammo has a price. Every gun starts the battle with a free 9999-round pool of its base shell (InitBattleGunAmmoReserves
-/// 0x14025fa30), so an ally switched to AP / proximity by `ally_ammo` would mint 9999 priced rounds per gun.
-const REFUND: usize = 0x1_4026_98c0;
-const REFUND_STOLEN: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10];
-const REFUND_GUN_LISTS: [usize; 2] = [
-    offset_of!(Creature, gun_group_0),
-    offset_of!(Creature, gun_group_1),
-];
 
 fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-/// Remembers the ammo indices each gun of a freshly deployed ally was funded with. The AI controller re-sets
-/// `+0x850` every tick from the doctrine flags, so by the end of the battle the index no longer says what the
-/// reserve was bought as (or that it was the free 9999 base pool).
-unsafe fn record_ammo_funding(creature: usize) -> usize {
-    let mut n = 0;
-    let Ok(mut funding) = AMMO_FUNDING.lock() else { return 0 };
-    for list in REFUND_GUN_LISTS {
-        let (b, e): (usize, usize) = (read(creature + list), read(creature + list + 8));
-        if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
-            continue;
-        }
-        for a in (b..e).step_by(LINK_STRIDE) {
-            let gun: usize = read(a + 8);
-            if !plausible(gun) {
-                continue;
-            }
-            let entry = (
-                creature,
-                gun,
-                read::<i32>(gun + offset_of!(Body, weapon_ammo)),
-                read::<i32>(gun + offset_of!(Body, weapon_ammo_extra)),
-            );
-            if let Some(slot) = funding.iter_mut().find(|r| r.1 == gun) {
-                *slot = entry;
-            } else {
-                funding.push(entry);
-            }
-            n += 1;
-        }
-    }
-    n
-}
-
-/// Entry hook of the refund: for a creature whose ammo doctrine we rolled, put every gun back on the ammo
-/// index its reserve was funded with, so the original credits paid rounds under the right type and credits
-/// nothing for the free 9999 base pool.
-///
-/// It must not touch the pre-combat screen: the same fleet ship keeps its pointer across battles and is only
-/// dropped from `AMMO_ROLLED` at the next battle start, while the game refunds a ship's guns every time the
-/// player picks an ammo type there. Zeroing then threw away the share the player had just chosen (ammo
-/// vanished from the inventory when the same type was picked for the player and the ally).
-unsafe extern "C" fn on_refund(creature: usize) {
-    let _hook = diag::scope("on_refund");
-    let ours = AMMO_ROLLED.lock().map_or(false, |v| v.contains(&creature));
-    if !ours {
-        return;
-    }
-    // while the pre-combat screen is up the game refunds on every ammo pick; a partial list is treated as
-    // "screen still up" so an uncertain scan cannot wipe the share the player just chose
-    if precombat::has_cards_or_uncertain() {
-        return;
-    }
-    let Ok(funding) = AMMO_FUNDING.lock() else { return };
-    let (mut restored, mut unrecorded) = (0, 0);
-    for list in REFUND_GUN_LISTS {
-        let (b, e): (usize, usize) = (read(creature + list), read(creature + list + 8));
-        if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
-            continue;
-        }
-        for a in (b..e).step_by(LINK_STRIDE) {
-            let gun: usize = read(a + 8);
-            if !plausible(gun) {
-                continue;
-            }
-            if let Some(&(_, _, index, extra)) = funding.iter().find(|r| r.0 == creature && r.1 == gun) {
-                (gun as *mut i32).byte_add(offset_of!(Body, weapon_ammo)).write_unaligned(index);
-                (gun as *mut i32).byte_add(offset_of!(Body, weapon_ammo_extra)).write_unaligned(extra);
-                restored += 1;
-            } else {
-                // no funding index (should not happen for an ally we deployed): keep the old safeguard
-                for off in [
-                    offset_of!(Body, weapon_ammo_amount),
-                    offset_of!(Body, weapon_ammo_extra_amount),
-                    offset_of!(Body, weapon_reload_step_rounds),
-                ] {
-                    ((gun + off) as *mut i32).write_unaligned(0);
-                }
-                ((gun + offset_of!(Body, weapon_ammo_loaded)) as *mut f32).write_unaligned(0.0);
-                unrecorded += 1;
-            }
-        }
-    }
-    log::info!(
-        "ALLY refund: c={creature:#x} {restored} guns restored to their funded ammo index, {unrecorded} without a record emptied"
-    );
-}
-
 unsafe extern "C" fn on_ammo_press() {
     let _hook = diag::scope("on_ammo_press");
     precombat::inspect_gui("ammoSelectButtonPress");
-}
-
-/// Moves reserve entry `k` (0 = the front) to the front so the vanilla deploy picks that ship.
-unsafe fn reserve_to_front(k: usize) -> bool {
-    let sentinel: usize = read(RESERVE);
-    if sentinel == 0 {
-        return false;
-    }
-    let mut node: usize = read(sentinel);
-    for _ in 0..k {
-        if node == 0 || node == sentinel {
-            return false;
-        }
-        node = read(node);
-    }
-    if node == 0 || node == sentinel {
-        return false;
-    }
-    if k == 0 {
-        return true;
-    }
-    let (next, prev): (usize, usize) = (read(node), read(node + 8));
-    (prev as *mut usize).write_unaligned(next); // prev.next = next
-    ((next + 8) as *mut usize).write_unaligned(prev); // next.prev = prev
-    let first: usize = read(sentinel);
-    (node as *mut usize).write_unaligned(first);
-    ((node + 8) as *mut usize).write_unaligned(sentinel);
-    ((first + 8) as *mut usize).write_unaligned(node);
-    (sentinel as *mut usize).write_unaligned(node);
-    true
-}
-
-
-/// A pointer that can be a live game object: user-space, 8-aligned, not a small integer.
-fn plausible(p: usize) -> bool {
-    p >= 0x10000 && p < 0x7fff_ffff_0000 && p % 8 == 0
-}
-
-/// A creature that is still part of the battle: plausible pointer, creature class code, active, not dead.
-unsafe fn live_ship(p: usize) -> bool {
-    plausible(p) && read::<u8>(p + native_layout::NODE_CODE) & 0x2f == 0x2f && read::<i32>(p + OFF_ACTIVE) != 0 && !matches!(read::<i32>(p + OFF_STATE), 6 | 7)
-}
-
-/// Ships the F8 order has put on the bombing role (`+0xd70 = 2`): (ship, order before, checks that did not find it).
-/// The role stays on the ship after it returns to the fleet (the game never resets it), so it is put back.
-static ORDERED: Mutex<Vec<(usize, i32, u32)>> = Mutex::new(Vec::new());
-const ORDER_BOMBING: i32 = 2;
-
-/// Puts the order back on every ordered ship that is out of the battle and still in a player fleet. A ship that
-/// is still fighting waits; a ship that is in no fleet (destroyed, object gone) is never touched.
-/// `final_try`: the next battle starts, the list is cleared afterwards.
-unsafe fn restore_orders(why: &str, final_try: bool) {
-    let Ok(mut list) = ORDERED.lock() else { return };
-    if list.is_empty() {
-        return;
-    }
-    let in_battle = roster();
-    list.retain_mut(|(ship, previous, misses)| {
-        if in_battle.contains(ship) {
-            return !final_try; // still fighting
-        }
-        if diag::fleet_has_ship(*ship) {
-            let now = read::<i32>(*ship + OFF_MODE_D70);
-            if now == ORDER_BOMBING {
-                (*ship as *mut i32).byte_add(OFF_MODE_D70).write_unaligned(*previous);
-                log::info!("ALLY order restored ({why}): c={:#x} order {now} -> {previous}", *ship);
-            } else {
-                log::info!("ALLY order not restored ({why}): c={:#x} order is {now} now, left alone", *ship);
-            }
-            return false;
-        }
-        *misses += 1;
-        if final_try || *misses >= 40 {
-            log::info!("ALLY order not restored ({why}): c={:#x} is in no player fleet (destroyed?), left alone", *ship);
-            return false;
-        }
-        true
-    });
-}
-
-/// Order the ally out: the AI-run, strike-craft "fly out" state (mode 2, state 2). The AI tick then steers to
-/// the arena edge and the manager extracts the ship (it returns to the fleet if alive).
-unsafe fn order_retreat(ally: usize, why: &str) -> bool {
-    if !live_ship(ally) {
-        log::info!("ALLY retreat ({why}): c={ally:#x} is not a live ship, ignored");
-        return false;
-    }
-    let state = read::<i32>(ally + OFF_STATE);
-    if matches!(state, 6 | 7) {
-        log::info!("ALLY retreat ({why}): ally is dead (state {state}), nothing to do");
-        return false;
-    }
-    if why == "key" {
-        SUM_FLAGS.fetch_or(F_RETREAT_KEY, Ordering::Relaxed);
-    }
-    (ally as *mut u8).byte_add(OFF_AI_FLAG).write(1); // AI-run again (a promoted ally is player-flown)
-    if let Ok(mut ordered) = ORDERED.lock() {
-        if !ordered.iter().any(|e| e.0 == ally) {
-            ordered.push((ally, read::<i32>(ally + OFF_MODE_D70), 0));
-        }
-    }
-    (ally as *mut i32).byte_add(OFF_MODE_D70).write_unaligned(ORDER_BOMBING);
-    (ally as *mut i32).byte_add(OFF_STATE).write_unaligned(2);
-    log::info!(
-        "ALLY retreat ordered ({why}): c={ally:#x} was state {state}, now mode_d70={} state={} ai_flag={}",
-        read::<i32>(ally + OFF_MODE_D70),
-        read::<i32>(ally + OFF_STATE),
-        read::<u8>(ally + OFF_AI_FLAG),
-    );
-    flush_log();
-    true
-}
-
-static FUEL_RETREAT_PERCENT: AtomicU32 = AtomicU32::new(0); // f32 bits
-static FUEL_LOG_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0); // f64 bits of the game clock
-const OFF_FUEL: usize = offset_of!(Creature, fuel); // f64: combat fuel now (the battle burns it: 0x14007a210)
-const OFF_FUEL_CAPACITY: usize = offset_of!(Creature, fuel_capacity); // f64
-const OFF_FUEL_AT_START: usize = 0xbd0; // f32: written at spawn (0x1402672c0), not modeled by highfleet-rs
-
-/// Orders out every ally whose combat fuel is at or below the configured percent. Once per ship: a ship already
-/// ordered out (F8 or fuel) stays in `ORDERED` until it is back in the fleet.
-unsafe fn fuel_retreat(allies: &[usize]) {
-    let percent = f32::from_bits(FUEL_RETREAT_PERCENT.load(Ordering::Relaxed));
-    if percent <= 0.0 {
-        return;
-    }
-    for &ally in allies {
-        if !live_ship(ally) || read::<i32>(ally + OFF_STATE) == 2 {
-            continue;
-        }
-        // a promoted ally is the ship the player flies
-        if read::<i32>(ally + OFF_MODE_D70) == 1 && read::<u8>(ally + OFF_AI_FLAG) == 0 {
-            continue;
-        }
-        if ORDERED.lock().map(|o| o.iter().any(|e| e.0 == ally)).unwrap_or(true) {
-            continue;
-        }
-        let fuel: f64 = read(ally + OFF_FUEL);
-        let basis: f64 = read(ally + OFF_FUEL_CAPACITY);
-        if !fuel.is_finite() || !basis.is_finite() || basis <= 0.0 {
-            continue;
-        }
-        let now = fuel / basis * 100.0;
-        let clock = read::<f64>(CLOCK);
-        if clock - f64::from_bits(FUEL_LOG_AT.load(Ordering::Relaxed)) >= 10.0 {
-            FUEL_LOG_AT.store(clock.to_bits(), Ordering::Relaxed);
-            log::info!(
-                "ALLY fuel: c={ally:#x} combat fuel {fuel:.1}, capacity {:.1}, at battle start {:.1}, {now:.1}% of capacity",
-                read::<f64>(ally + OFF_FUEL_CAPACITY),
-                read::<f32>(ally + OFF_FUEL_AT_START)
-            );
-        }
-        if now <= percent as f64 {
-            log::info!(
-                "ALLY fuel low: c={ally:#x} combat fuel {fuel:.1} of capacity {basis:.1} = {now:.1}% <= {percent}%, leaving"
-            );
-            order_retreat(ally, "fuel");
-            sound::danger("fuel retreat");
-        }
-    }
-}
-
-/// Retreat key and automatic retreat; runs every battle frame.
-unsafe fn retreat_logic(ships: &[usize]) {
-    // an ally the manager promoted to the player's ship (mode 1, AI flag off) is the flagship now, not an ally
-    if let Ok(mut v) = ALLIES.lock() {
-        v.retain(|p| {
-            let promoted = ships.contains(p) && read::<i32>(*p + OFF_MODE_D70) == 1 && read::<u8>(*p + OFF_AI_FLAG) == 0;
-            if promoted {
-                log::info!("ALLY c={:#x} was promoted to the flagship: no longer tracked as an ally", *p);
-            }
-            !promoted
-        });
-    }
-    let allies: Vec<usize> = ALLIES.lock().map(|v| v.iter().copied().filter(|p| ships.contains(p)).collect()).unwrap_or_default();
-    fuel_retreat(&allies);
-    let key = RETREAT_KEY.load(Ordering::Relaxed);
-    if key != 0 {
-        let down = GetAsyncKeyState(key as i32) as u16 & 0x8000 != 0;
-        if down && !KEY_WAS_DOWN.swap(true, Ordering::Relaxed) {
-            // v0.9.2: only while the player's own ship is flying in the arena. During the fade-out after a retreat
-            // (flagship leaving or gone) the scene is being torn down and the order would hit a dying ship.
-            let flagship_flying = ships.iter().any(|&p| {
-                !allies.contains(&p) && live_ship(p) && read::<i32>(p + OFF_MODE_D70) == 1 && read::<i32>(p + OFF_STATE) != 2
-            });
-            if !flagship_flying {
-                log::info!("ALLY retreat key ignored: no flagship is flying (battle ending or handover pending)");
-            }
-            let mut ordered = false;
-            for &ally in allies.iter().filter(|_| flagship_flying) {
-                // never on a ship the player flies (e.g. an ally after the flagship left): it would turn it into an
-                // AI strike run; that ship retreats by flying to the retreat point
-                if read::<i32>(ally + OFF_MODE_D70) == 1 && read::<u8>(ally + OFF_AI_FLAG) == 0 {
-                    log::info!("ALLY retreat key ignored: c={ally:#x} is the ship you fly");
-                } else {
-                    ordered |= order_retreat(ally, "key");
-                }
-            }
-            if ordered {
-                sound::danger("retreat key");
-            }
-        } else if !down {
-            KEY_WAS_DOWN.store(false, Ordering::Relaxed);
-        }
-    }
-    let point: u64 = read(RETREAT_POINT);
-    if point != 0 {
-        RETREAT_POINT_SAVED.store(point, Ordering::Relaxed);
-    }
-    // the flagship: a flown (mode 1) ship that is not an ally
-    let flagship = ships.iter().copied().find(|&p| !allies.contains(&p) && read::<i32>(p + OFF_MODE_D70) == 1);
-    if let Some(p) = flagship {
-        FLAGSHIP.store(p, Ordering::Relaxed);
-        FLAGSHIP_STATE.store(read::<i32>(p + OFF_STATE), Ordering::Relaxed);
-        FLAGSHIP_ALIVE.store(read::<i32>(p + OFF_ACTIVE) != 0 && !matches!(read::<i32>(p + OFF_STATE), 6 | 7), Ordering::Relaxed);
-        return;
-    }
-    let last = FLAGSHIP.load(Ordering::Relaxed);
-    if last != 0 {
-        FLAGSHIP.store(0, Ordering::Relaxed);
-        let alive = FLAGSHIP_ALIVE.load(Ordering::Relaxed);
-        // a retreat zeroes the retreat point; a shutdown or a loss leaves it as it was
-        let used_point = read::<u64>(RETREAT_POINT) == 0 && RETREAT_POINT_SAVED.load(Ordering::Relaxed) != 0;
-        log::info!(
-            "ALLY flagship {last:#x} gone from the roster (last seen alive: {alive}, last state {}, retreat point used: {used_point})",
-            FLAGSHIP_STATE.load(Ordering::Relaxed)
-        );
-        if alive {
-            SUM_FLAGS.fetch_or(F_FLAGSHIP_LEFT, Ordering::Relaxed);
-        }
-        if alive && HANDOVER.load(Ordering::Relaxed) {
-            SUM_FLAGS.fetch_or(F_HANDOVER, Ordering::Relaxed);
-            let saved = RETREAT_POINT_SAVED.load(Ordering::Relaxed);
-            let now: u64 = read(RETREAT_POINT);
-            // only when somebody can still use it: an ally stays, or a reserve ship will take over
-            let someone_left = !allies.is_empty() || read::<usize>(RESERVE + 8) > 0;
-            if now == 0 && saved != 0 && someone_left {
-                (RETREAT_POINT as *mut u64).write_unaligned(saved);
-            }
-            log::info!(
-                "ALLY handover: flagship left, {} ally(s) stay and one is promoted; retreat point {:#x} -> {:#x} (saved {saved:#x})",
-                allies.len(),
-                now,
-                read::<u64>(RETREAT_POINT),
-            );
-            flush_log();
-        } else if alive {
-            // The manager promotes roster[0] this very frame (no mode-1 ship left), so a fly-out order comes
-            // too late: extract the allies now, the way the manager does for strike craft at the edge.
-            let extract: ExtractFn = std::mem::transmute(EXTRACT);
-            let before = ships.len();
-            for &ally in &allies {
-                extract(ally, 0);
-            }
-            SUM_FLAGS.fetch_or(F_EXTRACTED, Ordering::Relaxed);
-            // no replacement ally after a retreat of the whole squad
-            ALLY_DONE.store(true, Ordering::Relaxed);
-            let after = roster();
-            log::info!(
-                "ALLY retreat with the flagship: extracted {} ally(s), roster {before} -> {}, reserve {}, wave timer {}",
-                allies.len(),
-                after.len(),
-                read::<usize>(RESERVE + 8),
-                read::<f32>(0x1_47fc_7020),
-            );
-        }
-    }
-}
-
-/// Logs the `ALLY SUMMARY` line of the battle that just ended (once). `now` = the game clock of the end.
-unsafe fn emit_summary(now: f64) {
-    if SUM_T0.load(Ordering::Relaxed) == 0 {
-        return;
-    }
-        let t0 = f64::from_bits(SUM_T0.swap(0, Ordering::Relaxed));
-        let flags = SUM_FLAGS.load(Ordering::Relaxed);
-        let mut result = read::<i32>(BATTLE_RESULT);
-        if result == 0 {
-            result = SUM_RESULT.load(Ordering::Relaxed);
-        }
-        let state = SUM_ALLY_STATE.load(Ordering::Relaxed);
-        let (honor_player, honor_allies) = honor_share::totals();
-        let ally = if flags & F_SPAWNED == 0 {
-            if flags & F_OFF != 0 { "none (switched off)" } else { "none (not brought)" }.to_string()
-        } else if flags & F_EXTRACTED != 0 {
-            "retreated with the flagship".to_string()
-        } else if matches!(state, 6 | 7) {
-            format!("destroyed (state {state})")
-        } else if flags & F_HANDOVER != 0 {
-            format!("promoted after the flagship left (last state {state})")
-        } else {
-            format!("alive at the end (last state {state})")
-        };
-        log::info!(
-            "ALLY SUMMARY v{}: {:.0} s, squad {} (flagship + {} others), enemies at start {}, result {result} ({}), flagship left alive: {}, retreat key used: {}, allies brought {} lost {}, ally: {ally}, honor {honor_player:.1} (allies {honor_allies:.1})",
-            env!("CARGO_PKG_VERSION"),
-            now - t0,
-            SUM_SQUAD.load(Ordering::Relaxed),
-            SUM_SQUAD.load(Ordering::Relaxed).saturating_sub(1),
-            SUM_ENEMIES.load(Ordering::Relaxed),
-            match result {
-                -1 => "squad gone, enemies remain",
-                1 => "enemies gone",
-                2 => "both gone",
-                _ => "unknown",
-            },
-            flags & F_FLAGSHIP_LEFT != 0,
-            flags & F_RETREAT_KEY != 0,
-            SUM_SPAWNED.load(Ordering::Relaxed),
-            SUM_LOST.load(Ordering::Relaxed),
-        );
-}
-
-/// Collects the per-battle numbers and logs one `ALLY SUMMARY` line when the battle is over.
-unsafe fn summary_tick(ships: &[usize]) {
-    let now = read::<f64>(CLOCK);
-    if !ships.is_empty() {
-        if SUM_T0.load(Ordering::Relaxed) == 0 {
-            SUM_T0.store(now.max(0.001).to_bits(), Ordering::Relaxed);
-            SUM_ENEMIES.store(count(ENEMIES_BEGIN, ENEMIES_END, 0x18) as u32, Ordering::Relaxed);
-            SUM_SQUAD.store((ships.len() + read::<usize>(RESERVE + 8).min(32)) as u32, Ordering::Relaxed);
-            SUM_ALLY_STATE.store(-1, Ordering::Relaxed);
-            SUM_RESULT.store(0, Ordering::Relaxed);
-            SUM_FLAGS.store(0, Ordering::Relaxed);
-            honor_share::reset_totals();
-        }
-        SUM_LAST.store(now.to_bits(), Ordering::Relaxed);
-        let result = read::<i32>(BATTLE_RESULT);
-        if result != 0 {
-            SUM_RESULT.store(result, Ordering::Relaxed);
-        }
-        let ally = ALLY_PTR.load(Ordering::Relaxed);
-        if ally != 0 && ships.contains(&ally) {
-            SUM_ALLY_STATE.store(read::<i32>(ally + OFF_STATE), Ordering::Relaxed);
-        }
-    } else {
-        emit_summary(now);
-    }
-}
-
-static SPARE_PRIZES: AtomicBool = AtomicBool::new(false);
-static PRIZE_LINES: AtomicU32 = AtomicU32::new(0);
-static LAST_PRIZE_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Enemies (side < 0, in the level) that carry the prize flag.
-unsafe fn prize_enemies() -> Vec<usize> {
-    let (cb, ce): (usize, usize) = (read(CREATURES_BEGIN), read(CREATURES_END));
-    (cb..ce)
-        .step_by(0x18)
-        .map(|a| read::<usize>(a + 8))
-        .filter(|&p| p != 0 && read::<i32>(p + OFF_ACTIVE) != 0 && read::<f32>(p + OFF_SIDE) < 0.0 && read::<u8>(p + OFF_PRIZE) != 0)
-        .collect()
-}
-
-/// The ship (creature) a target node belongs to: a creature (class code 47, `(code & 0x2f) == 0x2f` as the game's
-/// own check in `FUN_140079810`) is its own ship; any other node (a part) points to its owning creature at +0xb8
-/// (structures.md: "owner pointer"). The first version climbed the parent chain (+0x88) like the game's
-/// `traverseLinkedListCreature_`, which gives the root PART of a chain, not the ship: it read the prize flag on a
-/// wrong object and re-targeted every ally every tick (log of 2026-10-16, v0.9.0).
-unsafe fn creature_of(node: usize) -> usize {
-    if read::<u8>(node + native_layout::NODE_CODE) & 0x2f == 0x2f {
-        return node;
-    }
-    let owner: usize = read(node + 0xb8);
-    if owner != 0 && read::<u8>(owner + native_layout::NODE_CODE) & 0x2f == 0x2f {
-        owner
-    } else {
-        node
-    }
-}
-
-/// Runs right after the AI has chosen a target for `ship`. An AI-run ship of the player's side (an ally) that
-/// picked a prize ship takes the nearest other enemy instead, or no target when only prizes are left.
-unsafe extern "C" fn on_target_chosen(ship: usize) {
-    let _hook = diag::scope("on_target_chosen");
-    if !plausible(ship) || !SPARE_PRIZES.load(Ordering::Relaxed) {
-        return;
-    }
-    // v0.9.3: only the ships this mod brought in (not the vanilla defenders of a missile or plane defense battle)
-    if !ARMED.load(Ordering::Relaxed) {
-        return;
-    }
-    match ALLIES.try_lock() {
-        Ok(v) if v.contains(&ship) => {}
-        _ => return,
-    }
-    // friendly and AI-run: the player's side, AI flag set (the ship the player flies has it cleared)
-    if read::<f32>(ship + OFF_SIDE) <= 0.0 || read::<u8>(ship + OFF_AI_FLAG) == 0 {
-        return;
-    }
-    let node: usize = read(ship + OFF_TARGET);
-    if !plausible(node) {
-        return;
-    }
-    // the target may be a part of an enemy ship: the prize flag is on the ship
-    let target = creature_of(node);
-    if !plausible(target) || read::<u8>(target + OFF_PRIZE) == 0 {
-        return;
-    }
-    let (sx, sy) = (read::<f32>(ship + OFF_POS_X), read::<f32>(ship + OFF_POS_Y));
-    let (cb, ce): (usize, usize) = (read(CREATURES_BEGIN), read(CREATURES_END));
-    if cb < 0x10000 || ce < cb || (ce - cb) / LINK_STRIDE > CREATURE_LIST_LIMIT {
-        return;
-    }
-    let mut best: Option<(f32, usize)> = None;
-    for a in (cb..ce).step_by(LINK_STRIDE) {
-        let p: usize = read(a + 8);
-        if !plausible(p) || p == target || read::<i32>(p + OFF_ACTIVE) == 0 || read::<f32>(p + OFF_SIDE) >= 0.0 || read::<u8>(p + OFF_PRIZE) != 0 {
-            continue;
-        }
-        if matches!(read::<i32>(p + OFF_STATE), 6 | 7) {
-            continue;
-        }
-        let (dx, dy) = (read::<f32>(p + OFF_POS_X) - sx, read::<f32>(p + OFF_POS_Y) - sy);
-        let d = dx * dx + dy * dy;
-        if best.map_or(true, |(bd, _)| d < bd) {
-            best = Some((d, p));
-        }
-    }
-    let set_link: SetLinkFn = std::mem::transmute(SET_LINK);
-    let replacement = best.map_or(0, |(_, p)| p);
-    // the target may have been replaced or freed by now: only write while the ship still points at what we checked
-    if !live_ship(ship) || read::<usize>(ship + OFF_TARGET) != node {
-        return;
-    }
-    set_link(ship + OFF_TARGET_LINK, replacement);
-    let key = (ship ^ target.rotate_left(17) ^ replacement.rotate_left(34)) as u64;
-    if LAST_PRIZE_KEY.swap(key, Ordering::Relaxed) != key && PRIZE_LINES.fetch_add(1, Ordering::Relaxed) < 60 {
-        log::info!("ALLY target: c={ship:#x} would attack the prize ship c={target:#x}; now {}", if replacement == 0 { "no target (only prizes left)".to_string() } else { format!("c={replacement:#x}") });
-    }
-}
-
-/// Called at the start of the per-frame battle manager.
-unsafe extern "C" fn on_battle_tick() {
-    let _hook = diag::scope("on_battle_tick");
-    plane_loadouts::verify(read::<f64>(CLOCK));
-    plane_loadouts::tick();
-    precombat::tick(1);
-    let ships = roster();
-    restore_orders("battle tick", false);
-    ship_switch::tick(&ships);
-    if !ARMED.load(Ordering::Relaxed) {
-        // not an ally battle: touch nothing; just keep the roster-empty bookkeeping so a later battle starts clean
-        if ships.is_empty() {
-            PLAYER_SEEN.store(0, Ordering::Relaxed);
-        }
-        return;
-    }
-    battle_diagnostics::tick(&ships);
-    retreat_logic(&ships);
-    // A manual handoff can introduce a new AI ally even after the reserve is exhausted.
-    if AMMO_ON.load(Ordering::Relaxed) {
-        if let (Ok(allies), Ok(mut rolled)) = (ALLIES.lock(), AMMO_ROLLED.lock()) {
-            for &a in allies.iter().filter(|ship| ships.contains(ship)) {
-                if live_ship(a) && !rolled.contains(&a) && ally_ammo::roll(a) {
-                    rolled.push(a);
-                }
-            }
-        }
-    }
-    ally_sound_events(&ships);
-    summary_tick(&ships);
-    if !ships.is_empty() {
-        precombat::hide("battle running");
-    }
-    if ships.is_empty() {
-        // between battles: arm again
-        if ALLY_DONE.swap(false, Ordering::Relaxed) {
-            log::info!("ALLY battle over, armed again");
-            flush_log();
-        }
-        PLAYER_SEEN.store(0, Ordering::Relaxed);
-        return;
-    }
-    if ALLY_DONE.load(Ordering::Relaxed) {
-        // nothing more to bring; allies already out are tracked above
-        return;
-    }
-    // the ship the player flies: mode 1, in the level, not dead (state 6/7)
-    let flying = ships.iter().any(|&p| {
-        read::<i32>(p + OFF_MODE_D70) == 1
-            && read::<i32>(p + OFF_ACTIVE) != 0
-            && !matches!(read::<i32>(p + OFF_STATE), 6 | 7)
-    });
-    if !flying {
-        return;
-    }
-    let now = read::<f64>(CLOCK);
-    let seen = f64::from_bits(PLAYER_SEEN.load(Ordering::Relaxed));
-    if seen == 0.0 {
-        PLAYER_SEEN.store(now.to_bits(), Ordering::Relaxed);
-        return;
-    }
-    if now - seen < f64::from_bits(ALLY_DELAY.load(Ordering::Relaxed)) {
-        return;
-    }
-
-    // allies still fighting; the lost ones free a place for the next ship switched on
-    let alive = {
-        let Ok(mut allies) = ALLIES.lock() else { return };
-        allies.retain(|p| {
-            let dead = matches!(read::<i32>(*p + OFF_STATE), 6 | 7) || read::<i32>(*p + OFF_ACTIVE) == 0;
-            if ships.contains(p) && dead {
-                SUM_LOST.fetch_add(1, Ordering::Relaxed);
-                log::info!("ALLY lost: c={:#x} destroyed (state {})", *p, read::<i32>(*p + OFF_STATE));
-                flush_log();
-                return false;
-            }
-            ships.contains(p)
-        });
-        allies.len() as u32
-    };
-    if alive >= MAX_ALLIES.load(Ordering::Relaxed) {
-        return;
-    }
-    // at most one deploy per 3 game seconds
-    let last = f64::from_bits(LAST_DEPLOY.load(Ordering::Relaxed));
-    if last != 0.0 && now - last < 3.0 {
-        return;
-    }
-    let reserve: usize = read(RESERVE + 8);
-    if !BATTLE_LOGGED.swap(true, Ordering::Relaxed) {
-        let (cb, ce): (usize, usize) = (read(CREATURES_BEGIN), read(CREATURES_END));
-        let enemy = (cb..ce).step_by(0x18).map(|a| read::<usize>(a + 8)).find(|&p| p != 0 && read::<f32>(p + OFF_SIDE) < 0.0);
-        log::info!(
-            "ALLY battle t={now:.1}: roster {}, reserve {reserve}, prize enemies at the first tick {}, switched on {:#x}, max allies {}, enemy mode_d70={:?}",
-            ships.len(),
-            prize_enemies().len(),
-            precombat::selected_mask(),
-            MAX_ALLIES.load(Ordering::Relaxed),
-            enemy.map(|p| read::<i32>(p + OFF_MODE_D70))
-        );
-    }
-    if reserve == 0 || reserve > 32 {
-        ALLY_DONE.store(true, Ordering::Relaxed);
-        if SUM_SPAWNED.load(Ordering::Relaxed) == 0 {
-            log::info!("ALLY no reserve ship to bring (reserve size {reserve})");
-        } else {
-            log::info!("ALLY no reserve ship left to bring in");
-        }
-        return;
-    }
-
-    // the next ship switched on that has not been brought yet; its place in the reserve is its number minus 2,
-    // minus the lower-numbered ships already deployed
-    let mask = precombat::selected_mask();
-    let used = USED_MASK.load(Ordering::Relaxed);
-    let candidate = (2..(2 + reserve + used.count_ones() as usize)).find(|n| *n <= 9 && mask & (1 << n) != 0 && used & (1 << n) == 0);
-    let Some(slot) = candidate else {
-        ALLY_DONE.store(true, Ordering::Relaxed);
-        if SUM_SPAWNED.load(Ordering::Relaxed) == 0 {
-            SUM_FLAGS.fetch_or(F_OFF, Ordering::Relaxed);
-            log::info!("ALLY off for this battle (no ship switched on; reserve {reserve}, mask {mask:#x})");
-        }
-        return;
-    };
-    let lower_used = (used & ((1u32 << slot) - 1)).count_ones() as usize;
-    let index = slot - 2 - lower_used.min(slot - 2);
-    USED_MASK.fetch_or(1 << slot, Ordering::Relaxed);
-    LAST_DEPLOY.store(now.to_bits(), Ordering::Relaxed);
-    if index >= reserve {
-        log::info!("ALLY ship number {slot}: reserve entry {index} does not exist (reserve {reserve}), skipped");
-        return;
-    }
-
-    let deploy: DeployFn = std::mem::transmute(DEPLOY);
-    let set_controlled: SetControlledFn = std::mem::transmute(SET_CONTROLLED);
-    let set_link: SetLinkFn = std::mem::transmute(SET_LINK);
-    let get_profile: GetProfileFn = std::mem::transmute(GET_PROFILE);
-
-    let moved = reserve_to_front(index);
-    log::info!("ALLY chosen ship number {slot} (reserve entry {index}), moved to the front: {moved}");
-    let before = ships.len();
-    let mut pos: u64 = 0;
-    let ok = deploy(
-        RESERVE,
-        ROSTER_BEGIN,
-        &mut pos,
-        1,
-        read::<f32>(ARENA_X_LOW) + 100.0,
-        read::<f32>(ARENA_X_HIGH) - 100.0,
-        read::<f32>(ARENA_Y_LOW) + 100.0,
-        read::<f32>(DEPLOY_K),
-        read::<f32>(DEPLOY_AGGR).to_bits(),
-        ALLY_SLOT as i32,
-    );
-    let after = roster();
-    log::info!(
-        "ALLY deploy returned {ok}, roster {before} -> {}, reserve {reserve} -> {}",
-        after.len(),
-        read::<usize>(RESERVE + 8)
-    );
-    flush_log();
-    if after.len() != before + 1 {
-        return; // nothing new to fix up
-    }
-    let Some(&ally) = after.last() else { return };
-
-    // Record the ammo the reserve was funded with before the AI controller starts re-setting `+0x850`.
-    let funded = record_ammo_funding(ally);
-    log::info!("ALLY ammo funding: c={ally:#x} recorded the funded ammo index of {funded} guns");
-
-    // hand it back to the stock AI: not controlled (AI flag on), no control slot, wingman mode
-    set_controlled(get_profile(), 0, ALLY_SLOT as u32);
-    set_link(CONTROLLED_LINKS + ALLY_SLOT * 0x18, 0);
-    (ally as *mut i32).byte_add(OFF_MODE_D70).write_unaligned(ALLY_MODE);
-    if let Ok(mut allies) = ALLIES.lock() {
-        allies.push(ally);
-    }
-    sound::joined();
-    if SUM_SPAWNED.fetch_add(1, Ordering::Relaxed) == 0 {
-        battle_diagnostics::start_tracking(ally);
-        ALLY_PTR.store(ally, Ordering::Relaxed);
-    }
-    SUM_FLAGS.fetch_or(F_SPAWNED, Ordering::Relaxed);
-    let (zn, gn) = battle_diagnostics::loadout_counts(ally);
-    log::info!("ALLY loadout (ship {slot}): zenith launchers {zn}, guns {gn}");
-    log::info!(
-        "ALLY ready c={ally:#x} side={} ai_flag={} mode_d70={} state={} aggr={}",
-        read::<f32>(ally + OFF_SIDE),
-        read::<u8>(ally + OFF_AI_FLAG),
-        read::<i32>(ally + OFF_MODE_D70),
-        read::<i32>(ally + OFF_STATE),
-        read::<f32>(ally + OFF_AGGRESSION),
-    );
 }
 
 #[no_mangle]
@@ -1267,8 +282,7 @@ unsafe extern "C" fn init() -> bool {
         log::info!("hf_ally: debug_log on: megalog, watchdog and crash dump (large files, see ally.json)");
     }
     precombat::configure_marker(&config.marker_text);
-    MAX_ALLIES.store(config.max_allies.max(1), Ordering::Relaxed);
-    AMMO_ON.store(config.ally_ai_ammo, Ordering::Relaxed);
+    ally_ammo::set_enabled(config.ally_ai_ammo);
     missile_guard::set_autofire(config.ally_zenith_autofire);
     let honor_share = honor_share::set_share(config.ally_honor_share);
     if honor_share != config.ally_honor_share {
@@ -1279,18 +293,7 @@ unsafe extern "C" fn init() -> bool {
         env!("CARGO_PKG_VERSION"),
         serde_json::to_string(&config).unwrap_or_default()
     );
-    FUEL_RETREAT_PERCENT.store(config.ally_fuel_retreat_percent.clamp(0.0, 100.0).to_bits(), Ordering::Relaxed);
-    let handover = match config.flagship_leaves.as_str() {
-        "handover" => true,
-        "retreat" => false,
-        other => {
-            log::warn!("hf_ally: flagship_leaves {other:?} is not \"handover\" or \"retreat\"; using \"handover\"");
-            true
-        }
-    };
-    HANDOVER.store(handover, Ordering::Relaxed);
-    RETREAT_KEY.store(config.retreat_key, Ordering::Relaxed);
-    ALLY_DELAY.store(config.ally_delay_seconds.max(0.0).to_bits(), Ordering::Relaxed);
+    battle::configure(&config);
 
     match prepare(&config) {
         Ok(()) => {
@@ -1333,7 +336,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     trampoline.bytes(&SPAWN_PROLOGUE);
     trampoline.bytes(&[0x48, 0x83, 0xec, 0x08]); // sub rsp, 8
     trampoline.preserved_call(
-        on_spawn as *const (),
+        battle::on_spawn as *const (),
         &[0x48, 0x8b, 0x94, 0x24, 0xc8, 0x00, 0x00, 0x00], // mov rdx, [rsp+0xC8]
         &[],
         ReturnType::None,
@@ -1474,23 +477,23 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         }
     }
     if config.ally_ai_ammo {
-        let found = std::slice::from_raw_parts(REFUND as *const u8, REFUND_STOLEN.len());
-        if found == REFUND_STOLEN {
+        let found = std::slice::from_raw_parts(ally_ammo::REFUND as *const u8, ally_ammo::REFUND_STOLEN.len());
+        if found == ally_ammo::REFUND_STOLEN {
             let mut trampoline = Trampoline::new();
             trampoline.bytes(&[0x48, 0x83, 0xec, 0x08]);
-            trampoline.preserved_call(on_refund as *const (), &[], &[], ReturnType::None);
+            trampoline.preserved_call(ally_ammo::on_refund as *const (), &[], &[], ReturnType::None);
             trampoline.bytes(&[0x48, 0x83, 0xc4, 0x08]);
-            trampoline.bytes(&REFUND_STOLEN);
-            trampoline.relative_jump(REFUND + REFUND_STOLEN.len());
+            trampoline.bytes(&ally_ammo::REFUND_STOLEN);
+            trampoline.relative_jump(ally_ammo::REFUND + ally_ammo::REFUND_STOLEN.len());
             session
-                .detour_trampoline(REFUND, REFUND_STOLEN.len(), trampoline)
+                .detour_trampoline(ally_ammo::REFUND, ally_ammo::REFUND_STOLEN.len(), trampoline)
                 .map_err(|e| e.to_string())?;
         } else {
             log::warn!("hf_ally: refund function bytes differ ({found:02x?}), not hooked: allies on AP / proximity would credit free ammo");
-            AMMO_ON.store(false, Ordering::Relaxed);
+            ally_ammo::set_enabled(false);
         }
     }
-    SPARE_PRIZES.store(config.spare_prizes, Ordering::Relaxed);
+    battle::set_spare_prizes(config.spare_prizes);
     if config.spare_prizes {
         let target_ok = std::slice::from_raw_parts(TARGET_FN as *const u8, 3) == [0x48, 0x8b, 0xc4];
         let sites_ok = TARGET_SITES.iter().all(|(site, bytes)| std::slice::from_raw_parts(*site as *const u8, 5) == bytes);
@@ -1500,13 +503,13 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
                 trampoline.bytes(&[0x51, 0x48, 0x83, 0xec, 0x28]); // push rcx; sub rsp, 0x28
                 trampoline.absolute_call(TARGET_FN as *const ());
                 trampoline.bytes(&[0x48, 0x83, 0xc4, 0x28, 0x59]); // add rsp, 0x28; pop rcx
-                trampoline.preserved_call(on_target_chosen as *const (), &[], &[], ReturnType::None);
+                trampoline.preserved_call(battle::on_target_chosen as *const (), &[], &[], ReturnType::None);
                 trampoline.relative_jump(site + bytes.len());
                 session.detour_trampoline(site, bytes.len(), trampoline).map_err(|e| e.to_string())?;
             }
         } else {
             log::warn!("hf_ally: the AI target choice or its call sites differ, prize ships are not spared");
-            SPARE_PRIZES.store(false, Ordering::Relaxed);
+            battle::set_spare_prizes(false);
         }
     }
     let guard_missiles = config.ally_bombers || !config.ally_zenith_autofire;
@@ -1559,11 +562,11 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     plane_loadouts::K13_ON.store(config.plane_k13, Ordering::Relaxed);
     // Wingman deployment and battle-manager hooks; always installed when the mod is enabled.
     for (name, address, expected) in [
-        ("deploy", DEPLOY, &DEPLOY_PROLOGUE[..]),
+        ("deploy", battle::DEPLOY, &battle::DEPLOY_PROLOGUE[..]),
         ("set_controlled", SET_CONTROLLED, &SET_CONTROLLED_PROLOGUE[..]),
         ("set_link", SET_LINK, &SET_LINK_PROLOGUE[..]),
         ("get_profile", GET_PROFILE, &GET_PROFILE_PROLOGUE[..]),
-        ("extract", EXTRACT, &EXTRACT_PROLOGUE[..]),
+        ("extract", battle::EXTRACT, &battle::EXTRACT_PROLOGUE[..]),
     ] {
         let found = std::slice::from_raw_parts(address as *const u8, expected.len());
         if found != expected {
@@ -1582,7 +585,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     session
         .patch_call(
             battle,
-            on_battle_tick as *const (),
+            battle::on_battle_tick as *const (),
             BATTLE_PROLOGUE.len(),
             true,
             ReturnType::None,

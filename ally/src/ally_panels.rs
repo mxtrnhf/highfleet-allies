@@ -59,8 +59,7 @@ const PANEL_SUPPRESSED: usize = 0x1_43a1_5908;
 const TARGET_PANEL_HIDDEN: usize = 0x1_47fc_6fca;
 /// Virtual frame height (1920 x 1080 target).
 const FRAME_HEIGHT: usize = 0x1_43a1_3e5c;
-/// Player profile and its creature lookup used by mode 3.
-const GET_PROFILE: usize = 0x1_4029_2a90;
+/// Player profile creature lookup used by mode 3.
 const GET_PLAYER_CREATURE: usize = 0x1_4029_24b0;
 
 /// `DrawBattleShipPanel` scans HUD marker layers 1..39 by way of the counts at `0x143a51160`
@@ -172,8 +171,8 @@ unsafe fn rd<T: Copy>(address: usize) -> T {
 /// Up to [`MAX_PANELS`] live allies the mod deployed, in deployment order.
 unsafe fn living_allies() -> [usize; MAX_PANELS] {
     let mut slots = [0usize; MAX_PANELS];
-    let roster = crate::roster();
-    let Ok(allies) = crate::ALLIES.lock() else { return slots };
+    let roster = crate::native::roster();
+    let Some(allies) = crate::battle::allies() else { return slots };
     let mut used = 0;
     for &ally in allies.iter() {
         if used == MAX_PANELS {
@@ -182,10 +181,10 @@ unsafe fn living_allies() -> [usize; MAX_PANELS] {
         // side > 0 keeps this to the player's own ships; mode 1 is the ship the player flies.
         // State 2 is the AI strike/retreat state; its ship is leaving and must not keep a panel.
         if !roster.contains(&ally)
-            || !crate::live_ship(ally)
-            || rd::<f32>(ally + crate::OFF_SIDE) <= 0.0
-            || rd::<i32>(ally + crate::OFF_MODE_D70) == 1
-            || !matches!(rd::<i32>(ally + crate::OFF_STATE), 0 | 1)
+            || !crate::native::live_ship(ally)
+            || rd::<f32>(ally + crate::native::OFF_SIDE) <= 0.0
+            || rd::<i32>(ally + crate::native::OFF_MODE_D70) == 1
+            || !matches!(rd::<i32>(ally + crate::native::OFF_STATE), 0 | 1)
         {
             continue;
         }
@@ -220,14 +219,14 @@ pub fn invalidate() {
 }
 
 unsafe fn player_creature() -> Option<usize> {
-    let get_profile: GetProfile = std::mem::transmute(GET_PROFILE);
+    let get_profile: GetProfile = std::mem::transmute(crate::native::GET_PROFILE);
     let get_player: GetPlayer = std::mem::transmute(GET_PLAYER_CREATURE);
     let profile = get_profile();
-    if !crate::plausible(profile) {
+    if !crate::native::plausible(profile) {
         return None;
     }
     let player = get_player(profile, 0);
-    crate::live_ship(player).then_some(player)
+    crate::native::live_ship(player).then_some(player)
 }
 
 type GetProfile = unsafe extern "win64" fn() -> usize;
@@ -296,7 +295,7 @@ unsafe fn collect_panel_parts(allies: &[usize; MAX_PANELS]) -> [PanelParts; MAX_
     let mut panels: [PanelParts; MAX_PANELS] = std::array::from_fn(|_| PanelParts::default());
     let mut owners = HashMap::new();
     let mut panel_slot = |part: usize| -> Option<usize> {
-        if !crate::plausible(part) {
+        if !crate::native::plausible(part) {
             return None;
         }
         // SAFETY: discovery stays inside this game-thread callback, before native rendering.
@@ -361,10 +360,10 @@ unsafe fn collect_panel_parts(allies: &[usize; MAX_PANELS]) -> [PanelParts; MAX_
             continue;
         }
         let bytes = end - begin;
-        if !bytes.is_multiple_of(crate::LINK_STRIDE) || bytes / crate::LINK_STRIDE > PART_LIST_LIMIT {
+        if !bytes.is_multiple_of(crate::native::LINK_STRIDE) || bytes / crate::native::LINK_STRIDE > PART_LIST_LIMIT {
             continue;
         }
-        for entry in (begin..end).step_by(crate::LINK_STRIDE) {
+        for entry in (begin..end).step_by(crate::native::LINK_STRIDE) {
             let part = rd::<usize>(entry + offset_of!(Link, target));
             if panel_slot(part) == Some(slot) && panels[slot].body_set.insert(part) {
                 panels[slot].bodies.push(part);
@@ -482,7 +481,7 @@ unsafe fn insert_layer_markers(ally: usize, parts: &PanelParts) -> Option<Tempor
                 continue;
             }
             let sprite = rd::<usize>(sprites_begin + index * 8);
-            if !crate::plausible(sprite) {
+            if !crate::native::plausible(sprite) {
                 continue;
             }
             let Some(opacity) = crate::diag::rd::<f32>(sprite + OFF_SPRITE_VISIBLE) else {
@@ -573,9 +572,9 @@ unsafe extern "C" fn render_allies() {
     let Ok(mut panels) = PANELS.lock() else { return };
 
     let panel: PanelFn = std::mem::transmute(PANEL);
-    let set_link: crate::SetLinkFn = std::mem::transmute(crate::SET_LINK);
-    let target_link = player + crate::OFF_TARGET_LINK;
-    let saved_target = rd::<usize>(player + crate::OFF_TARGET);
+    let set_link: crate::native::SetLinkFn = std::mem::transmute(crate::native::SET_LINK);
+    let target_link = player + crate::native::OFF_TARGET_LINK;
+    let saved_target = rd::<usize>(player + crate::native::OFF_TARGET);
     let parts = collect_panel_parts(&allies);
     for native in panels.iter_mut().flatten() {
         native.rendered_ship = 0;

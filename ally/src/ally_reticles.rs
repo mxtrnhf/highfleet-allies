@@ -95,22 +95,22 @@ unsafe fn draw_ally_targets() {
         return;
     }
     let color = ALLY_COLOR.load(Ordering::Relaxed) | 0xff00_0000;
-    let Ok(allies) = crate::ALLIES.lock() else { return };
+    let Some(allies) = crate::battle::allies() else { return };
 
     for &ally in allies.iter() {
-        if !crate::live_ship(ally)
-            || rd::<f32>(ally + crate::OFF_SIDE) <= 0.0
-            || rd::<i32>(ally + crate::OFF_MODE_D70) == 1
+        if !crate::native::live_ship(ally)
+            || rd::<f32>(ally + crate::native::OFF_SIDE) <= 0.0
+            || rd::<i32>(ally + crate::native::OFF_MODE_D70) == 1
         {
             continue;
         }
-        let target = rd::<usize>(ally + crate::OFF_TARGET);
+        let target = rd::<usize>(ally + crate::native::OFF_TARGET);
         // the cached target is a creature, not a part: it must have the creature class bits
-        if !crate::plausible(target) || rd::<u8>(target + 0x28) & 0x2f != 0x2f {
+        if !crate::native::plausible(target) || rd::<u8>(target + 0x28) & 0x2f != 0x2f {
             continue;
         }
         // only mark foes; side > 0 would be a friendly ship
-        if rd::<f32>(target + crate::OFF_SIDE) >= 0.0 {
+        if rd::<f32>(target + crate::native::OFF_SIDE) >= 0.0 {
             continue;
         }
         let mut point = [

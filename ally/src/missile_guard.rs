@@ -18,7 +18,8 @@ use patchy::{PatchSession, ReturnType, Trampoline};
 
 use crate::diag::rd;
 use crate::native_layout::{Creature, Link, Node};
-use crate::{plausible, tracked_ally};
+use crate::native::{plausible, CLOCK};
+use crate::battle;
 
 /// `mov [rsp+0x10],rbx` (5 bytes, whole instruction).
 const MISSILE_LAUNCH: usize = 0x1_4002_ff60;
@@ -46,7 +47,7 @@ pub fn set_autofire(allowed: bool) {
 /// Logs the first held launch and then at most one line per [`LOG_INTERVAL_S`], so the AI's
 /// roughly once-per-second retries cannot flood the log.
 unsafe fn log_blocked(ship: usize) {
-    let Some(now) = rd::<f64>(crate::CLOCK) else { return };
+    let Some(now) = rd::<f64>(CLOCK) else { return };
     let first = !BLOCK_LOGGED.swap(true, Ordering::Relaxed);
     let last = f64::from_bits(LAST_BLOCK_LOG.load(Ordering::Relaxed));
     if !first && (!now.is_finite() || now - last < LOG_INTERVAL_S) {
@@ -62,7 +63,7 @@ unsafe extern "C" fn block_launch(launcher: usize) -> u8 {
         let Some(ship) = rd::<usize>(launcher + OFF_OWNER).filter(|ship| plausible(*ship)) else {
             return 0;
         };
-        if !tracked_ally(ship) {
+        if !battle::tracked(ship) {
             return 0;
         }
         // ai_flag 0 is the ship the player flies: its own launch key keeps working.

@@ -5,7 +5,12 @@
 //! guns and a rating. Nothing is written for 37/57 mm lead guns (the stock rule).
 
 use std::mem::offset_of;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 
+use crate::native::{live_ship, plausible, read, LINK_STRIDE, SHIP_LIST_LIMIT};
 use crate::native_layout::{Body, Creature, Link, PartStats};
 
 const OFF_C7C: usize = 0xc7c;
@@ -39,7 +44,7 @@ unsafe fn first_cal(ship: usize) -> Option<i32> {
         return None;
     }
     let part: usize = rd(b + offset_of!(Link, target));
-    if !crate::plausible(part) {
+    if !plausible(part) {
         return None;
     }
     let idx: i32 = rd(part + PART_STATS);
@@ -52,7 +57,7 @@ unsafe fn first_cal(ship: usize) -> Option<i32> {
         return None;
     }
     let record: usize = rd(base + idx as usize * std::mem::size_of::<usize>());
-    crate::plausible(record).then(|| rd::<i32>(record + STAT_CAL))
+    plausible(record).then(|| rd::<i32>(record + STAT_CAL))
 }
 
 /// Uniform in 0..1 from a xorshift stream seeded by the clock (two rolls in a row must not correlate).
@@ -72,12 +77,18 @@ fn unit() -> f32 {
 
 /// Rolls once for `ship`; returns false when it is not ready yet (try again next tick).
 pub unsafe fn roll(ship: usize) -> bool {
-    let Some(cal) = first_cal(ship) else { return false };
+    let Some(cal) = first_cal(ship) else {
+        return false;
+    };
     let rating: f32 = rd(ship + OFF_RATING);
     if rating <= 0.0 && cal < 25 {
         return false;
     }
-    let p = if cal >= 25 { 1.0 } else { (rating / 50.0).clamp(0.0, 1.0) };
+    let p = if cal >= 25 {
+        1.0
+    } else {
+        (rating / 50.0).clamp(0.0, 1.0)
+    };
     let (mut ap, mut prox) = (0u8, 0u8);
     if cal > 10 && unit() < p {
         let to_prox = if cal >= 25 { 0.8 } else { 0.2 };
@@ -91,4 +102,182 @@ pub unsafe fn roll(ship: usize) -> bool {
     (ship as *mut u8).byte_add(OFF_C7D).write(prox);
     log::info!("ALLY ammo doctrine: c={ship:#x} cal={cal} rating={rating:.1} p={p:.2} -> AP={ap} proximity={prox}");
     true
+}
+
+// --- battle ammo lifecycle ------------------------------------------------------------------
+
+static AMMO_ON: AtomicBool = AtomicBool::new(false);
+/// Allies that have had their ammunition doctrine rolled this battle.
+static AMMO_ROLLED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+/// Per-gun ammo index and extra index that the battle reserve was funded with, recorded when the ally is
+/// deployed (before the AI starts re-setting `+0x850`). `(creature, gun, index, extra_index)`.
+static AMMO_FUNDING: Mutex<Vec<(usize, usize, i32, i32)>> = Mutex::new(Vec::new());
+
+/// ReturnCreatureGunAmmoToInventory (0x1402698c0, RCX = creature): the end-of-battle refund.
+/// The game credits each gun's pool to its current ammo index. The free base-shell pool starts
+/// at 9999 rounds (`InitBattleGunAmmoReserves`, 0x14025fa30); an AI doctrine switch must not
+/// turn that into 9999 priced rounds. Funding records preserve the original paid/free identity.
+pub(super) const REFUND: usize = 0x1_4026_98c0;
+pub(super) const REFUND_STOLEN: [u8; 10] =
+    [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10];
+const REFUND_GUN_LISTS: [usize; 2] = [
+    offset_of!(Creature, gun_group_0),
+    offset_of!(Creature, gun_group_1),
+];
+
+pub(crate) fn enabled() -> bool {
+    AMMO_ON.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_enabled(enabled: bool) {
+    AMMO_ON.store(enabled, Ordering::Relaxed);
+}
+
+/// Clears both per-battle ammo tables in the same order as the old battle-start reset.
+pub(crate) fn clear_battle() {
+    if let Ok(mut v) = AMMO_ROLLED.lock() {
+        v.clear();
+    }
+    if let Ok(mut v) = AMMO_FUNDING.lock() {
+        v.clear();
+    }
+}
+
+/// Rolls the doctrine for every live ally that has not been rolled yet this battle.
+///
+/// # Safety
+/// `allies` is the battle's borrowed ally list, read on the game thread while `ALLIES` is held.
+/// The same lock order (`ALLIES -> AMMO_ROLLED`) as the old inline loop is preserved.
+pub(crate) unsafe fn roll_new(ships: &[usize], allies: &[usize]) {
+    let Ok(mut rolled) = AMMO_ROLLED.lock() else {
+        return;
+    };
+    for &a in allies.iter().filter(|ship| ships.contains(ship)) {
+        if live_ship(a) && !rolled.contains(&a) && roll(a) {
+            rolled.push(a);
+        }
+    }
+}
+
+/// Remembers the ammo indices each gun of a freshly deployed ally was funded with.
+///
+/// # Safety
+/// `creature` must be the game-owned ship just returned by the native deploy call, on the game thread.
+pub(crate) unsafe fn record_funding(creature: usize) -> usize {
+    let Ok(mut funding) = AMMO_FUNDING.lock() else {
+        return 0;
+    };
+    record_funding_locked(&mut funding, creature)
+}
+
+/// Preserves the old handoff check/record sequence: the first lock failure aborts, while a
+/// failure to take the second (recording) lock is ignored, exactly as `record_ammo_funding` was.
+///
+/// # Safety
+/// Call on the game thread while the creature is still the live ship whose guns are being recorded.
+pub(crate) unsafe fn ensure_funding_recorded(creature: usize) -> Result<(), ()> {
+    let recorded = match AMMO_FUNDING.lock() {
+        Ok(funding) => funding.iter().any(|entry| entry.0 == creature),
+        Err(_) => return Err(()),
+    };
+    if recorded {
+        return Ok(());
+    }
+    if let Ok(mut funding) = AMMO_FUNDING.lock() {
+        record_funding_locked(&mut funding, creature);
+    }
+    Ok(())
+}
+
+unsafe fn record_funding_locked(
+    funding: &mut Vec<(usize, usize, i32, i32)>,
+    creature: usize,
+) -> usize {
+    let mut n = 0;
+    for list in REFUND_GUN_LISTS {
+        let (b, e): (usize, usize) = (read(creature + list), read(creature + list + 8));
+        if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
+            continue;
+        }
+        for a in (b..e).step_by(LINK_STRIDE) {
+            let gun: usize = read(a + 8);
+            if !plausible(gun) {
+                continue;
+            }
+            let entry = (
+                creature,
+                gun,
+                read::<i32>(gun + offset_of!(Body, weapon_ammo)),
+                read::<i32>(gun + offset_of!(Body, weapon_ammo_extra)),
+            );
+            if let Some(slot) = funding.iter_mut().find(|r| r.1 == gun) {
+                *slot = entry;
+            } else {
+                funding.push(entry);
+            }
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Entry hook of the refund: for a creature whose ammo doctrine we rolled, put every gun back on the
+/// ammo index its reserve was funded with.
+/// Fleet creatures persist across battles, so pre-combat refunds must remain untouched: the
+/// native selector refunds on every ammo pick, before the next spawn clears our battle tables.
+///
+/// # Safety
+/// Called by the verified native refund detour on the game thread with the live creature in RCX.
+pub(super) unsafe extern "C" fn on_refund(creature: usize) {
+    let _hook = crate::diag::scope("on_refund");
+    let ours = AMMO_ROLLED.lock().map_or(false, |v| v.contains(&creature));
+    if !ours {
+        return;
+    }
+    // while the pre-combat screen is up the game refunds on every ammo pick; a partial list is treated as
+    // "screen still up" so an uncertain scan cannot wipe the share the player just chose
+    if crate::precombat::has_cards_or_uncertain() {
+        return;
+    }
+    let Ok(funding) = AMMO_FUNDING.lock() else {
+        return;
+    };
+    let (mut restored, mut unrecorded) = (0, 0);
+    for list in REFUND_GUN_LISTS {
+        let (b, e): (usize, usize) = (read(creature + list), read(creature + list + 8));
+        if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
+            continue;
+        }
+        for a in (b..e).step_by(LINK_STRIDE) {
+            let gun: usize = read(a + 8);
+            if !plausible(gun) {
+                continue;
+            }
+            if let Some(&(_, _, index, extra)) =
+                funding.iter().find(|r| r.0 == creature && r.1 == gun)
+            {
+                (gun as *mut i32)
+                    .byte_add(offset_of!(Body, weapon_ammo))
+                    .write_unaligned(index);
+                (gun as *mut i32)
+                    .byte_add(offset_of!(Body, weapon_ammo_extra))
+                    .write_unaligned(extra);
+                restored += 1;
+            } else {
+                // no funding index (should not happen for an ally we deployed): keep the old safeguard
+                for off in [
+                    offset_of!(Body, weapon_ammo_amount),
+                    offset_of!(Body, weapon_ammo_extra_amount),
+                    offset_of!(Body, weapon_reload_step_rounds),
+                ] {
+                    ((gun + off) as *mut i32).write_unaligned(0);
+                }
+                ((gun + offset_of!(Body, weapon_ammo_loaded)) as *mut f32).write_unaligned(0.0);
+                unrecorded += 1;
+            }
+        }
+    }
+    log::info!(
+        "ALLY refund: c={creature:#x} {restored} guns restored to their funded ammo index, {unrecorded} without a record emptied"
+    );
 }

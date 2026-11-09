@@ -14,7 +14,8 @@ use std::sync::{
 
 use patchy::{PatchSession, ReturnType, Trampoline};
 
-use crate::{live_ship, plausible, read, ALLIES, ARMED};
+use crate::battle;
+use crate::native::{live_ship, plausible, read};
 
 /// `Creature + 0x1a24`: honor earned in this battle; `+0x1a28` is the persistent `m_xp`.
 pub const OFF_BATTLE_HONOR: usize = 0x1a24;
@@ -100,7 +101,7 @@ pub unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
 /// left untouched; each live deployed ally gets `earned * share` added to its own battle honor.
 unsafe extern "C" fn on_award(player: usize, new_total_bits: u32) {
     let share = f32::from_bits(SHARE.load(Ordering::Relaxed));
-    if share <= 0.0 || !ARMED.load(Ordering::Relaxed) || !plausible(player) {
+    if share <= 0.0 || !battle::armed() || !plausible(player) {
         return;
     }
     let new_total = f32::from_bits(new_total_bits);
@@ -108,7 +109,7 @@ unsafe extern "C" fn on_award(player: usize, new_total_bits: u32) {
     if !earned.is_finite() || earned <= 0.0 {
         return;
     }
-    let Ok(allies) = ALLIES.try_lock() else { return };
+    let Some(allies) = battle::try_allies() else { return };
     let mut credited = 0u32;
     for (index, &ally) in allies.iter().enumerate() {
         // A handoff can leave the current player in the list for one frame; never double-credit.

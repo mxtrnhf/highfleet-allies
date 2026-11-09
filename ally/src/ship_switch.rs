@@ -75,9 +75,9 @@ struct AiVector {
 /// Validate the three raw vector pointers and derive a bounded length.
 unsafe fn ai_vector() -> Option<AiVector> {
     let address = AI_VECTOR;
-    let begin = crate::read::<usize>(address);
-    let end = crate::read::<usize>(address + 8);
-    let capacity_end = crate::read::<usize>(address + 16);
+    let begin = crate::native::read::<usize>(address);
+    let end = crate::native::read::<usize>(address + 8);
+    let capacity_end = crate::native::read::<usize>(address + 16);
     let stride = std::mem::size_of::<Link>();
     if begin < 0x10000 || end < begin || capacity_end < end {
         return None;
@@ -86,7 +86,7 @@ unsafe fn ai_vector() -> Option<AiVector> {
         return None;
     }
     let capacity = capacity_end - begin;
-    if !capacity.is_multiple_of(stride) || capacity / stride > crate::CREATURE_LIST_LIMIT {
+    if !capacity.is_multiple_of(stride) || capacity / stride > crate::native::CREATURE_LIST_LIMIT {
         return None;
     }
     Some(AiVector {
@@ -102,7 +102,7 @@ impl AiVector {
     unsafe fn contains(&self, ship: usize) -> bool {
         let mut entry = self.begin;
         while entry < self.end {
-            if crate::read::<usize>(entry + offset_of!(Link, target)) == ship {
+            if crate::native::read::<usize>(entry + offset_of!(Link, target)) == ship {
                 return true;
             }
             entry += self.stride;
@@ -148,7 +148,7 @@ impl AiVector {
             let mut index = None;
             for candidate in 0..length {
                 let entry = self.begin + candidate * self.stride;
-                if crate::read::<usize>(entry + offset_of!(Link, target)) == ship {
+                if crate::native::read::<usize>(entry + offset_of!(Link, target)) == ship {
                     index = Some(candidate);
                     break;
                 }
@@ -195,10 +195,14 @@ unsafe fn rebalance_ai_list(demoted: usize, promoted: usize) -> bool {
 
 /// Only current roster members may reach this function; they remain game-owned for this tick.
 unsafe fn available(ship: usize) -> bool {
-    crate::live_ship(ship)
-        && crate::read::<f32>(ship + crate::OFF_SIDE) > 0.0
-        && matches!(crate::read::<i32>(ship + crate::OFF_STATE), 0 | 1)
-        && crate::read::<i32>(ship + crate::OFF_MODE_D70) != crate::ORDER_BOMBING
+    crate::native::live_ship(ship)
+        && crate::native::read::<f32>(ship + crate::native::OFF_SIDE) > 0.0
+        && matches!(
+            crate::native::read::<i32>(ship + crate::native::OFF_STATE),
+            0 | 1
+        )
+        && crate::native::read::<i32>(ship + crate::native::OFF_MODE_D70)
+            != crate::battle::ORDER_BOMBING
 }
 
 /// Move latched player input, not the ally's last AI fire command, to the newly controlled ship.
@@ -207,15 +211,15 @@ unsafe fn transfer_input(previous: usize, selected: usize) {
     // scalar input fields are borrowed; no owning native values/references are constructed. The
     // native Input_KeyDown/Up routines own these fields (0x1401896a0 / 0x14018a530).
     for index in 0..6 {
-        let offset = crate::OFF_FLAGS + index;
-        let held = crate::read::<u8>(previous + offset);
+        let offset = crate::native::OFF_FLAGS + index;
+        let held = crate::native::read::<u8>(previous + offset);
         (previous as *mut u8).add(offset).write(0);
         // Bomb release is a one-shot command; never carry it across a handoff.
         (selected as *mut u8)
             .add(offset)
             .write(if index == 2 { 0 } else { held });
     }
-    let boost = crate::read::<f32>(previous + OFF_BOOST);
+    let boost = crate::native::read::<f32>(previous + OFF_BOOST);
     (previous as *mut f32)
         .byte_add(OFF_BOOST)
         .write_unaligned(1.0);
@@ -229,40 +233,24 @@ unsafe fn transfer_input(previous: usize, selected: usize) {
 unsafe fn handoff(previous: usize, selected: usize) {
     if previous == selected
         || !available(selected)
-        || crate::read::<u8>(selected + crate::OFF_AI_FLAG) == 0
+        || crate::native::read::<u8>(selected + crate::native::OFF_AI_FLAG) == 0
     {
         return;
     }
-    let get_profile: crate::GetProfileFn = std::mem::transmute(crate::GET_PROFILE);
+    let get_profile: crate::native::GetProfileFn = std::mem::transmute(crate::native::GET_PROFILE);
     let profile = get_profile();
-    if !crate::plausible(profile) {
+    if !crate::native::plausible(profile) {
         log::warn!("ALLY switch ignored: profile pointer {profile:#x} is not readable");
         return;
     }
-    let Ok(mut allies) = crate::ALLIES.lock() else {
-        return;
-    };
-    let Some(index) = allies.iter().position(|&ship| ship == selected) else {
-        return;
-    };
     // Preserve the original player's funded ammo before an AI doctrine can change its shell index.
-    let Ok(funding) = crate::AMMO_FUNDING.lock() else {
+    // `prepare_handoff` owns the ALLIES guard across the funding check/record, as before.
+    if !crate::battle::prepare_handoff(previous, selected) {
         return;
-    };
-    let recorded = funding.iter().any(|entry| entry.0 == previous);
-    drop(funding);
-    if !recorded {
-        crate::record_ammo_funding(previous);
     }
     // No mod mutex is held across calls back into native game code.
-    allies[index] = previous;
-    drop(allies);
     if !rebalance_ai_list(previous, selected) {
-        if let Ok(mut allies) = crate::ALLIES.lock() {
-            if let Some(index) = allies.iter().position(|&ship| ship == selected) {
-                allies[index] = selected;
-            }
-        }
+        crate::battle::rollback_handoff(selected);
         return;
     }
 
@@ -270,16 +258,17 @@ unsafe fn handoff(previous: usize, selected: usize) {
     // Both objects belong to this frame's roster; native SetControlled/SetLink retain ownership and
     // maintain link registration. No game-owned allocation is copied or dropped. SetControlled also
     // rebuilds native battle backgrounds. Role 1 must exist on exactly the controlled roster ship.
-    let set_controlled: crate::SetControlledFn = std::mem::transmute(crate::SET_CONTROLLED);
-    let set_link: crate::SetLinkFn = std::mem::transmute(crate::SET_LINK);
+    let set_controlled: crate::native::SetControlledFn =
+        std::mem::transmute(crate::native::SET_CONTROLLED);
+    let set_link: crate::native::SetLinkFn = std::mem::transmute(crate::native::SET_LINK);
     (previous as *mut i32)
-        .byte_add(crate::OFF_MODE_D70)
-        .write_unaligned(crate::ALLY_MODE);
+        .byte_add(crate::native::OFF_MODE_D70)
+        .write_unaligned(crate::battle::ALLY_MODE);
     (selected as *mut i32)
-        .byte_add(crate::OFF_MODE_D70)
+        .byte_add(crate::native::OFF_MODE_D70)
         .write_unaligned(1);
     set_controlled(profile, selected, 0);
-    set_link(crate::CONTROLLED_LINKS, selected);
+    set_link(crate::native::CONTROLLED_LINKS, selected);
     transfer_input(previous, selected);
     // The old player occupies the chosen ally's panel, and max_allies is unchanged.
     crate::ally_panels::invalidate();
@@ -305,26 +294,27 @@ pub unsafe fn tick(ships: &[usize]) {
     if ships.is_empty() {
         crate::ally_panels::invalidate();
     }
-    if pressed == 0 || !ENABLED.load(Ordering::Relaxed) || !crate::ARMED.load(Ordering::Relaxed) {
+    if pressed == 0 || !ENABLED.load(Ordering::Relaxed) || !crate::battle::armed() {
         return;
     }
     let mut foreground_process = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &mut foreground_process);
-    let dt = crate::read::<f32>(FRAME_DT);
+    let dt = crate::native::read::<f32>(FRAME_DT);
     if crate::precombat::is_open()
         || foreground_process != GetCurrentProcessId()
-        || crate::read::<u8>(IN_COMBAT) == 0
+        || crate::native::read::<u8>(IN_COMBAT) == 0
         || !dt.is_finite()
         || dt <= 0.0
-        || crate::read::<usize>(ACTIVE_DIALOG) != 0
+        || crate::native::read::<usize>(ACTIVE_DIALOG) != 0
     {
         return;
     }
-    let previous = crate::read::<usize>(crate::CONTROLLED_LINKS + offset_of!(Link, target));
+    let previous =
+        crate::native::read::<usize>(crate::native::CONTROLLED_LINKS + offset_of!(Link, target));
     if !ships.contains(&previous)
         || !available(previous)
-        || crate::read::<i32>(previous + crate::OFF_MODE_D70) != 1
-        || crate::read::<u8>(previous + crate::OFF_AI_FLAG) != 0
+        || crate::native::read::<i32>(previous + crate::native::OFF_MODE_D70) != 1
+        || crate::native::read::<u8>(previous + crate::native::OFF_AI_FLAG) != 0
     {
         return;
     }
@@ -341,7 +331,8 @@ pub unsafe fn tick(ships: &[usize]) {
             let Some(&ship) = ships.get((current_index + step) % ships.len()) else {
                 return;
             };
-            if available(ship) && crate::read::<u8>(ship + crate::OFF_AI_FLAG) != 0 {
+            if available(ship) && crate::native::read::<u8>(ship + crate::native::OFF_AI_FLAG) != 0
+            {
                 next = Some(ship);
                 break;
             }

@@ -120,7 +120,7 @@ unsafe fn where_is(addr: usize) -> String {
     let path = String::from_utf16_lossy(&buf[..n.min(260)]);
     let name = path.rsplit(['\\', '/']).next().unwrap_or("?");
     let offset = addr - module as usize;
-    if module as usize == crate::IMAGE_BASE {
+    if module as usize == crate::native::IMAGE_BASE {
         format!("{name}+{offset:#x} (Ghidra {addr:#x})")
     } else {
         format!("{name}+{offset:#x}")
@@ -276,7 +276,7 @@ unsafe fn write_dump(info: *const EXCEPTION_POINTERS) {
 // --- megalog watchdog ---
 
 fn watchdog() {
-    use crate::{count, read, BATTLE_RESULT, CLOCK, CREATURES_BEGIN, CREATURES_END, RESERVE, ROSTER_BEGIN, ROSTER_END, SCENE_FLAGS, SCENE_SELECTOR};
+    use crate::native::{count, read, BATTLE_RESULT, CLOCK, CREATURES_BEGIN, CREATURES_END, RESERVE, ROSTER_BEGIN, ROSTER_END, SCENE_FLAGS, SCENE_SELECTOR};
     let mut last = String::new();
     let mut tick = 0u64;
     loop {
@@ -452,7 +452,7 @@ pub unsafe fn snapshot(why: std::fmt::Arguments<'_>) {
     if !debug() {
         return;
     }
-    let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(crate::GET_PROFILE);
+    let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(crate::native::GET_PROFILE);
     let profile = get_profile();
     let here = rd::<usize>(CURRENT_LOCATION).unwrap_or(0);
     let player = rd::<usize>(PLAYER_ESCADRA).unwrap_or(0);
@@ -512,7 +512,7 @@ pub unsafe fn snapshot(why: std::fmt::Arguments<'_>) {
 /// Used before writing to a ship that left the battle: a destroyed ship's object is gone and must not be touched.
 /// Every pointer is checked for readability first.
 pub unsafe fn fleet_has_ship(ship: usize) -> bool {
-    let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(crate::GET_PROFILE);
+    let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(crate::native::GET_PROFILE);
     let profile = get_profile();
     let (Some(begin), Some(end)) = (rd::<usize>(profile + 0x1f8), rd::<usize>(profile + 0x200)) else { return false };
     if begin < 0x10000 || end < begin || (end - begin) / 8 > 256 {
