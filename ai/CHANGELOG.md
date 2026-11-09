@@ -1,5 +1,28 @@
 # hf_ai changelog
 
+## v1.1.0 — ally tick-skip performance lever
+
+- Add `ally_tick_skip` (default `true`) to the tracked preset and the compiled
+  defaults: every other native AI tick of a player-side AI ship is skipped by
+  wrapping the `CALL aiShipDriver` site in the `SomethingAITask` loop
+  (0x14001123a; byte-guarded, fail-closed, no signature assumptions).
+- Targets the measured ally-battle plateau: the stock obstacle scan is
+  quadratic in the number of visible nearby parts and is rebuilt per AI ship
+  per 50 Hz tick, so halving the ally tick count halves the ally share of
+  that work. Enemy ships and the player keep their full rates.
+- Gameplay trade-off (see the README): ally commands run 20 ms stale, and the
+  native per-tick timers (the 6.0 s aircraft timer `+0xcb8`, the 2.0 s Zenith
+  launch cooldown `+0xd60`, the 0.5 s AA launch cooldown `+0xd64`) decrement
+  at half cadence, so ally launch and re-arm pauses double relative to
+  stock. hf_ai's own tactic layer is game-clock based and stays
+  time-correct on both tick rates.
+- hf_perf interaction: `ai_spans` wraps the same `aiShipDriver` call site.
+  hf_ai loads first (mod load order is alphabetical), so with
+  `ally_tick_skip` on, hf_perf drops its `ai_driver` span with a log line;
+  the `ai_scan` spans are unaffected. Set `ally_tick_skip` to `false` for an
+  attribution capture.
+- Cross-build checked only; no in-game validation performed yet.
+
 ## v1.0.2 — robust profiling sink resolution
 
 - The v1.0.1 research build never recorded a span in the 2026-11-08 captures:

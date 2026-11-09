@@ -37,6 +37,7 @@ mod rng;
 mod tactics;
 mod tactics_config;
 mod tactics_math;
+mod tick_skip;
 mod twr_math;
 
 use flares_config::AiFlaresConfig;
@@ -304,6 +305,11 @@ struct Config {
     plane_group_launch_delay_seconds: f32,
     /// Minimum strategic/Shipworks TWR for maneuvers; 0 disables the gate.
     twr_cutoff: f32,
+    /// Skip the native AI tick of player-side AI ships on every other frame (a
+    /// performance lever for ally-heavy battles: halves the ally share of the
+    /// quadratic obstacle scan). Ally launch and re-arm cadence halves with it;
+    /// see `tick_skip`. hf_perf's `ai_driver` span cannot install while this is on.
+    ally_tick_skip: bool,
     logging: LoggingConfig,
     /// The ported qol `ai_flares` (flares burst, sidestep, panic evasion, barrel roll, allies). Enabled by player default:
     /// use it only with qol's `ai_flares.enabled` (and `evade`) turned off.
@@ -325,6 +331,7 @@ impl Default for Config {
             plane_group_per_launch: plane_group_math::DEFAULT_GROUP_SIZE,
             plane_group_launch_delay_seconds: plane_group_math::DEFAULT_DELAY,
             twr_cutoff: 2.0,
+            ally_tick_skip: true,
             logging: LoggingConfig::default(),
             ai_flares: AiFlaresConfig::default(),
             tactics: TacticsConfig::default(),
@@ -442,6 +449,7 @@ unsafe extern "C" fn init() -> bool {
             &mut session, module, config.plane_group_per_launch,
             config.plane_group_launch_delay_seconds,
         )?;
+        tick_skip::prepare(&mut session, module, config.ally_tick_skip)?;
         let boost_wanted = tactics::wants_engine_boost()
             || (with_flares && ai_flares::wants_engine_boost(&config.ai_flares));
         let boost = if boost_wanted {

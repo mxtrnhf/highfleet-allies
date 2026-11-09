@@ -1,4 +1,4 @@
-# hf_ai v1.0.0
+# hf_ai v1.1.0
 
 > **IMPORTANT — UPDATE YOUR `Modloader/config/hf_ai.json`!**
 > When upgrading from before `hf_ai v0.10.11`, replace your existing `Modloader/config/hf_ai.json` with the tracked preset (or delete it so the mod writes fresh defaults). `v0.10.11` trimmed the preset from 80 to 49 total leaf settings, reworked aim dodging across all ships, merged dive settings, and retired curtain sheltering. v0.10.17 renamed the curtain keys, v0.10.18 removed the curtain subsystem, v0.10.19 removed offensive early fire (leaving 39 total leaf settings: 38 gameplay plus `logging.log_panic`), and v0.10.20 changed the default `dive_dwell_s` from 0.5 to 0.3 s. v1.0.0 is the first stable release; it packages that completed 0.10.x line with no further behaviour changes.
@@ -26,6 +26,19 @@ player profile and is not a vanilla/off configuration.
 
 ## Behavior
 
+- **Ally tick-skip (`ally_tick_skip`, default on):** skims performance in
+  ally-heavy battles by skipping the native AI tick of player-side AI ships
+  (wingmen, strike-group ships, and your flagship while you fly another ship)
+  on every other 20 ms frame. The stock per-ship obstacle scan is quadratic
+  in the number of visible nearby ship parts and is rebuilt per AI ship per
+  tick, so halving the ally tick count halves the ally share of that work;
+  enemies and the player keep their full rates. Trade-offs: ally commands run
+  20 ms stale, and the native per-tick launch/re-arm timers (6.0 s aircraft,
+  2.0 s Zenith, 0.5 s AA) decrement at half cadence, so ally launch and
+  re-arm pauses double relative to stock. hf_ai's own aim dodging, dives and
+  flares are game-clock based and stay time-correct. Keep it `false` while
+  taking an hf_perf attribution capture: hf_perf's `ai_driver` span needs the
+  same call site and hf_ai loads first.
 - **Universal aim dodging (`tactics.aim_*`):** during per-ship staggered awareness
   windows, enemy and allied AI ships check all hostile shooters (both the player
   and AI ships) and slip off the closest active aim ray (`aim_chance` roll per
