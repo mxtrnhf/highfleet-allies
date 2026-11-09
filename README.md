@@ -10,11 +10,11 @@ Two mods for **HighFleet (Steam 1.163)**, built on [logdot's Highfleet-Modloader
 
 Both are optional, independent DLLs. Everything is reverse-engineered, so **Steam 1.163 only**; they refuse to start on other versions. Back up your `Saves` folder first.
 
-> **PACK v1.0.0 — FIRST STABLE RELEASE**
+> **PACK v1.0.3 — IMPROVED DEBUG OVERLAY**
 > **From v0.15.0 or any later development build:** replace both `Modloader/config/ally.json` and `Modloader/config/hf_ai.json` with the v1.0.0 presets. In `ally.json`, `enabled` is the only master switch; `auto_retreat` and `enemy_all_at_once` are retired; `spawn_ally`, `ally_toggle`, `ally_reticles`, `max_enemy_ships`, `plane_bombers`, `marker_seam`, `marker_delay_ms` and the retired logging keys are ignored. In `hf_ai.json`, the retired curtain keys (`curtain_*` / `launch_flares_*`) and early-fire keys (`aim_fire_*`) do nothing, and `dive_dwell_s` defaults to `0.3`. Ally radio lines follow the game language (`Media/Snd/RADIO` in Russian, `Media/Snd/RADIO_ENG` in English); custom voice paths and custom audio are planned for a future version.
 > **From v0.14.13 or older:** replace both configs; the v1.0.0 presets include the earlier grouped/HEX/logging cleanups.
 
-Release pack **v1.0.0** contains **hf_ally v1.0.0**, **hf_ai v1.0.0** and the bundled QoL build ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). The current build was validated in game on 2026-11-08 and confirmed working.
+Release pack **v1.0.3** contains **hf_ally v1.0.3**, **hf_ai v1.0.0** and the bundled QoL build ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). The improved debug overlay was confirmed working in game on 2026-11-09.
 
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).
@@ -60,12 +60,12 @@ Rust nightly/stable ≥ 1.88 with `cargo-xwin` (cross-compiles to Windows MSVC f
     cd ai   && cargo xwin build --release --target x86_64-pc-windows-msvc
 
 Logging settings are grouped under `"logging"` in each mod's JSON. In `ally.json`, set `"logging": { "debug_log": true }` for a verbose megalog, watchdog and crash dump (`Modloader/logs/hf_ally_megalog_*.log`, `hf_ally_crash_*.dmp`; dumps may contain paths and campaign data, delete them after sending). `debug_log` is an on/off switch and defaults to `false`; the legacy `megalog` cargo feature does not force it on. `logging.gui_inspect` and `logging.log_creatures` remain available (both default false), as does `hf_ai.json`'s `logging.log_panic`. Old top-level forms of the kept keys remain readable; explicit nested settings take precedence. `max_lines`, `log_precombat`, `probe_lines`, `log_colors` and `dead_node` are retired and ignored. See [retired diagnostics](docs/retired-diagnostics.md) and [all ally settings](docs/ally-config.md). Ship/battle CSV capture, F9 capture markers and replay-analysis tools have been removed, including the `telemetry` cargo feature.
-Build and publish releases through [GitHub Actions](.github/workflows/release.yml): run **Build and publish release** with the pack version. It builds all three DLLs on Windows, packages the tracked presets, and publishes the ZIP/checksum to GitHub Releases. For local packaging only: `python3 tools/package_release.py --version 1.0.0 --validation "Maintainer in-game validation passed (2026-11-08)." --output ../release_packs`.
+Build and publish releases through [GitHub Actions](.github/workflows/release.yml): run **Build and publish release** with the pack version. It builds all three DLLs on Windows, packages the tracked presets, and publishes the ZIP to GitHub Releases. No separate pack checksum is published. For local packaging only: `python3 tools/package_release.py --version 1.0.3 --validation "Debug overlay confirmed working in game (2026-11-09)." --output ../release_packs`.
 
 Automated tests have been removed. Build success does not validate hooks or gameplay; validate those in game.
 
 ## Releases and versioning
-Before 1.0, `hf_ally` uses `0.MINOR.PATCH`: **PATCH** for small fixes within a feature line, **MINOR** for a new feature line or a notable public behavior/config change. The release pack has its own `vX.Y.Z` tag and normally mirrors the ally version; `hf_ai` and QoL keep independent component versions. The GitHub Actions release workflow takes the pack version as input, builds the three DLLs on Windows, stamps `@PACK_VERSION@`, `@ALLY_VERSION@` and `@AI_VERSION@` into the notes/README, and publishes the ZIP plus SHA256. See `manifest.json` in a pack for the exact component versions and source commit.
+Before 1.0, `hf_ally` uses `0.MINOR.PATCH`: **PATCH** for small fixes within a feature line, **MINOR** for a new feature line or a notable public behavior/config change. The release pack has its own `vX.Y.Z` tag and normally mirrors the ally version; `hf_ai` and QoL keep independent component versions. The GitHub Actions release workflow takes the pack version as input, builds the three DLLs on Windows, stamps `@PACK_VERSION@`, `@ALLY_VERSION@` and `@AI_VERSION@` into the notes/README, and publishes the ZIP. See `manifest.json` in a pack for the exact component versions and source commit.
 
 ## How it works / research notes
 The game's addresses, struct layouts and findings are in a separate repo: **[mxtrnhf/hf_notes](https://github.com/mxtrnhf/hf_notes)** (Ghidra notes on 1.163, battle AI, missiles, planes, pre-combat screen). Source comments cite these notes by file name.

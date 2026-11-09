@@ -165,7 +165,7 @@ Relevant code:
 
 ## Validation status
 
-* v1.0.3 cross-build succeeds; hook/gameplay validation in game has not been performed.
+* v1.0.3 confirmed working in game by the maintainer on 2026-11-09.
 * v1.0.3 default and legacy `megalog` feature builds pass with `--locked`; no dependencies
   updated. Cross-target Clippy completes with 22 existing style/documentation warnings;
   no blanket suppressions or unrelated cleanup. Scoped rustfmt checks pass for the solver,

@@ -15,7 +15,7 @@ import zipfile
 REPO = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-pc-windows-msvc"
 GUIDES = (
-    "ally-config.md", "debug-overlay.md", "hf-ai-config-reference.md", "hf-ai-tuning-guide.md",
+    "ally-config.md", "debug-overlay.md", "shell-launch-speed.md", "hf-ai-config-reference.md", "hf-ai-tuning-guide.md",
     "qol-guide.md", "player-defaults.md", "retired-diagnostics.md", "retired-settings.md",
     "ship-bombers.md", "ship-switching.md",
 )
@@ -119,10 +119,7 @@ def main():
             assert handle.testzip() is None
         stage.replace(pack)
         pending.replace(archive)
-    checksum = digest(archive)
-    archive.with_suffix(".zip.sha256").write_text(f"{checksum}  {archive.name}\n")
     print(archive)
-    print("SHA256:", checksum)
 
 
 if __name__ == "__main__":
