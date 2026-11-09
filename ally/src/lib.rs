@@ -36,6 +36,7 @@ mod ally_hud;
 mod ally_panels;
 mod ship_switch;
 mod ally_reticles;
+mod battle_diagnostics;
 mod bomber;
 mod bomber_math;
 mod config;
@@ -49,6 +50,7 @@ mod missile_guard;
 mod native_layout;
 mod plane_loadouts;
 mod precombat;
+mod sound;
 
 use std::{
     ffi::{c_char, CStr},
@@ -173,33 +175,12 @@ static ARMED: AtomicBool = AtomicBool::new(false);
 fn flush_log() {
     log::logger().flush();
 }
-/// The ally being followed in the log (0 = none), the game time of its next track line and of the last one.
-static TRACK_ALLY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-static TRACK_NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static TRACK_END: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// The player's deploy call site (`0x1402d6f7a` + 5) and the scenario state in which a battle starts.
 const PLAYER_DEPLOY_CALLER_RVA: usize = 0x2d6f7f;
 const BATTLE_START_SELECTOR: u32 = 1;
 const OFF_POS_X: usize = offset_of!(Creature, bounds_center_x); // f32 creature centre
 const OFF_POS_Y: usize = offset_of!(Creature, bounds_center_y);
-const OFF_WAYPOINT_X: usize = offset_of!(Creature, waypoint_x); // f32 steering waypoint written by the AI tick
-const OFF_WAYPOINT_Y: usize = offset_of!(Creature, waypoint_y);
-// --- probe fields (all [code]/guess, see the findings note) ---
-const OFF_RETARGET: usize = offset_of!(Creature, retarget_timer); // f32 seconds until the next target re-roll
 const OFF_FLAGS: usize = offset_of!(Creature, trigger_gun_group_0); // 5 control bytes: group 0, group 1, bombs, spare, flares
-const OFF_LAUNCH_CD: usize = 0xd60; // f32 ship launch cooldown
-const OFF_LAUNCH_COUNT: usize = 0xc98; // i32 per-ship launch counter
-const OFF_ZENITH: (usize, usize) = (
-    offset_of!(Creature, anti_ship_launchers),
-    offset_of!(Creature, anti_ship_launchers) + size_of::<usize>(),
-); // anti-ship launcher list
-const OFF_GUNS: (usize, usize) = (
-    offset_of!(Creature, ammo_consumers),
-    offset_of!(Creature, ammo_consumers) + size_of::<usize>(),
-); // ammo-consumer list, the guns and launchers that draw rounds
-const OFF_PART_COOLDOWN: usize = 0x848; // f32; highfleet-rs models this word as Body::mdl_covered
-const OFF_PART_RESERVE: usize = offset_of!(Body, weapon_ammo_amount); // i32
-const OFF_PART_LOADED: usize = offset_of!(Body, weapon_ammo_loaded); // f32
 /// Game time (f64 bits) at which the player's ship was first seen in this battle; 0 = not yet.
 static HANDOVER: AtomicBool = AtomicBool::new(false);
 /// The retreat point (x, y as two f32 packed in a u64) the game keeps at 0x147fc7638; zeroed when a ship uses it.
@@ -221,86 +202,8 @@ static LAST_SIG: Mutex<(usize, u8, u32, u32, usize)> = Mutex::new((0, 0, 0, 0, 0
 const SCENE_SELECTOR: usize = 0x1_47fc_6fc4; // u32
 const SCENE_FLAGS: [usize; 3] = [0x1_47fc_6fd0, 0x1_47fc_6fda, 0x1_43a1_1902];
 
-// --- sounds: radio lines (v0.10.0) and pre-combat button clicks ---
-// `playSFXSound_` (0x1402e30e0) is what the stock battle radio (`PlayRadioSounds_`, 0x1402d5910) ends in; the call
-// below repeats its last call exactly: kind 0xb, the sound resource name from `Media/Snd/sound.res`, the global GUI
-// node, a base volume, then the stack arguments 1.0, a status float it writes into, and zeros. The stock radio also
-// appends `_eng` to its names when the game is in English, so `play_radio` does the same (v0.14.26).
-const PLAY_SFX: usize = 0x1_402e_30e0;
-const PLAY_SFX_PROLOGUE: [u8; 15] = [0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18];
-/// Kind 0xb: the stock radio and the ClickFunc UI sounds all play through it.
-const SFX_KIND_STOCK: i32 = 0xb;
-type PlaySfxFn = unsafe extern "C" fn(i32, *const u8, usize, f32, f32, *mut f32, u64, u8, i32, u8, u8, f32, u8) -> f32;
-/// `coreLanguage`: 1 = Russian, 2 = English. The options language button writes it live (`ClickFunc`
-/// 0x140131af8), and the stock radio appends `_eng` exactly when it is 2 (`String_AppendEngSuffix`
-/// 0x1401b20f0). Read it per line so a live language change applies without a restart.
-const CORE_LANGUAGE: usize = 0x1_403c_0e1c;
-const LANGUAGE_ENGLISH: i32 = 2;
-/// `sound.res` maps the plain names to `Media/Snd/RADIO` (Russian) and the `_eng` names to
-/// `Media/Snd/RADIO_ENG` (English); every line the mod plays has an `_eng` variant.
-const ENG_SUFFIX: &[u8] = b"_eng";
-/// Ally radio lines: the retreat key, an ally joining the fight, an ally destroyed.
-static RADIO_SOUNDS: AtomicBool = AtomicBool::new(false);
-/// Pre-combat ALLY and plane-loadout button clicks (independent of `ally_sounds`).
-static BUTTON_SOUNDS: AtomicBool = AtomicBool::new(false);
-/// The game keeps the pointer it is given (sound object +0x88) and, every frame, multiplies the sound's volume by
-/// the float behind it (the stock radio stores the call's result, 1.0, there): 1.0f here, or the sound is silent.
-static SFX_STATUS: [AtomicU32; 8] = [const { AtomicU32::new(0x3f80_0000) }; 8];
-static SFX_NEXT: AtomicU32 = AtomicU32::new(0);
 /// Allies already announced as destroyed (pointer reuse: entries are dropped when the ship leaves the roster).
 static ANNOUNCED_LOST: Mutex<Vec<usize>> = Mutex::new(Vec::new());
-
-const SND_DANGER: &[u8] = b"mission_danger_01\0";
-const SND_LOST: [&[u8]; 2] = [b"radio_stall_01\0", b"radio_lost_energy_01\0"];
-const SND_RETREATED: [&[u8]; 3] = [b"mission_end_01\0", b"mission_end_02\0", b"mission_end_03\0"];
-const SND_JOIN: [&[u8]; 3] = [b"mission_start_01\0", b"mission_start_02\0", b"mission_start_03\0"];
-/// Stock `Media/Snd/button_01.wav`, named `button_01` in `sound.res`. The game itself plays it as a UI click in
-/// `Map_BuildMissileMarkers` (`0x1401c4ee0`), with kind 0xb and base volume 30.0.
-const SND_BUTTON: &[u8] = b"button_01\0";
-const BUTTON_VOLUME: f32 = 30.0;
-
-/// Plays one sound by its `sound.res` name (NUL-terminated); `what` is for the log.
-unsafe fn play_sfx(name: &[u8], volume: f32, what: &str) {
-    let node: usize = read(GUI_ROOT);
-    if node == 0 {
-        log::info!("ALLY sound ({what}) skipped: no global node yet");
-        return;
-    }
-    let slot = &SFX_STATUS[SFX_NEXT.fetch_add(1, Ordering::Relaxed) as usize % SFX_STATUS.len()];
-    slot.store(0x3f80_0000, Ordering::Relaxed);
-    let play: PlaySfxFn = std::mem::transmute(PLAY_SFX);
-    let result = play(SFX_KIND_STOCK, name.as_ptr(), node, volume, 1.0, slot.as_ptr() as *mut f32, 0, 0, 0, 0, 0, 0.0, 1);
-    log::info!("ALLY sound ({what}) {} -> {result}", String::from_utf8_lossy(&name[..name.len() - 1]));
-}
-
-/// Appends `_eng` to a stock radio name in English, matching `String_AppendEngSuffix` and the
-/// `sound.res` entries that point at `Media/Snd/RADIO_ENG`. Returns a NUL-terminated name.
-unsafe fn localized_radio_name(name: &[u8]) -> Vec<u8> {
-    let base = name.strip_suffix(&[0]).unwrap_or(name);
-    let mut localized = Vec::with_capacity(base.len() + ENG_SUFFIX.len() + 1);
-    localized.extend_from_slice(base);
-    if read::<i32>(CORE_LANGUAGE) == LANGUAGE_ENGLISH {
-        localized.extend_from_slice(ENG_SUFFIX);
-    }
-    localized.push(0);
-    localized
-}
-
-/// Plays a radio sound by its `sound.res` name, in the player's language.
-unsafe fn play_radio(name: &[u8], what: &str) {
-    if !RADIO_SOUNDS.load(Ordering::Relaxed) {
-        return;
-    }
-    let localized = localized_radio_name(name);
-    play_sfx(&localized, 60.0, what);
-}
-
-/// Plays the stock UI click for one of our pre-combat buttons.
-unsafe fn play_button_sound(what: &str) {
-    if BUTTON_SOUNDS.load(Ordering::Relaxed) {
-        play_sfx(SND_BUTTON, BUTTON_VOLUME, what);
-    }
-}
 
 /// A cheap pick in 0..n (no rand crate): the clock's nanoseconds.
 fn pick(n: usize) -> usize {
@@ -340,7 +243,7 @@ unsafe fn ally_sound_events(ships: &[usize]) {
             }
             // retreated alive: flying out (state 2) when it vanished, or extracted with the flagship
             if SUM_FLAGS.load(Ordering::Relaxed) & F_EXTRACTED != 0 || last_state == 2 {
-                play_radio(SND_RETREATED[pick(SND_RETREATED.len())], "ally retreated");
+                sound::retreated();
             }
             !extracted && enemies != 0
         };
@@ -354,7 +257,7 @@ unsafe fn ally_sound_events(ships: &[usize]) {
         }
         log::info!("ALLY lost: c={p:#x} destroyed (last state {last_state}, in roster {here}, enemies {enemies})");
         flush_log();
-        play_radio(SND_LOST[pick(SND_LOST.len())], "ally destroyed");
+        sound::lost();
     }
     allies.retain(|p| !gone.contains(p));
     last.retain(|e| ships.contains(&e.0));
@@ -440,15 +343,9 @@ unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
         restore_orders("next battle", true);
         ALLY_DONE.store(false, Ordering::Relaxed);
         PLAYER_SEEN.store(0, Ordering::Relaxed);
-        TRACK_ALLY.store(0, Ordering::Relaxed);
+        battle_diagnostics::reset();
         bomber::reset();
         ally_panels::invalidate();
-        // Probe pointers belong to one battle only. A restart can reuse a freed ship's
-        // address for a GUI object whose active field also happens to be nonzero.
-        if let (Ok(mut ally_probe), Ok(mut enemy_probe)) = (PROBE_ALLY.lock(), PROBE_ENEMY.lock()) {
-            *ally_probe = Probe::default();
-            *enemy_probe = Probe::default();
-        }
         SPAWN_LINES.store(0, Ordering::Relaxed);
         PRIZE_LINES.store(0, Ordering::Relaxed);
         let armed = precombat::take_seen();
@@ -565,252 +462,6 @@ type SetControlledFn = unsafe extern "C" fn(usize, usize, u32) -> usize;
 type SetLinkFn = unsafe extern "C" fn(usize, usize);
 type ExtractFn = unsafe extern "C" fn(usize, u32);
 type GetProfileFn = unsafe extern "C" fn() -> usize;
-
-/// Per-ship activity counters for the ally/enemy comparison.
-#[derive(Default)]
-struct Probe {
-    who: usize,
-    t0: f64,
-    last_pos: (f32, f32),
-    last_t: f64,
-    last_zenith: f32,
-    last_guns: f32,
-    launches: u32,
-    shots: u32,
-}
-
-static PROBE_ALLY: Mutex<Probe> = Mutex::new(Probe { who: 0, t0: 0.0, last_pos: (0.0, 0.0), last_t: 0.0, last_zenith: 0.0, last_guns: 0.0, launches: 0, shots: 0 });
-static PROBE_ENEMY: Mutex<Probe> = Mutex::new(Probe { who: 0, t0: 0.0, last_pos: (0.0, 0.0), last_t: 0.0, last_zenith: 0.0, last_guns: 0.0, launches: 0, shots: 0 });
-
-/// (entries, sum of loaded rounds, sum of reserve rounds, entries off cooldown) of a part list.
-unsafe fn part_list(ship: usize, list: (usize, usize)) -> (usize, f32, i64, usize) {
-    let (b, e): (usize, usize) = (read(ship + list.0), read(ship + list.1));
-    if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
-        return (0, 0.0, 0, 0);
-    }
-    let (mut n, mut loaded, mut reserve, mut ready) = (0, 0.0f32, 0i64, 0);
-    for a in (b..e).step_by(LINK_STRIDE) {
-        let part: usize = read(a + 8);
-        if part == 0 {
-            continue;
-        }
-        n += 1;
-        loaded += read::<f32>(part + OFF_PART_LOADED);
-        reserve += read::<i32>(part + OFF_PART_RESERVE) as i64;
-        if read::<f32>(part + OFF_PART_COOLDOWN) <= 0.0 {
-            ready += 1;
-        }
-    }
-    (n, loaded, reserve, ready)
-}
-
-impl Probe {
-    fn reset(&mut self, who: usize, now: f64) {
-        *self = Probe { who, t0: now, last_t: now, ..Default::default() };
-        if who != 0 {
-            unsafe {
-                self.last_pos = (read(who + OFF_POS_X), read(who + OFF_POS_Y));
-                self.last_zenith = part_list(who, OFF_ZENITH).1;
-                self.last_guns = part_list(who, OFF_GUNS).1;
-            }
-        }
-    }
-
-    /// Called every frame: counts a launch whenever the launchers' loaded total drops, a shot
-    /// whenever the weapons' loaded total drops (a reload raises it again, which is ignored).
-    unsafe fn count(&mut self) {
-        if self.who == 0 {
-            return;
-        }
-        let zenith = part_list(self.who, OFF_ZENITH).1;
-        let guns = part_list(self.who, OFF_GUNS).1;
-        if zenith < self.last_zenith - 0.5 {
-            self.launches += 1;
-        }
-        if guns < self.last_guns - 0.5 {
-            self.shots += (self.last_guns - guns).round() as u32;
-        }
-        self.last_zenith = zenith;
-        self.last_guns = guns;
-    }
-
-    /// One text line for the log.
-    unsafe fn line(&mut self, tag: &str, now: f64, creatures: &ProbeCreatures) -> String {
-        let ship = self.who;
-        let pos = (read::<f32>(ship + OFF_POS_X), read::<f32>(ship + OFF_POS_Y));
-        let dt = (now - self.last_t).max(0.001) as f32;
-        let speed = ((pos.0 - self.last_pos.0).powi(2) + (pos.1 - self.last_pos.1).powi(2)).sqrt() / dt;
-        self.last_pos = pos;
-        self.last_t = now;
-        let target: usize = read(ship + OFF_TARGET);
-        // A target link alone does not establish a live creature. Non-creature or
-        // stale targets have an unknown distance; never follow them for logging.
-        let target_dist = if probe_ship_in_battle(target, creatures) {
-            ((pos.0 - read::<f32>(target + OFF_POS_X)).powi(2) + (pos.1 - read::<f32>(target + OFF_POS_Y)).powi(2)).sqrt()
-        } else {
-            -1.0
-        };
-        let (zn, zl, zr, zready) = part_list(ship, OFF_ZENITH);
-        let (gn, gl, gr, gready) = part_list(ship, OFF_GUNS);
-        let flags: [u8; 5] = read(ship + OFF_FLAGS);
-        format!(
-            "ALLY probe {tag} t={:.0} c={ship:#x} pos=({:.0},{:.0}) speed={speed:.0} state={} mode={} target={target:#x} target_dist={target_dist:.0} aggr={:.2} retarget={:.1} \
-             flags={flags:?} d60={:.1} launch_cnt={} | zenith n={zn} loaded={zl:.0} reserve={zr} ready={zready} launches={} | guns n={gn} loaded={gl:.0} reserve={gr} ready={gready} shots={}",
-            now - self.t0,
-            pos.0,
-            pos.1,
-            read::<i32>(ship + OFF_STATE),
-            read::<i32>(ship + OFF_MODE_D70),
-            read::<f32>(ship + OFF_AGGRESSION),
-            read::<f32>(ship + OFF_RETARGET),
-            read::<f32>(ship + OFF_LAUNCH_CD),
-            read::<i32>(ship + OFF_LAUNCH_COUNT),
-            self.launches,
-            self.shots,
-        )
-    }
-}
-
-/// Current creature identities for one diagnostic callback. Never retained across ticks.
-/// An unreadable or malformed list is not evidence that any cached object is alive.
-struct ProbeCreatures {
-    begin: usize,
-    end: usize,
-}
-
-impl ProbeCreatures {
-    /// # Safety
-    /// The validated native span must remain alive and unchanged on the game thread. Only
-    /// scalar pointer values are borrowed; callers must establish membership before following one.
-    unsafe fn iter(&self) -> impl Iterator<Item = usize> + '_ {
-        (self.begin..self.end).step_by(LINK_STRIDE).map(|entry| {
-            // SAFETY: construction checked every page of the bounded list, and the caller
-            // guarantees its lifetime for this callback. This does not copy a native Link.
-            unsafe { read::<usize>(entry + 8) }
-        })
-    }
-}
-
-/// Validate a bounded, callback-local view of the current native creature list.
-///
-/// # Safety
-/// Call only from the battle hook on the game thread, while the native creature
-/// list and its objects cannot be removed concurrently. No native ownership is taken.
-unsafe fn probe_creatures() -> Option<ProbeCreatures> {
-    let (Some(begin), Some(end)) = (diag::rd::<usize>(CREATURES_BEGIN), diag::rd::<usize>(CREATURES_END)) else {
-        return None;
-    };
-    if begin < 0x10000 || end < begin {
-        return None;
-    }
-    let list_bytes = end - begin;
-    if !list_bytes.is_multiple_of(LINK_STRIDE) || list_bytes / LINK_STRIDE > CREATURE_LIST_LIMIT {
-        return None;
-    }
-    // SAFETY: the header has been range/stride/cap checked above. This is the game-thread
-    // battle callback, with no intervening native mutations during diagnostic collection.
-    if !diag::readable_span(begin, list_bytes) {
-        return None;
-    }
-    Some(ProbeCreatures { begin, end })
-}
-
-/// Validate membership before inspecting any cached pointer; readable memory is not identity.
-///
-/// # Safety
-/// `creatures` must be this callback's validated native list view, on the game thread,
-/// with no intervening native operation that can destroy or replace its objects.
-unsafe fn probe_ship_in_battle(ship: usize, creatures: &ProbeCreatures) -> bool {
-    if !plausible(ship) || !creatures.iter().any(|current| current == ship) {
-        return false;
-    }
-    diag::rd::<u8>(ship + OFF_CODE).is_some_and(|class| class & 0x2f == 0x2f)
-        && diag::rd::<i32>(ship + OFF_ACTIVE).is_some_and(|active| active != 0)
-        && diag::rd::<i32>(ship + OFF_STATE).is_some_and(|state| !matches!(state, 6 | 7))
-}
-
-/// The enemy nearest to `from`: side below zero, in the level.
-///
-/// # Safety
-/// `from` must be a current creature validated on the game thread by the caller.
-unsafe fn nearest_enemy(from: usize, creatures: &ProbeCreatures) -> usize {
-    let (fx, fy) = (read::<f32>(from + OFF_POS_X), read::<f32>(from + OFF_POS_Y));
-    let mut best = (usize::MAX as f32, 0usize);
-    for p in creatures.iter() {
-        if !plausible(p)
-            || !diag::rd::<u8>(p + OFF_CODE).is_some_and(|class| class & 0x2f == 0x2f)
-            || !diag::rd::<i32>(p + OFF_ACTIVE).is_some_and(|active| active != 0)
-            || !diag::rd::<i32>(p + OFF_STATE).is_some_and(|state| !matches!(state, 6 | 7))
-            || !diag::rd::<f32>(p + OFF_SIDE).is_some_and(|side| side < 0.0)
-        {
-            continue;
-        }
-        let d = (read::<f32>(p + OFF_POS_X) - fx).powi(2) + (read::<f32>(p + OFF_POS_Y) - fy).powi(2);
-        if d < best.0 {
-            best = (d, p);
-        }
-    }
-    best.1
-}
-
-/// While an ally is being tracked, one `ALLY track` line per game second for 60 s: where it is, where it
-/// wants to go, what it targets, and where the player is.
-unsafe fn track_ally(ships: &[usize]) {
-    let ally = TRACK_ALLY.load(Ordering::Relaxed);
-    if ally == 0 || !diag::debug() {
-        return;
-    }
-    let now = read::<f64>(CLOCK);
-    if !ships.contains(&ally) || now > f64::from_bits(TRACK_END.load(Ordering::Relaxed)) {
-        log::info!("ALLY track ended (still in roster: {})", ships.contains(&ally));
-        TRACK_ALLY.store(0, Ordering::Relaxed);
-        return;
-    }
-    let Some(creatures) = probe_creatures() else {
-        return;
-    };
-    // every frame: count launches and shots of the ally and of its nearest enemy
-    if !probe_ship_in_battle(ally, &creatures) {
-        return;
-    }
-    if let (Ok(mut a), Ok(mut e)) = (PROBE_ALLY.lock(), PROBE_ENEMY.lock()) {
-        if a.who != ally {
-            a.reset(ally, now);
-            e.reset(0, now);
-        }
-        // Check membership first: never read an old enemy's fields to decide
-        // whether that pointer still belongs to an enemy ship.
-        if !probe_ship_in_battle(e.who, &creatures) || !diag::rd::<f32>(e.who + OFF_SIDE).is_some_and(|side| side < 0.0) {
-            let enemy = nearest_enemy(ally, &creatures);
-            e.reset(enemy, now);
-        }
-        a.count();
-        e.count();
-        if now >= f64::from_bits(TRACK_NEXT.load(Ordering::Relaxed)) {
-            log::info!("{}", a.line("ally ", now, &creatures));
-            if e.who != 0 {
-                log::info!("{}", e.line("enemy", now, &creatures));
-            }
-        }
-    }
-    if now < f64::from_bits(TRACK_NEXT.load(Ordering::Relaxed)) {
-        return;
-    }
-    TRACK_NEXT.store((now + 1.0).to_bits(), Ordering::Relaxed);
-    let player = ships.iter().copied().find(|&p| read::<i32>(p + OFF_MODE_D70) == 1);
-    let (px, py) = player.map_or((0.0, 0.0), |p| (read::<f32>(p + OFF_POS_X), read::<f32>(p + OFF_POS_Y)));
-    let (ax, ay) = (read::<f32>(ally + OFF_POS_X), read::<f32>(ally + OFF_POS_Y));
-    log::info!(
-        "ALLY track t={now:.1} ally=({ax:.0},{ay:.0}) want=({:.0},{:.0}) player=({px:.0},{py:.0}) dist={:.0} state={} target={:#x} ai_flag={} mode={}",
-        read::<f32>(ally + OFF_WAYPOINT_X),
-        read::<f32>(ally + OFF_WAYPOINT_Y),
-        ((ax - px).powi(2) + (ay - py).powi(2)).sqrt(),
-        read::<i32>(ally + OFF_STATE),
-        read::<usize>(ally + OFF_TARGET),
-        read::<u8>(ally + OFF_AI_FLAG),
-        read::<i32>(ally + OFF_MODE_D70),
-    );
-}
 
 static USED_MASK: AtomicU32 = AtomicU32::new(0);
 static MAX_ALLIES: AtomicU32 = AtomicU32::new(1);
@@ -1112,7 +763,7 @@ unsafe fn fuel_retreat(allies: &[usize]) {
                 "ALLY fuel low: c={ally:#x} combat fuel {fuel:.1} of capacity {basis:.1} = {now:.1}% <= {percent}%, leaving"
             );
             order_retreat(ally, "fuel");
-            play_radio(SND_DANGER, "fuel retreat");
+            sound::danger("fuel retreat");
         }
     }
 }
@@ -1154,7 +805,7 @@ unsafe fn retreat_logic(ships: &[usize]) {
                 }
             }
             if ordered {
-                play_radio(SND_DANGER, "retreat key");
+                sound::danger("retreat key");
             }
         } else if !down {
             KEY_WAS_DOWN.store(false, Ordering::Relaxed);
@@ -1403,7 +1054,7 @@ unsafe extern "C" fn on_battle_tick() {
         }
         return;
     }
-    track_ally(&ships);
+    battle_diagnostics::tick(&ships);
     retreat_logic(&ships);
     // A manual handoff can introduce a new AI ally even after the reserve is exhausted.
     if AMMO_ON.load(Ordering::Relaxed) {
@@ -1564,16 +1215,13 @@ unsafe extern "C" fn on_battle_tick() {
     if let Ok(mut allies) = ALLIES.lock() {
         allies.push(ally);
     }
-    play_radio(SND_JOIN[pick(SND_JOIN.len())], "ally joins");
+    sound::joined();
     if SUM_SPAWNED.fetch_add(1, Ordering::Relaxed) == 0 {
-        TRACK_ALLY.store(ally, Ordering::Relaxed);
+        battle_diagnostics::start_tracking(ally);
         ALLY_PTR.store(ally, Ordering::Relaxed);
-        TRACK_NEXT.store(0, Ordering::Relaxed);
-        TRACK_END.store((read::<f64>(CLOCK) + 60.0).to_bits(), Ordering::Relaxed);
     }
     SUM_FLAGS.fetch_or(F_SPAWNED, Ordering::Relaxed);
-    let (zn, _, _, _) = part_list(ally, OFF_ZENITH);
-    let (gn, _, _, _) = part_list(ally, OFF_GUNS);
+    let (zn, gn) = battle_diagnostics::loadout_counts(ally);
     log::info!("ALLY loadout (ship {slot}): zenith launchers {zn}, guns {gn}");
     log::info!(
         "ALLY ready c={ally:#x} side={} ai_flag={} mode_d70={} state={} aggr={}",
@@ -1673,12 +1321,8 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         ));
     }
 
-    let found = std::slice::from_raw_parts(PLAY_SFX as *const u8, PLAY_SFX_PROLOGUE.len());
-    if found == PLAY_SFX_PROLOGUE {
-        RADIO_SOUNDS.store(config.ally_sounds, Ordering::Relaxed);
-        BUTTON_SOUNDS.store(true, Ordering::Relaxed);
-    } else {
-        log::warn!("hf_ally: playSFXSound_ bytes differ ({found:02x?}), ally and button sounds off");
+    if sound::verify() {
+        sound::configure(config.ally_sounds, true);
     }
 
     let mut session = PatchSession::new();

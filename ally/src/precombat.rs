@@ -15,9 +15,10 @@ use std::{
 use crate::diag;
 use crate::native_layout::{Body, Gui, Link, Node};
 use crate::plane_loadouts;
+use crate::sound;
 use crate::{
-    emit_summary, now_ms, plausible, play_button_sound, read, restore_orders, scene, GUI_ROOT,
-    IMAGE_BASE, OFF_ACTIVE, SUM_LAST,
+    emit_summary, now_ms, plausible, read, restore_orders, scene, GUI_ROOT, IMAGE_BASE, OFF_ACTIVE,
+    SUM_LAST,
 };
 
 /// Stores the configured slot-1 label the way the native render seam expects it: printable
@@ -1859,7 +1860,7 @@ pub(super) unsafe extern "C" fn on_click_pre(
             if let Some(ship) = ship {
                 let next = plane_loadouts::next_choice(ship, craft);
                 plane_loadouts::set_choice(ship, craft, next);
-                play_button_sound("plane loadout button");
+                sound::button("plane loadout button");
                 // the state changed: retarget the button's existing sprite (no new Sprite per click)
                 if !paint_loadout(gui as *mut u8, ship, craft) {
                     set_gui_active(gui, false);
@@ -1894,7 +1895,7 @@ pub(super) unsafe extern "C" fn on_click_pre(
         if !paint_toggle(gui as *mut u8, slot) {
             set_gui_active(gui, false);
         }
-        play_button_sound("ally toggle button");
+        sound::button("ally toggle button");
         toggle_line(format!(
             "ALLY toggle clicked: ship {slot} {}",
             if mask & (1 << slot) != 0 { "ON" } else { "OFF" }
