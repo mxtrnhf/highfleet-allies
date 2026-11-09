@@ -311,7 +311,7 @@ pub unsafe fn tick(ships: &[usize]) {
     let mut foreground_process = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &mut foreground_process);
     let dt = crate::read::<f32>(FRAME_DT);
-    if crate::PRECOMBAT_LIVE.load(Ordering::Relaxed)
+    if crate::precombat::is_open()
         || foreground_process != GetCurrentProcessId()
         || crate::read::<u8>(IN_COMBAT) == 0
         || !dt.is_finite()
