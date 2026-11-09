@@ -34,7 +34,8 @@
     "enable": false,
     "circles": [250.0, 500.0, 1000.0],
     "ai_waypoint": true,
-    "prediction_marker": false
+    "prediction_marker": false,
+    "pointer_length": 300.0
   },
   "intercept_ignore_oids": [
     "MDL_MISSILE_03"

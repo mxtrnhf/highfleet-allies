@@ -146,6 +146,9 @@ pub unsafe fn install(
     ALLY_COLOR.store(argb & 0x00ff_ffff, Ordering::Relaxed);
     SHOW_RETICLES.store(reticles, Ordering::Relaxed);
     crate::debug_overlay::configure(overlay);
+    if overlay.enable {
+        crate::debug_overlay::install_pointer(session);
+    }
     ALLY_RETICLE_SCALE.store(scale.to_bits(), Ordering::Relaxed);
 
     let found = std::slice::from_raw_parts(CALL_SITE as *const u8, CALL_SITE_BYTES.len());

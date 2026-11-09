@@ -39,7 +39,8 @@ Enabled by `ship_switching` (default true); [details and keybinding caveats](doc
 draws labelled rings around every ship (radii set by `circles`), a label with its native
 AI state, the AI steering waypoint with its distance (`ai_waypoint`), and optional lead
 markers showing where to aim to hit each hostile ship, with a small "put guns here"
-bearing circle next to your own hull (`prediction_marker`); with
+bearing circle at `pointer_length` world units from your hull (`prediction_marker`).
+`pointer_length` also sets the ordinary native aim-line length (default 300 units); with
 hf_ai v0.10.9+ it adds hf_ai's tactics/missile-evasion state. Off by default;
 [details](docs/debug-overlay.md).
 

@@ -10,7 +10,8 @@ and gained configurable ring radii, an on/off switch for the waypoints and the h
   "enable": true,
   "circles": [250.0, 500.0, 1000.0],
   "ai_waypoint": true,
-  "prediction_marker": false
+  "prediction_marker": false,
+  "pointer_length": 300.0
 }
 ```
 
@@ -31,20 +32,35 @@ For every live ship in the battle (player, allies, enemies, neutrals):
 * for AI ships with `ai_waypoint: true`, the current steering waypoint (`+0xbf0/+0xbf4`):
   a dotted lead-in from the hull, a small orange marker, and `WP <distance>u` at the point.
   When the waypoint is off-screen, `DEST <distance>u` appears under the ship label instead;
-* with `prediction_marker: true`, one lead marker per **hostile** ship: a small red target
-  ring with a half-strength halo at the point where to aim to hit that ship, and
-  `AIM <flight time>s` above it. The point is the target's predicted position at the flight
-  time of a straight shell fired from the player's first gun (of gun group 0, else group 1)
-  with its currently loaded ammo: the aim point solves `|rel + relative*t| = speed*t`
-  from the ship velocities and the ammo's muzzle speed, and the shell also carries the
-  player's own velocity, so the marker is correct while the player ship moves. Unlike the
-  native AI lead it uses the raw root-body velocities, not the game's smoothed
-  target-velocity ring with its 200-unit speed reduction, and it has no solution when the
-  ship outruns the shell. Each lead marker also places a small "put guns here" bearing
-  circle around the player's own ship, on the bearing to the lead point, at
-  `bounding_radius + 170` world units out, so it scales with the camera like the rings
-  and clears the hull at every zoom; the bearing circle is drawn even when the lead
-  point itself is off-screen.
+* with `prediction_marker: true`, an estimated barrel-aim marker for each hostile ship
+  reachable by the player's first live gun (group 0, else group 1), labelled
+  `AIM ~<flight time>s`. Since v1.0.3 it uses the gun's actual world origin, the native
+  10-unit muzzle offset, the firing gun's master-root inherited velocity, shell gravity
+  and linear damping. It uses the mean launch-speed multiplier **1.09**, because the
+  game independently rolls **0.98–1.2 per shell**; see [instruction-level evidence](shell-launch-speed.md).
+  The marker represents the required **barrel bearing**, not the shell's future impact
+  position: pointing at the latter fails when inherited velocity or gravity matters.
+  The target is assumed to maintain its current root-body velocity. The bounded solver
+  searches at native 0.02 s steps, interpolates the intercept within the final step and
+  rejects solutions beyond the ammo lifetime (search capped at 30 s).
+* each solution also draws a bearing circle at `pointer_length` world units from the
+  player's hull centre. This replaces v1.0.2's fixed `bounding_radius + 170` placement.
+  The ordinary native aiming line uses the same configured endpoint distance while the
+  overlay is enabled. **Default: 300 units**, matching the ordinary vanilla call; vanilla
+  uses 400 in its alternate HUD mode. Its normal near endpoint is 80 units (shortened
+  when necessary). The separate **2,000-unit rocket ray** and the **100-screen-pixel gun
+  arrows** are unchanged. Native obstacles can still clip the ordinary line.
+  `0` hides the ordinary line and bearing circles, but keeps the distant aim markers;
+  negative, non-finite or greater-than-100,000 values fall back to 300. Restart to apply.
+
+### Prediction limits
+
+This is an estimate, not auto-aim. Random speed/spread, recoil, turret traverse/blocked
+arcs and target manoeuvres still cause misses; mixed guns are represented by the first
+live gun only. Rockets, guided shells, canister, harpoons and **quadratic-drag AP** have
+different trajectory rules and intentionally get **no prediction**, rather than a false
+straight-shell solution. The native pointer remains available with those loadouts.
+Launches reaching the Box2D 2,000 u/s translation cap are also not predicted.
 
 | Label | Meaning |
 |---|---|
@@ -119,6 +135,11 @@ All addresses are Steam 1.163, image base `0x140000000`.
 | Gun groups (first gun for the lead) | creature `+0x13a8` / `+0x13c0`, `Link` entries, gun `Body` at the link target |
 | Loaded ammo index of a gun | gun `Body +0x850` (`m_weapon_ammo`) |
 | Global ammo list (`Ammo` records, stride `0x188`; muzzle `speed` at `+0x158`) | `0x143a13be0` (`{begin*, end*}` header) |
+| Gun world origin, native master-transform helper | `Node_GetWorldPosition`, `0x140048b60` |
+| Ordinary aim-ray call patched for `pointer_length` | `0x1402a003f`: `e8 4c 84 fa ff`, target `Hud_DrawAimRay` `0x140248490` |
+| Vanilla ordinary/alternate ray range constants | `0x140352830` = 300.0; `0x140352834` = 400.0 |
+| Native ordinary ray's near endpoint | `0x140354854` = 80.0 |
+| Separate rocket ray (not patched) | call `0x14029fcdd`, range `0x1403548bc` = 2000.0 |
 | Screen-space circle drawer used for the rings | `0x140244b00` (`Gfx_DrawCircleClipped`) |
 | Its line primitive (screen-space when `alreadyScreen = 1`) | `0x140248ba0` (`Gfx_DrawWorldLine`) |
 | Battle HUD enable byte | `0x143a11961` |
@@ -138,12 +159,18 @@ two mods or two features detouring the same five bytes.
 Relevant code:
 
 * `ally/src/debug_overlay.rs` -- projection, rings, labels, waypoint and lead markers;
+* `ally/src/aim_math.rs` -- pure bounded ballistic intercept solver;
 * `ally/src/ally_reticles.rs` -- shared battle HUD post-pass;
 * `ally/src/lib.rs` -- the `debug_overlay` config block, legacy-key migration and install condition.
 
 ## Validation status
 
-* `cargo xwin build --release --target x86_64-pc-windows-msvc` succeeds (v1.0.2).
+* v1.0.3 cross-build succeeds; hook/gameplay validation in game has not been performed.
+* v1.0.3 default and legacy `megalog` feature builds pass with `--locked`; no dependencies
+  updated. Cross-target Clippy completes with 22 existing style/documentation warnings;
+  no blanket suppressions or unrelated cleanup. Scoped rustfmt checks pass for the solver,
+  overlay and layout file. Crate-wide formatting has existing unrelated differences.
+  No regression tests were added (not authorized); the repository has removed its old tests.
 * v1.0.1 (settings block, configurable circles, waypoint switch, lead markers) validated in
   game on 2026-11-09 by the maintainer. The v1.0.2 gun-bearing circles are cross-build only;
   in-game verification pending.
@@ -161,11 +188,30 @@ Relevant code:
      marker/dotted lead-in end where the ship is actually steering;
   8. with `prediction_marker: true`, the `AIM` marker sits where the player's shells actually
      land on a steady-course hostile, reload/ammo changes move it when the muzzle speed
-     changes, the bearing circle stays at `bounding_radius + 170` world units on the bearing
+      changes, the bearing circle stays at `pointer_length` world units on the bearing
      to each marker while the camera zooms, and `ai_waypoint: false` / an empty `circles`
-     list draw only what is left.
+      list draw only what is left. Check moving-shooter drift compensation, upward gravity
+      compensation, turret offsets, unsupported loadouts and the native pointer at 0/150/300/600.
 
 ## Development log
+
+### 2026-11-09 -- corrected ballistic bearing and pointer length (v1.0.3)
+
+* Re-read `FireShell`, `Body::BulletImpact__`, `Node_GetWorldPosition`, `Hud_DrawAimRay`
+  and the native HUD caller against live Ghidra. Confirmed the 0.98–1.2 speed roll from
+  instructions and constant bytes; [saved evidence](shell-launch-speed.md).
+* Fixed the old relative-flight-time/absolute-position mismatch, which aimed along the
+  wrong bearing while the shooter moved. Use the gun's world origin and its own native
+  master-root velocity rather than the hull centre/root. Compensate the 10-unit muzzle
+  offset, mean speed, gravity and damping; reject beyond-lifetime or unsupported solutions.
+* `Body_CreateB2Body` (`0x14004b330`) confirms damping 0.05 and gravityScale 1.0;
+  `setCertainBodyFloatVals` (`0x140049570`) clears the extra gravity-compensation field
+  at `+0x1e4`. Physics reference: `hf_notes/docs/findings/physics/box2d-function-map.md`.
+* Added a byte-checked wrapper at the ordinary aim-ray CALL only. Preserve the original
+  native ABI/stack arguments, clipping and alpha; do not patch shared float constants.
+  Default 300 matches the ordinary call, not the separate 2000-unit rocket ray.
+* Checked the consuming crate's pinned `highfleet-rs` `05c6207` and current upstream Ammo
+  layout. Use covered fields with compile-time offset assertions; no dependency update.
 
 ### 2026-11-03 -- initial implementation
 

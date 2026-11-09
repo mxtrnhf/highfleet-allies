@@ -60,6 +60,15 @@ const _: () = {
     assert!(offset_of!(Link, target) == 8);
     assert!(offset_of!(Ammo, item_name) == 8);
     assert!(offset_of!(Ammo, reticle) == 0);
+    assert!(offset_of!(Ammo, logic) == 0x150);
+    assert!(offset_of!(Ammo, caliber) == 0x154);
+    assert!(offset_of!(Ammo, speed) == 0x158);
+    assert!(offset_of!(Ammo, ap_drag) == 0x15c);
+    assert!(offset_of!(Ammo, penetrative_power) == 0x164);
+    assert!(offset_of!(Ammo, lifespan) == 0x16c);
+    assert!(offset_of!(Body, velocity_x) == 0x130);
+    assert!(offset_of!(Body, velocity_y) == 0x134);
+    assert!(offset_of!(Body, weapon_ammo) == 0x850);
     assert!(offset_of!(Ammo, fire_delay) == 0x17c);
     assert!(offset_of!(Ammo, salvo_size) == 0x180);
     assert!(offset_of!(Munition, name) == 0);

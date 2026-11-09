@@ -30,6 +30,7 @@ macro_rules! crumb {
     };
 }
 
+mod aim_math;
 mod ally_ammo;
 mod ally_hud;
 mod ally_panels;
@@ -367,9 +368,10 @@ struct DebugOverlayConfig {
     circles: Vec<f32>,
     /// Draw each AI ship's steering waypoint: the marker, its dotted lead-in and the distance.
     ai_waypoint: bool,
-    /// Lead marker (aim assist) on every hostile ship: where to point the player's first gun to
-    /// hit it, from the target's velocity and that gun's loaded ammo muzzle speed.
+    /// Estimated barrel bearing for the first live gun's supported unguided cannon ammo.
     prediction_marker: bool,
+    /// Ordinary native aim-ray endpoint and overlay bearing-marker distance, in world units.
+    pointer_length: f32,
 }
 
 impl Default for DebugOverlayConfig {
@@ -379,6 +381,7 @@ impl Default for DebugOverlayConfig {
             circles: vec![250.0, 500.0, 1000.0],
             ai_waypoint: true,
             prediction_marker: false,
+            pointer_length: 300.0,
         }
     }
 }
