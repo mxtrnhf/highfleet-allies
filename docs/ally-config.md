@@ -55,7 +55,7 @@ For individual features, use this table. Settings for an already-disabled parent
 | `PLAYER` pre-combat label | `marker_text: ""` | Plane-loadout labels are controlled by `plane_loadouts`, not this key. Labels draw at the fixed B23 seam. |
 | Debug mode | `logging.debug_log: false` | No megalog, watchdog, crash dump, pre-combat GUI lists or per-second probes. The legacy `megalog` cargo feature does not force it on. |
 | Ally target boxes | `ally_reticle_scale: 0` | No boxes around enemies targeted by allies; the player's own box is unchanged. |
-| Battle debug overlay | `logging.debug_overlay: false` | No rings or AI-state labels are drawn. Independent of `ally_reticle_scale`. |
+| Battle debug overlay | `debug_overlay.enable: false` | No rings, AI-state labels, waypoints or lead markers are drawn. Independent of `ally_reticle_scale`. |
 | Creature registry log | `logging.log_creatures: false` | Other logs remain. |
 | GUI click/ammo-selector inspection | `logging.gui_inspect: false` | Other logs remain. |
 
@@ -82,7 +82,6 @@ modloader log messages and the basic crash reporter remain available.
 ```json
 "logging": {
   "debug_log": false,
-  "debug_overlay": false,
   "gui_inspect": false,
   "log_creatures": false
 }
@@ -91,9 +90,33 @@ modloader log messages and the basic crash reporter remain available.
 | Key inside `logging` | Default | Purpose |
 |---|---|---|
 | `debug_log` | `false` | Runtime debug switch. `true` starts the megalog `hf_ally_megalog_<time>.log`, the watchdog, the crash minidump `hf_ally_crash_<time>.dmp`, pre-combat GUI lists, per-second probes and the lifted line budget. Since v0.16.2, aircraft census/watch and delayed loadout-verification diagnostics also require this switch. Dumps may contain paths/campaign data; delete after sending. The legacy `megalog` cargo feature does not force it on. |
-| `debug_overlay` | `false` | Battle debug overlay: rings, driver-state labels and AI waypoints. Independent of `ally_reticle_scale`; see [debug overlay](debug-overlay.md). |
 | `gui_inspect` | `false` | Full GUI lists on clicks and native ammo-selector rebuilds. |
 | `log_creatures` | `false` | Creature add/remove log (very noisy). |
+
+## Debug overlay (`debug_overlay` object)
+
+The battle debug overlay has its own settings block (v1.0.1; until v1.0.0 it was the single
+`logging.debug_overlay` boolean). An old `logging.debug_overlay: true` (or the older top-level
+`debug_overlay: true`) still enables the overlay with the block's defaults; an explicit
+`debug_overlay` block wins over both.
+
+```json
+"debug_overlay": {
+  "enable": false,
+  "circles": [250.0, 500.0, 1000.0],
+  "ai_waypoint": true,
+  "prediction_marker": false
+}
+```
+
+| Key inside `debug_overlay` | Default | Purpose |
+|---|---|---|
+| `enable` | `false` | Master switch for the whole overlay, independent of `ally_reticle_scale`. |
+| `circles` | `[250.0, 500.0, 1000.0]` | Ring radii in world units around every live ship. An empty list draws no rings; more than 8 entries and non-finite or non-positive radii are ignored. |
+| `ai_waypoint` | `true` | Draw each AI ship's steering waypoint, its dotted lead-in and the distance. |
+| `prediction_marker` | `false` | Lead (aim-assist) marker on every hostile ship: where to point the first gun to hit it, computed from the target's velocity and that gun's loaded ammo muzzle speed. |
+
+See [debug overlay](debug-overlay.md) for what each element looks like and the native details.
 
 ## Gameplay settings
 

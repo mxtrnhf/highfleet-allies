@@ -135,12 +135,17 @@ fn normalize_scale(scale: f32) -> (f32, bool) {
 }
 
 /// Installs the single battle HUD post-pass. `scale` selects the ally box size and `overlay` the debug
-/// overlay; the hook is needed when either feature is on.
-pub unsafe fn install(session: &mut PatchSession, argb: u32, scale: f32, overlay: bool) {
+/// overlay settings; the hook is needed when either feature is on.
+pub unsafe fn install(
+    session: &mut PatchSession,
+    argb: u32,
+    scale: f32,
+    overlay: &crate::DebugOverlayConfig,
+) {
     let (scale, reticles) = normalize_scale(scale);
     ALLY_COLOR.store(argb & 0x00ff_ffff, Ordering::Relaxed);
     SHOW_RETICLES.store(reticles, Ordering::Relaxed);
-    crate::debug_overlay::set_enabled(overlay);
+    crate::debug_overlay::configure(overlay);
     ALLY_RETICLE_SCALE.store(scale.to_bits(), Ordering::Relaxed);
 
     let found = std::slice::from_raw_parts(CALL_SITE as *const u8, CALL_SITE_BYTES.len());
@@ -161,6 +166,6 @@ pub unsafe fn install(session: &mut PatchSession, argb: u32, scale: f32, overlay
     log::info!(
         "hf_ally: battle HUD post-pass installed (reticles {}, debug overlay {})",
         reticles,
-        overlay
+        overlay.enable
     );
 }

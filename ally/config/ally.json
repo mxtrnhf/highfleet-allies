@@ -27,9 +27,14 @@
   "marker_text": "PLAYER",
   "logging": {
     "debug_log": false,
-    "debug_overlay": false,
     "gui_inspect": false,
     "log_creatures": false
+  },
+  "debug_overlay": {
+    "enable": false,
+    "circles": [250.0, 500.0, 1000.0],
+    "ai_waypoint": true,
+    "prediction_marker": false
   },
   "intercept_ignore_oids": [
     "MDL_MISSILE_03"

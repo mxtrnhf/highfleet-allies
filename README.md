@@ -35,10 +35,12 @@ Every setting is already in the config files of the pack, so there is nothing to
 and **TAB** cycles deployed friendly ships. Your old ship becomes an AI ally.
 Enabled by `ship_switching` (default true); [details and keybinding caveats](docs/ship-switching.md).
 
-**Debug overlay:** `"logging": { "debug_overlay": true }` in `ally.json` draws
-labelled rings around every ship, a label with its native AI state, and the AI
-steering waypoint with its distance; with hf_ai v0.10.9+ it adds hf_ai's
-tactics/missile-evasion state. Off by default; [details](docs/debug-overlay.md).
+**Debug overlay:** its own `"debug_overlay": { "enable": true }` block in `ally.json`
+draws labelled rings around every ship (radii set by `circles`), a label with its native
+AI state, the AI steering waypoint with its distance (`ai_waypoint`), and optional lead
+markers showing where to aim to hit each hostile ship (`prediction_marker`); with
+hf_ai v0.10.9+ it adds hf_ai's tactics/missile-evasion state. Off by default;
+[details](docs/debug-overlay.md).
 
 The bundled QoL also reads top-level `elevation_rules`: `vanilla` (default),
 `modern`, `classic` or `classic_kaz`. This controls gun/KAZ firing arcs independently

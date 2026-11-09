@@ -1,14 +1,22 @@
 //! Debug overlay for the tactical battle: rings around every ship and its live AI state above it.
 //!
-//! Enabled with `"logging": { "debug_overlay": true }` in `ally.json` (default off). The drawing runs from the
-//! per-frame battle HUD pass `0x14029c5c0` (`afterBattleStars??`, also the native target-box pass),
-//! which is wrapped by [`crate::ally_reticles`] at the call site `0x14029a8c1`. That pass owns the
-//! battle camera projection, so every label and ring is computed from the same world-to-screen
+//! Configured by its own `"debug_overlay"` block in `ally.json` (default off): `enable` is the
+//! master switch, `circles` is the ring-radius list in world units (empty = no rings),
+//! `ai_waypoint` turns the AI waypoint markers on/off, and `prediction_marker` turns the hostile
+//! lead (aim-assist) markers on/off. The old `logging.debug_overlay` boolean still loads as
+//! `enable`. The drawing runs from the per-frame battle HUD pass `0x14029c5c0`
+//! (`afterBattleStars??`, also the native target-box pass), which is wrapped by
+//! [`crate::ally_reticles`] at the call site `0x14029a8c1`. That pass owns the battle camera
+//! projection, so every label and ring is computed from the same world-to-screen
 //! function (`0x1401adfc0`) and follows the ship while the camera moves.
 //!
 //! Native details (Steam 1.163):
 //! * ships are the global creature vector `0x143faa5d8..0x143faa5e0`, stride 0x18, pointer at +8;
 //! * `Creature::bounds_center_x/y` is the hull bounding-box centre used by the AI;
+//! * ship velocity is the root body's `Body::velocity_x/y` (`+0x130/+0x134`);
+//! * a gun's loaded ammo is `Body::weapon_ammo` (`+0x850`), an index into the global ammo list
+//!   `0x143a13be0` (`Ammo` records, stride 0x188, muzzle `speed` at `+0x158`) — the same fields
+//!   the native AI lead reads (hf_notes docs/findings/combat/firing-and-shells.md sections 7-8);
 //! * `ship + 0xad4` is the side float, `+0xd70` the role (1 = flown by the player) and
 //!   `+0xbdc` the AI driver state (table in `hf_notes/docs/findings/ai/ai-behaviour-states.md`);
 //! * rings use the native screen-space circle drawer `Gfx_DrawCircleClipped` (`0x140244b00`), which
@@ -18,11 +26,14 @@
 use std::{
     ffi::{c_char, CStr},
     fmt::Write as _,
-    mem::offset_of,
-    sync::atomic::{AtomicBool, Ordering},
+    mem::{offset_of, size_of},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
 };
 
-use crate::native_layout::Creature;
+use crate::native_layout::{Ammo, Body, Creature, Link};
 
 const HUD_ENABLED: usize = 0x1_43a1_1961;
 /// `(Vec2* point, bool absolute, float zoom)`.
@@ -43,30 +54,52 @@ const FONT_COLOR: u32 = 0xffe0_e0db;
 const FONT_OFFSET_Y: f32 = -46.0;
 const FONT_LINE_SPACING: f32 = 14.0;
 
-/// Concentric rings in WORLD units, so they shrink and grow with the battle camera.
-const RING_RADII: [f32; 3] = [250.0, 500.0, 1000.0];
-/// The rings use the game's friendly cyan / hostile red / neutral lime; alpha makes outer rings lighter.
-const RING_ALPHA: [u32; 3] = [0x90ff_ffff, 0x60ff_ffff, 0x38ff_ffff];
+/// The rings use the game's friendly cyan / hostile red / neutral lime.
 const FRIENDLY_RGB: u32 = 0x00e4_ff;
 const HOSTILE_RGB: u32 = 0xdd27_27;
 const NEUTRAL_RGB: u32 = 0xa8fc_00;
 /// One world unit projected by this distance gives the world-to-screen scale.
 const SCALE_REFERENCE_WORLD: f32 = 100.0;
+/// Ring pixel-size bounds: nothing below 3 or above 4000 screen pixels is drawn.
 const MIN_RING_PIXELS: f32 = 3.0;
 const MAX_RING_PIXELS: f32 = 4000.0;
 /// Ring-distance text sits just right of the ring line; tiny rings get no text.
 const RING_LABEL_DX: f32 = 4.0;
 const MIN_RING_LABEL_PIXELS: f32 = 30.0;
+/// Ring alpha fades half-strength per ring outward, floored so far rings stay visible.
+const RING_INNER_ALPHA: u32 = 0x90;
+const RING_MIN_ALPHA: u32 = 0x38;
+/// Ceiling on configured ring radii; more would drown the battle view.
+const MAX_CIRCLES: usize = 8;
 /// The AI waypoint (`Creature::waypoint_x/y`) marker and its dotted lead-in.
 const OFF_WAYPOINT_X: usize = offset_of!(Creature, waypoint_x);
 const OFF_WAYPOINT_Y: usize = offset_of!(Creature, waypoint_y);
 const WAYPOINT_COLOR: u32 = 0xffff_aa00;
 const WAYPOINT_LINE_COLOR: u32 = 0x78ff_aa00;
 const WAYPOINT_STEPS: usize = 16;
+/// The gun-group vectors (`Creature::gun_group_0`, then `gun_group_1`): entries are `Link`s (stride
+/// 0x18), the gun `Body` at the link target. The native AI lead reads the first gun the same way
+/// (firing-and-shells.md section 8).
+const OFF_GUN_GROUP_0: usize = offset_of!(Creature, gun_group_0);
+const OFF_GUN_GROUP_1: usize = offset_of!(Creature, gun_group_1);
+/// Ceiling on the guns read per group; the vector is corrupt above that.
+const MAX_GUNS_PER_GROUP: usize = 64;
+/// The game's ammo list header (`{begin*, end*}` of `Ammo` records, stride 0x188); the same header
+/// `plane_loadouts.rs` reads. A gun's loaded ammo is the index into this list.
+const AMMO_LIST: usize = 0x1_43a1_3be0;
+/// Ceiling on the records read from the ammo list; a longer list means the header is corrupt.
+const AMMO_LIST_LIMIT: usize = 10_000;
+/// Lead marker on hostile ships: the game's hostile red, a half-strength halo and the flight time.
+const PREDICTION_COLOR: u32 = 0xffff_dd27;
+const PREDICTION_HALO_COLOR: u32 = 0x60ff_dd27;
 /// Keep the draw bounded if the native creature vector header is corrupt (the mod allows up to 127 enemies).
 const MAX_SHIPS: usize = 256;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+static AI_WAYPOINT: AtomicBool = AtomicBool::new(false);
+static PREDICTION_MARKER: AtomicBool = AtomicBool::new(false);
+/// Effective ring radii in world units (filtered and capped at `MAX_CIRCLES`); empty = no rings.
+static CIRCLE_RADII: Mutex<Vec<f32>> = Mutex::new(Vec::new());
 
 type WorldToScreenFn = unsafe extern "win64" fn(*mut f32, u8, f32);
 type FloorPointFn = unsafe extern "win64" fn(*mut f32);
@@ -86,8 +119,23 @@ type RenderTextFn = unsafe extern "win64" fn(
     f32,
 ) -> f32;
 
-pub fn set_enabled(enabled: bool) {
-    ENABLED.store(enabled, Ordering::Relaxed);
+/// Store the effective overlay settings; called once from [`crate::ally_reticles::install`].
+pub fn configure(config: &crate::DebugOverlayConfig) {
+    ENABLED.store(config.enable, Ordering::Relaxed);
+    AI_WAYPOINT.store(config.ai_waypoint, Ordering::Relaxed);
+    PREDICTION_MARKER.store(config.prediction_marker, Ordering::Relaxed);
+    let Ok(mut radii) = CIRCLE_RADII.lock() else {
+        return;
+    };
+    radii.clear();
+    radii.extend(
+        config
+            .circles
+            .iter()
+            .copied()
+            .take(MAX_CIRCLES)
+            .filter(|radius| radius.is_finite() && *radius > 0.0),
+    );
 }
 
 unsafe fn rd<T: Copy>(address: usize) -> T {
@@ -209,14 +257,22 @@ unsafe fn draw_text(font: *mut u8, x: f32, y: f32, align: u32, text: &LineBuf) {
     render(font, x, y, align, text.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), 0, 0.0);
 }
 
-/// Rings and their world-unit labels.
-unsafe fn draw_rings(centre: [f32; 2], pixels_per_world: f32, rgb: u32, font: *mut u8) {
-    for (index, radius_world) in RING_RADII.iter().enumerate() {
+/// Rings around one ship and their world-unit labels. `radii` are the configured world-unit radii
+/// (empty = no rings); alpha fades outward by ring index so the set reads as depth.
+unsafe fn draw_rings(
+    radii: &[f32],
+    centre: [f32; 2],
+    pixels_per_world: f32,
+    rgb: u32,
+    font: *mut u8,
+) {
+    for (index, radius_world) in radii.iter().enumerate() {
         let radius_pixels = radius_world * pixels_per_world;
         if !(MIN_RING_PIXELS..=MAX_RING_PIXELS).contains(&radius_pixels) {
             continue;
         }
-        let argb = (RING_ALPHA[index] & 0xff00_0000) | rgb;
+        let alpha = (RING_INNER_ALPHA >> index).max(RING_MIN_ALPHA);
+        let argb = (alpha << 24) | rgb;
         draw_ring(centre[0], centre[1], radius_pixels, argb);
         if radius_pixels < MIN_RING_LABEL_PIXELS {
             continue;
@@ -310,8 +366,160 @@ unsafe fn draw_waypoint(
     draw_text(font, screen[0], (screen[1] - 18.0).max(8.0), 2, &text.finish());
 }
 
-/// Draws rings, state labels and the AI waypoint for one live ship. Returns false when off-screen.
-unsafe fn draw_ship(ship: usize, font: *mut u8) -> bool {
+/// Smallest positive flight time (seconds) of a straight shell with muzzle speed `speed` against a
+/// target `rel` away moving at `relative` velocity (both relative to the shooter), or `None` when
+/// the target outruns the shell. Solves `|rel + relative*t| = speed*t` as a quadratic in `t`.
+fn intercept_flight_time(rel: [f32; 2], relative: [f32; 2], speed: f32) -> Option<f32> {
+    let a = relative[0] * relative[0] + relative[1] * relative[1] - speed * speed;
+    let b = 2.0 * (rel[0] * relative[0] + rel[1] * relative[1]);
+    let c = rel[0] * rel[0] + rel[1] * rel[1];
+    if a.abs() < 1e-4 {
+        // shell speed equals the closing rate: flight time degenerates to the linear form
+        if b >= 0.0 {
+            return None;
+        }
+        return Some(-c / b);
+    }
+
+    let discriminant = b * b - 4.0 * a * c;
+    if discriminant < 0.0 {
+        return None;
+    }
+    let root = discriminant.sqrt();
+    let first = (-b - root) / (2.0 * a);
+    let second = (-b + root) / (2.0 * a);
+    let flight = if first > 0.0 && (second <= 0.0 || first <= second) { first } else { second };
+    (flight > 0.0 && flight.is_finite()).then_some(flight)
+}
+
+/// The first gun `Body` of the ship's gun groups (group 0 first, then group 1): the same gun the
+/// native AI lead reads for its muzzle speed (firing-and-shells.md section 8). `None` when the
+/// groups are empty or their headers look corrupt.
+unsafe fn first_gun(ship: usize) -> Option<usize> {
+    for group in [OFF_GUN_GROUP_0, OFF_GUN_GROUP_1] {
+        let begin = rd::<usize>(ship + group);
+        let end = rd::<usize>(ship + group + size_of::<usize>());
+        if !crate::plausible(begin) || end <= begin || (end - begin) % size_of::<Link>() != 0 {
+            continue;
+        }
+        if (end - begin) / size_of::<Link>() > MAX_GUNS_PER_GROUP {
+            continue;
+        }
+        let gun = rd::<usize>(begin + offset_of!(Link, target));
+        if crate::plausible(gun) {
+            return Some(gun);
+        }
+    }
+    None
+}
+
+/// The loaded ammo's muzzle speed of `gun`: `Body::weapon_ammo` (`+0x850`) is the index into the
+/// ammo list (structures.md: `m_weapon_ammo`, 0..35 in vanilla) and `Ammo::speed` (`+0x158`) is the
+/// speed the native lead also passes to its intercept solver (firing-and-shells.md section 8).
+/// `None` when anything is unreadable instead of guessing a speed.
+unsafe fn gun_muzzle_speed(gun: usize) -> Option<f32> {
+    let index = rd::<i32>(gun + offset_of!(Body, weapon_ammo));
+    if index < 0 {
+        return None;
+    }
+
+    let ammo_size = size_of::<Ammo>();
+    let begin = rd::<usize>(AMMO_LIST);
+    let end = rd::<usize>(AMMO_LIST + size_of::<usize>());
+    if !crate::plausible(begin) || end <= begin || (end - begin) % ammo_size != 0 {
+        return None;
+    }
+    let count = (end - begin) / ammo_size;
+    if count > AMMO_LIST_LIMIT || index as usize >= count {
+        return None;
+    }
+
+    let record = begin + index as usize * ammo_size;
+    let speed = rd::<f32>(record + offset_of!(Ammo, speed));
+    (speed.is_finite() && speed > 0.0).then_some(speed)
+}
+
+/// What the lead markers are computed from each frame: the player-flown ship's hull centre, its
+/// root body's velocity and the muzzle speed of its first gun's loaded ammo.
+struct PlayerGuns {
+    world: [f32; 2],
+    velocity: [f32; 2],
+    muzzle_speed: f32,
+}
+
+/// The player-shooting state the prediction markers need, or `None` when the player ship, its root
+/// body or its first gun cannot be read (no guns fitted, for example).
+unsafe fn player_guns(player: usize) -> Option<PlayerGuns> {
+    let world = [
+        rd::<f32>(player + offset_of!(Creature, bounds_center_x)),
+        rd::<f32>(player + offset_of!(Creature, bounds_center_y)),
+    ];
+    let root = crate::bomber::root_part(player)?;
+    let velocity = [
+        rd::<f32>(root + offset_of!(Body, velocity_x)),
+        rd::<f32>(root + offset_of!(Body, velocity_y)),
+    ];
+    let muzzle_speed = gun_muzzle_speed(first_gun(player)?)?;
+    if !world[0].is_finite()
+        || !world[1].is_finite()
+        || !velocity[0].is_finite()
+        || !velocity[1].is_finite()
+    {
+        return None;
+    }
+    Some(PlayerGuns { world, velocity, muzzle_speed })
+}
+
+/// The lead marker on one hostile ship: where to point the player's first gun to hit it. The
+/// shell's world velocity is the shooter's velocity plus the muzzle velocity
+/// (firing-and-shells.md section 7), so the marker sits at the target's own future position after
+/// the flight time from [`intercept_flight_time`]. Unlike the native AI lead (section 8) this is a
+/// player aid: it uses the raw root-body velocity, not the game's smoothed target-velocity ring
+/// with its 200-unit speed reduction. Off-screen markers are simply skipped.
+unsafe fn draw_prediction(ship: usize, world: [f32; 2], guns: &PlayerGuns, font: *mut u8) {
+    let Some(root) = crate::bomber::root_part(ship) else {
+        return;
+    };
+    let velocity = [
+        rd::<f32>(root + offset_of!(Body, velocity_x)),
+        rd::<f32>(root + offset_of!(Body, velocity_y)),
+    ];
+    if !velocity[0].is_finite() || !velocity[1].is_finite() {
+        return;
+    }
+
+    let rel = [world[0] - guns.world[0], world[1] - guns.world[1]];
+    let relative = [velocity[0] - guns.velocity[0], velocity[1] - guns.velocity[1]];
+    let Some(flight) = intercept_flight_time(rel, relative, guns.muzzle_speed) else {
+        return;
+    };
+    let aim = [world[0] + velocity[0] * flight, world[1] + velocity[1] * flight];
+
+    let mut screen = aim;
+    project(&mut screen);
+    if !screen[0].is_finite() || !screen[1].is_finite() {
+        return;
+    }
+    if !(-100.0..=2020.0).contains(&screen[0]) || !(-100.0..=1180.0).contains(&screen[1]) {
+        return;
+    }
+
+    draw_ring(screen[0], screen[1], 4.0, PREDICTION_COLOR);
+    draw_ring(screen[0], screen[1], 9.0, PREDICTION_HALO_COLOR);
+    let mut text = LineBuf::new();
+    let _ = write!(text, "AIM {flight:.1}s");
+    draw_text(font, screen[0], (screen[1] - 18.0).max(8.0), 2, &text.finish());
+}
+
+/// Draws rings, state labels, the AI waypoint and (for hostiles) the lead marker for one live
+/// ship. `radii` are the configured ring radii (empty = no rings) and `player` the player-shooting
+/// state the lead markers need. Returns false when off-screen.
+unsafe fn draw_ship(
+    ship: usize,
+    font: *mut u8,
+    radii: &[f32],
+    player: Option<&PlayerGuns>,
+) -> bool {
     let world = [
         rd::<f32>(ship + offset_of!(Creature, bounds_center_x)),
         rd::<f32>(ship + offset_of!(Creature, bounds_center_y)),
@@ -346,12 +554,22 @@ unsafe fn draw_ship(ship: usize, font: *mut u8) -> bool {
     } else {
         NEUTRAL_RGB
     };
-    draw_rings(centre, pixels_per_world, rgb, font);
+    if !radii.is_empty() {
+        draw_rings(radii, centre, pixels_per_world, rgb, font);
+    }
+
+    if side < 0.0 {
+        if let Some(guns) = player {
+            draw_prediction(ship, world, guns, font);
+        }
+    }
 
     let role = rd::<i32>(ship + crate::OFF_MODE_D70);
     let label_y = (centre[1] + FONT_OFFSET_Y).max(8.0);
     let next_y = draw_ship_labels(ship, centre, label_y, role, font);
-    draw_waypoint(ship, world, centre, role, next_y, font);
+    if AI_WAYPOINT.load(Ordering::Relaxed) {
+        draw_waypoint(ship, world, centre, role, next_y, font);
+    }
     true
 }
 
@@ -375,15 +593,38 @@ pub unsafe fn draw() {
     let style: StyleFn = std::mem::transmute(STYLE_FONT);
     style(FONT_NAME.as_ptr(), FONT_SCALE, 2, FONT_COLOR);
 
+    let Ok(radii) = CIRCLE_RADII.lock() else {
+        return;
+    };
+
+    // collect live ships once; the drawing pass and the player lookup share the same list
     let (begin, end): (usize, usize) = (rd(crate::CREATURES_BEGIN), rd(crate::CREATURES_END));
     if begin != 0 && end > begin {
         let entries = ((end - begin) / 0x18).min(crate::CREATURE_LIST_LIMIT).min(MAX_SHIPS);
+        let mut live = [0usize; MAX_SHIPS];
+        let mut count = 0;
         for index in 0..entries {
             let ship = rd::<usize>(begin + index * 0x18 + 8);
             if !crate::live_ship(ship) {
                 continue;
             }
-            draw_ship(ship, font);
+            live[count] = ship;
+            count += 1;
+        }
+
+        // the lead markers need the player's own hull, velocity and first-gun ammo speed
+        let player = if PREDICTION_MARKER.load(Ordering::Relaxed) {
+            live[..count]
+                .iter()
+                .copied()
+                .find(|&ship| rd::<i32>(ship + crate::OFF_MODE_D70) == 1)
+                .and_then(|ship| player_guns(ship))
+        } else {
+            None
+        };
+
+        for index in 0..count {
+            draw_ship(live[index], font, &radii, player.as_ref());
         }
     }
 

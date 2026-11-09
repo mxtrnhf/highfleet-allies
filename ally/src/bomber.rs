@@ -161,7 +161,7 @@ unsafe fn set_target(ship: usize, target: usize) {
 }
 
 /// Bounded equivalent of Node_GetRootPart: only follow Body masters, not owner links.
-unsafe fn root_part(mut node: usize) -> Option<usize> {
+pub(crate) unsafe fn root_part(mut node: usize) -> Option<usize> {
     for _ in 0..64 {
         if !plausible(node) {
             return None;

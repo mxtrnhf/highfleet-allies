@@ -289,6 +289,8 @@ struct Config {
     marker_text: String,
     /// Diagnostic switches grouped for the config file.
     logging: LoggingConfig,
+    /// Battle debug overlay; its own settings block, see `docs/debug-overlay.md`.
+    debug_overlay: DebugOverlayConfig,
     /// SIDE PATCH (not in master). `m_oid`s the AI never treats as a strategic launch to intercept in the missile-vs-ship
     /// arcade scene, e.g. `["MDL_MISSILE_03"]` (the R-9 Sprint) for a Sprint modded to be strat-launchable (its category has bit 0x8000000, so
     /// the CIWS and anti-air launchers of both sides would shoot at it). Copy the names from `m_oid=` in OL.seria. Empty = vanilla.
@@ -325,6 +327,7 @@ impl Default for Config {
             enemy_group_size: 3,
             marker_text: "PLAYER".to_string(),
             logging: LoggingConfig::default(),
+            debug_overlay: DebugOverlayConfig::default(),
             intercept_ignore_oids: vec!["MDL_MISSILE_03".to_string()],
         }
     }
@@ -336,9 +339,6 @@ struct LoggingConfig {
     /// Runtime debug mode: megalog, watchdog, crash minidump and the verbose diagnostics.
     /// Off by default and independent of the cargo feature.
     debug_log: bool,
-    /// Battle debug overlay: rings around every ship and its AI driver state above the hull.
-    /// Off by default; independent of the ally reticles.
-    debug_overlay: bool,
     /// Full GUI lists on clicks and native ammo-selector rebuilds (diagnostic, off by default).
     gui_inspect: bool,
     /// Creature add/remove log (diagnostic, off by default).
@@ -349,33 +349,88 @@ impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             debug_log: false,
-            debug_overlay: false,
             gui_inspect: false,
             log_creatures: false,
         }
     }
 }
 
-/// Accept old flat logging keys; explicit nested settings take precedence.
+/// Battle debug overlay settings; the `debug_overlay` block in `ally.json` (own category since
+/// v1.0.1; before that it was the `logging.debug_overlay` boolean).
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+struct DebugOverlayConfig {
+    /// Master switch. Off by default; independent of the ally reticles.
+    enable: bool,
+    /// Ring radii in world units around every live ship; they shrink and grow with the battle
+    /// camera. An empty list draws no rings; invalid radii are skipped.
+    circles: Vec<f32>,
+    /// Draw each AI ship's steering waypoint: the marker, its dotted lead-in and the distance.
+    ai_waypoint: bool,
+    /// Lead marker (aim assist) on every hostile ship: where to point the player's first gun to
+    /// hit it, from the target's velocity and that gun's loaded ammo muzzle speed.
+    prediction_marker: bool,
+}
+
+impl Default for DebugOverlayConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            circles: vec![250.0, 500.0, 1000.0],
+            ai_waypoint: true,
+            prediction_marker: false,
+        }
+    }
+}
+
+/// Accept old config keys; explicit nested settings take precedence.
 fn parse_config(text: &str) -> Result<Config, serde_json::Error> {
     let mut value: serde_json::Value = serde_json::from_str(text)?;
     if let Some(root) = value.as_object_mut() {
-        let mut legacy = serde_json::Map::new();
-        for key in ["debug_log", "debug_overlay", "gui_inspect", "log_creatures"] {
-            if let Some(setting) = root.remove(key) {
-                legacy.insert(key.to_string(), setting);
-            }
-        }
-        let logging = root
-            .entry("logging")
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        if let Some(logging) = logging.as_object_mut() {
-            for (key, setting) in legacy {
-                logging.entry(key).or_insert(setting);
-            }
-        }
+        migrate_legacy_logging(root);
+        migrate_legacy_debug_overlay(root);
     }
     serde_json::from_value(value)
+}
+
+/// Old flat logging keys move into the `logging` block; a key already there wins.
+fn migrate_legacy_logging(root: &mut serde_json::Map<String, serde_json::Value>) {
+    let mut legacy = serde_json::Map::new();
+    for key in ["debug_log", "gui_inspect", "log_creatures"] {
+        if let Some(setting) = root.remove(key) {
+            legacy.insert(key.to_string(), setting);
+        }
+    }
+    let logging = root
+        .entry("logging")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let Some(logging) = logging.as_object_mut() {
+        for (key, setting) in legacy {
+            logging.entry(key).or_insert(setting);
+        }
+    }
+}
+
+/// `debug_overlay` moved out of `logging` into its own block (v1.0.1). A legacy boolean — the old
+/// flat `debug_overlay` key or `logging.debug_overlay` — becomes the new block's `enable`; an
+/// explicit new block wins over both.
+fn migrate_legacy_debug_overlay(root: &mut serde_json::Map<String, serde_json::Value>) {
+    let flat = match root.get_mut("debug_overlay") {
+        Some(serde_json::Value::Bool(_)) => root.remove("debug_overlay"),
+        Some(_) => return, // the explicit new block wins; drop only the stale grouped boolean
+        None => None,
+    };
+    let grouped = root
+        .get_mut("logging")
+        .and_then(|logging| logging.as_object_mut())
+        .and_then(|logging| logging.remove("debug_overlay"));
+    if root.contains_key("debug_overlay") {
+        return;
+    }
+    let Some(setting) = flat.or(grouped) else {
+        return;
+    };
+    root.insert("debug_overlay".to_string(), serde_json::json!({ "enable": setting }));
 }
 
 /// Read `ally_damage_color` from the config: a HEX string (`"#00E4FF"`, `"00E4FF"` or `"0x00E4FF"`), or a plain
@@ -3720,9 +3775,9 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         ally_panels::install(&mut session);
     }
     let reticle_scale = config.ally_reticle_scale;
-    if reticle_scale != 0.0 || config.logging.debug_overlay {
+    if reticle_scale != 0.0 || config.debug_overlay.enable {
         // the reticle module owns the single per-frame battle HUD post-pass that both features draw from
-        ally_reticles::install(&mut session, ally_damage_color, reticle_scale, config.logging.debug_overlay);
+        ally_reticles::install(&mut session, ally_damage_color, reticle_scale, &config.debug_overlay);
     }
     plane_loadouts::EXTRA_GUNPOD.store(config.extra_gunpod, Ordering::Relaxed);
     plane_loadouts::K13_ON.store(config.plane_k13, Ordering::Relaxed);

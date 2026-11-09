@@ -31,7 +31,7 @@ boxes on (`ally_reticle_scale: 0.6`), ship switching on, ally ship bombers on
 (`ally_bombers: true`), `ally_zenith_autofire` on (vanilla autonomous launches), bomb/rocket and AA attack
 delays of 1 s, fuel retreat at 30%, and battle honor sharing at 50%
 (`ally_honor_share: 0.5`). The Sprint exception is `MDL_MISSILE_03`.
-`ally_damage_color` is `"#00E4FF"`. `logging.debug_overlay` defaults to `false`.
+`ally_damage_color` is `"#00E4FF"`. `debug_overlay.enable` defaults to `false`.
 `logging.debug_log` is the runtime debug switch and defaults to `false`; set it
 `true` only for a tester log.
 

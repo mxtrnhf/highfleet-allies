@@ -46,8 +46,10 @@ Older `ally.json` files may still contain these keys. They are ignored:
 - `logging.probe_lines` — debug mode always enables the per-second probes.
 - `logging.log_colors` — feature removed.
 - `logging.dead_node` — feature removed.
-- top-level `debug_overlay` — moved to `logging.debug_overlay`; the old top-level
-  form is still read and migrated.
+- top-level `debug_overlay` — a legacy boolean; the overlay now has its own
+  `debug_overlay` block (`enable`, `circles`, `ai_waypoint`, `prediction_marker`),
+  and both old forms (top-level and `logging.debug_overlay`) are still read and
+  migrated to the block's `enable`.
 
 `logging.debug_log` is now the runtime debug switch and defaults to `false`.
 The legacy `megalog` cargo feature no longer forces debug mode on.
