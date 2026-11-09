@@ -64,6 +64,21 @@ Build and publish releases through [GitHub Actions](.github/workflows/release.ym
 
 Automated tests have been removed. Build success does not validate hooks or gameplay; validate those in game.
 
+### Ally source ownership
+
+`ally/src/lib.rs` is the DLL composition root, not a shared state container. Configuration
+belongs to `config`; pre-combat buttons, cached GUI addresses and complete-list validation
+belong to `precombat`; battle arming, tracked allies, deployment and retreat belong to
+`battle`. `ally_ammo` owns doctrine, funding records and refunds. `sound` retains native
+sound-status storage, while `battle_diagnostics` owns callback-local probes and tracking.
+Shared native addresses and scalar memory helpers live in `native`, alongside the separate
+`native_layout` contracts. `bootstrap` coordinates installation using one `PatchSession`;
+feature owners contribute their patches before the final permanent install.
+
+Keep state with the operations that enforce its lifetime rules. A cached native address is
+not proof of a live object; moving code must preserve membership guards, bounded traversal,
+native ownership, callback order and blocking versus non-blocking lock behavior.
+
 ## Releases and versioning
 Before 1.0, `hf_ally` uses `0.MINOR.PATCH`: **PATCH** for small fixes within a feature line, **MINOR** for a new feature line or a notable public behavior/config change. The release pack has its own `vX.Y.Z` tag and normally mirrors the ally version; `hf_ai` and QoL keep independent component versions. The GitHub Actions release workflow takes the pack version as input, builds the three DLLs on Windows, stamps `@PACK_VERSION@`, `@ALLY_VERSION@` and `@AI_VERSION@` into the notes/README, and publishes the ZIP. See `manifest.json` in a pack for the exact component versions and source commit.
 

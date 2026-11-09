@@ -48,7 +48,7 @@ const MEDIA_RES: usize = 0x1_43a1_19e8;
 const GET_FONT: usize = 0x1_4017_03e0;
 const STYLE_FONT: usize = 0x1_401a_8710;
 const FONT_RENDER: usize = 0x1_4016_eb40;
-/// The pre-combat PLAYER label font (same recipe as [`crate::draw_marker_text`]).
+/// The pre-combat PLAYER label font (same recipe as [`crate::precombat::draw_marker_text`]).
 const FONT_NAME: &CStr = c"flash_large_shadow";
 const FONT_SCALE: f32 = 1.0;
 const FONT_COLOR: u32 = 0xffe0_e0db;

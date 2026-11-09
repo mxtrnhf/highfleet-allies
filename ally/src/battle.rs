@@ -17,25 +17,28 @@ use std::{
     },
 };
 
+use patchy::{PatchSession, ProcessModule, ReturnType, Trampoline};
+
 use crate::ally_ammo;
 use crate::ally_panels;
 use crate::battle_diagnostics;
 use crate::bomber;
 use crate::diag;
 use crate::honor_share;
+use crate::lifecycle_log;
 use crate::native::{
     count, live_ship, plausible, read, roster, GetProfileFn, SetControlledFn, SetLinkFn,
     BATTLE_RESULT, CLOCK, CONTROLLED_LINKS, CREATURES_BEGIN, CREATURES_END, CREATURE_LIST_LIMIT,
-    ENEMIES_BEGIN, ENEMIES_END, GET_PROFILE, IMAGE_BASE, LINK_STRIDE, OFF_ACTIVE, OFF_AGGRESSION,
-    OFF_AI_FLAG, OFF_CODE, OFF_MODE_D70, OFF_POS_X, OFF_POS_Y, OFF_PRIZE, OFF_SIDE, OFF_STATE,
-    OFF_TARGET, OFF_TARGET_LINK, RESERVE, ROSTER_BEGIN, SCENE_SELECTOR, SET_CONTROLLED, SET_LINK,
+    ENEMIES_BEGIN, ENEMIES_END, GET_PROFILE, GET_PROFILE_PROLOGUE, IMAGE_BASE, LINK_STRIDE,
+    OFF_ACTIVE, OFF_AGGRESSION, OFF_AI_FLAG, OFF_CODE, OFF_MODE_D70, OFF_POS_X, OFF_POS_Y,
+    OFF_PRIZE, OFF_SIDE, OFF_STATE, OFF_TARGET, OFF_TARGET_LINK, RESERVE, ROSTER_BEGIN,
+    SCENE_SELECTOR, SET_CONTROLLED, SET_CONTROLLED_PROLOGUE, SET_LINK, SET_LINK_PROLOGUE,
 };
 use crate::native_layout::Creature;
 use crate::plane_loadouts;
 use crate::precombat;
 use crate::ship_switch;
 use crate::sound;
-use crate::{flush_log, level_name, line_budget, scene, SPAWN_LINES};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
 /// The ship mode (`+0xd70`) an ally gets: 0 = the plain AI ship the enemies use.
@@ -46,13 +49,25 @@ pub(crate) const ALLY_MODE: i32 = 0;
 const PLAYER_DEPLOY_CALLER_RVA: usize = 0x2d6f7f;
 const BATTLE_START_SELECTOR: u32 = 1;
 /// Native reserve deploy (Ghidra's `rammingCheckCollision__`), byte-checked before use.
-pub(super) const DEPLOY: usize = 0x1_402d_6e90;
-pub(super) const DEPLOY_PROLOGUE: [u8; 10] =
-    [0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18];
+const DEPLOY: usize = 0x1_402d_6e90;
+const DEPLOY_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18];
 /// Returns a living ship to the fleet and removes it from the level; byte-checked before use.
-pub(super) const EXTRACT: usize = 0x1_4020_ef30;
-pub(super) const EXTRACT_PROLOGUE: [u8; 10] =
-    [0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18];
+const EXTRACT: usize = 0x1_4020_ef30;
+const EXTRACT_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18];
+
+/// Per-frame arcade battle manager `FUN_1402cc260` (called from the Combat scenario).
+const BATTLE_RVA: usize = 0x2cc260;
+/// `mov rax,rsp; push rdi; sub rsp,0xa0` (11 bytes; the next instruction reads RAX, which the hook preserves).
+const BATTLE_PROLOGUE: [u8; 11] = [
+    0x48, 0x8b, 0xc4, 0x57, 0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00,
+];
+
+/// The AI target choice `FUN_140078b40(ship)` is called from the per-ship driver at two sites (`mov rcx,rbx; call`).
+const TARGET_FN: usize = 0x1_4007_8b40;
+const TARGET_SITES: [(usize, [u8; 5]); 2] = [
+    (0x1_4007_3b93, [0xe8, 0xa8, 0x4f, 0x00, 0x00]),
+    (0x1_4007_3c73, [0xe8, 0xc8, 0x4e, 0x00, 0x00]),
+];
 const ARENA_X_HIGH: usize = 0x1_403c_2bc0;
 const ARENA_X_LOW: usize = 0x1_403c_2bc8;
 const ARENA_Y_LOW: usize = 0x1_403c_2bcc;
@@ -183,13 +198,113 @@ pub(crate) fn configure(config: &crate::config::Config) {
     );
 }
 
-pub(crate) fn set_spare_prizes(enabled: bool) {
+/// Applies `spare_prizes` and installs the two AI target-choice detours when the native sites match.
+/// Byte conflicts disable the feature with a warning; patch-construction failures return an error.
+///
+/// # Safety
+/// Call during serialized initialization in the verified Steam 1.163 preferred-base image.
+/// Native code must remain mapped and unmodified until the caller commits the patch session.
+pub(crate) unsafe fn install_prize_guard(
+    session: &mut PatchSession,
+    enabled: bool,
+) -> Result<(), String> {
     SPARE_PRIZES.store(enabled, Ordering::Relaxed);
+    if !enabled {
+        return Ok(());
+    }
+    let target_ok = std::slice::from_raw_parts(TARGET_FN as *const u8, 3) == [0x48, 0x8b, 0xc4];
+    let sites_ok = TARGET_SITES
+        .iter()
+        .all(|(site, bytes)| std::slice::from_raw_parts(*site as *const u8, 5) == bytes);
+    if target_ok && sites_ok {
+        for (site, bytes) in TARGET_SITES {
+            let mut trampoline = Trampoline::new();
+            trampoline.bytes(&[0x51, 0x48, 0x83, 0xec, 0x28]); // push rcx; sub rsp, 0x28
+            trampoline.absolute_call(TARGET_FN as *const ());
+            trampoline.bytes(&[0x48, 0x83, 0xc4, 0x28, 0x59]); // add rsp, 0x28; pop rcx
+            trampoline.preserved_call(on_target_chosen as *const (), &[], &[], ReturnType::None);
+            trampoline.relative_jump(site + bytes.len());
+            session
+                .detour_trampoline(site, bytes.len(), trampoline)
+                .map_err(|e| e.to_string())?;
+        }
+    } else {
+        log::warn!(
+            "hf_ally: the AI target choice or its call sites differ, prize ships are not spared"
+        );
+        SPARE_PRIZES.store(false, Ordering::Relaxed);
+    }
+    Ok(())
 }
 
-/// The game time of the last battle tick, for the pre-combat screen's summary call.
-pub(crate) fn last_summary_time() -> f64 {
-    f64::from_bits(SUM_LAST.load(Ordering::Relaxed))
+/// Verified addresses for the battle-manager entry point.
+pub(crate) struct BattleHook {
+    address: usize,
+}
+
+/// Checks the deploy and battle-manager sites before the ship-switch validation and the patch.
+/// Returns an error on resolution failure or any required byte mismatch.
+///
+/// # Safety
+/// Call during serialized initialization in the verified Steam 1.163 preferred-base image;
+/// its fixed function addresses and the resolved entry point must be readable code.
+pub(crate) unsafe fn verify_battle_hooks(module: &ProcessModule) -> Result<BattleHook, String> {
+    for (name, address, expected) in [
+        ("deploy", DEPLOY, &DEPLOY_PROLOGUE[..]),
+        (
+            "set_controlled",
+            SET_CONTROLLED,
+            &SET_CONTROLLED_PROLOGUE[..],
+        ),
+        ("set_link", SET_LINK, &SET_LINK_PROLOGUE[..]),
+        ("get_profile", GET_PROFILE, &GET_PROFILE_PROLOGUE[..]),
+        ("extract", EXTRACT, &EXTRACT_PROLOGUE[..]),
+    ] {
+        let found = std::slice::from_raw_parts(address as *const u8, expected.len());
+        if found != expected {
+            return Err(format!(
+                "{name} at {address:#x} has unexpected bytes {found:02x?}"
+            ));
+        }
+    }
+    let address = module.resolve_rva(BATTLE_RVA).map_err(|e| e.to_string())?;
+    let found = std::slice::from_raw_parts(address as *const u8, BATTLE_PROLOGUE.len());
+    if found != BATTLE_PROLOGUE {
+        return Err(format!(
+            "battle manager at {address:#x} has unexpected bytes {found:02x?}"
+        ));
+    }
+    Ok(BattleHook { address })
+}
+
+/// Installs the per-frame battle-manager entry hook at the verified address.
+/// Returns patch-construction errors without committing the caller's session.
+///
+/// # Safety
+/// `hook` must have been verified against the current image in this initialization pass,
+/// with no intervening native code modifications at that site.
+pub(crate) unsafe fn install_battle_hook(
+    session: &mut PatchSession,
+    hook: BattleHook,
+) -> Result<(), String> {
+    session
+        .patch_call(
+            hook.address,
+            on_battle_tick as *const (),
+            BATTLE_PROLOGUE.len(),
+            true,
+            ReturnType::None,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Emits a pending previous-battle summary using its last observed game time, at most once.
+///
+/// # Safety
+/// Call on the game thread while the supported image's battle-result global is readable.
+pub(crate) unsafe fn emit_last_summary() {
+    emit_summary(f64::from_bits(SUM_LAST.load(Ordering::Relaxed)));
 }
 
 static ALLY_LAST: Mutex<Vec<(usize, i32)>> = Mutex::new(Vec::new());
@@ -241,13 +356,18 @@ unsafe fn ally_sound_events(ships: &[usize]) {
             SUM_ALLY_STATE.store(6, Ordering::Relaxed);
         }
         log::info!("ALLY lost: c={p:#x} destroyed (last state {last_state}, in roster {here}, enemies {enemies})");
-        flush_log();
+        diag::flush_log();
         sound::lost();
     }
     allies.retain(|p| !gone.contains(p));
     last.retain(|e| ships.contains(&e.0));
 }
 
+/// Native spawner callback; starts a new ally battle only at the player's initial deploy site.
+///
+/// # Safety
+/// Call on the game thread with the native spawner's template (null or still-valid node) and
+/// caller return address, before concurrent battle/native-list mutation can occur.
 pub(crate) unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
     let _hook = diag::scope("on_spawn");
     // a new battle begins when the player's ship is deployed at the start (selector 1); the ally's own
@@ -261,7 +381,7 @@ pub(crate) unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
         battle_diagnostics::reset();
         bomber::reset();
         ally_panels::invalidate();
-        SPAWN_LINES.store(0, Ordering::Relaxed);
+        lifecycle_log::reset_spawn_budget();
         PRIZE_LINES.store(0, Ordering::Relaxed);
         let armed = precombat::take_seen();
         ARMED.store(armed, Ordering::Relaxed);
@@ -274,7 +394,7 @@ pub(crate) unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
                 "NOT armed (no pre-combat screen: re-engaged chase or other battle), the mod stays out of it"
             }
         );
-        flush_log();
+        diag::flush_log();
         emit_summary(f64::from_bits(SUM_LAST.load(Ordering::Relaxed)));
         ALLY_PTR.store(0, Ordering::Relaxed);
         FLAGSHIP.store(0, Ordering::Relaxed);
@@ -289,42 +409,7 @@ pub(crate) unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
         SUM_SPAWNED.store(0, Ordering::Relaxed);
         SUM_LOST.store(0, Ordering::Relaxed);
     }
-    crumb!(
-        "SPAWN template={template:#x} class={:#x} caller_rva={:#x} {} t={:.2}",
-        if template != 0 {
-            read::<u64>(template + OFF_CODE)
-        } else {
-            0
-        },
-        caller.wrapping_sub(IMAGE_BASE),
-        scene(),
-        read::<f64>(CLOCK)
-    );
-    diag::snapshot(format_args!(
-        "spawn caller_rva={:#x}",
-        caller.wrapping_sub(IMAGE_BASE)
-    ));
-    // spawns are rare and the point of the exercise: their own budget, never shared with ADD lines
-    let level = level_name();
-    let spawn_n = SPAWN_LINES.fetch_add(1, Ordering::Relaxed);
-    let budget = line_budget();
-    if spawn_n >= budget {
-        if spawn_n == budget {
-            log::info!("ALLY SPAWN lines: budget reached for this battle, the rest are not logged");
-        }
-        return;
-    }
-    log::info!(
-        "ALLY SPAWN level={level} {} t={:.2} template={template:#x} class={:#x} caller_rva={:#x}",
-        scene(),
-        read::<f64>(CLOCK),
-        if template != 0 {
-            read::<u64>(template + OFF_CODE)
-        } else {
-            0
-        },
-        caller.wrapping_sub(IMAGE_BASE),
-    );
+    lifecycle_log::log_spawn(template, caller);
 }
 
 unsafe fn reserve_to_front(k: usize) -> bool {
@@ -424,7 +509,7 @@ unsafe fn order_retreat(ally: usize, why: &str) -> bool {
         read::<i32>(ally + OFF_STATE),
         read::<u8>(ally + OFF_AI_FLAG),
     );
-    flush_log();
+    diag::flush_log();
     true
 }
 
@@ -582,7 +667,7 @@ unsafe fn retreat_logic(ships: &[usize]) {
                 now,
                 read::<u64>(RETREAT_POINT),
             );
-            flush_log();
+            diag::flush_log();
         } else if alive {
             // The manager promotes roster[0] this very frame (no mode-1 ship left), so a fly-out order comes
             // too late: extract the allies now, the way the manager does for strike craft at the edge.
@@ -607,7 +692,7 @@ unsafe fn retreat_logic(ships: &[usize]) {
 }
 
 /// Logs the `ALLY SUMMARY` line of the battle that just ended (once). `now` = the game clock of the end.
-pub(crate) unsafe fn emit_summary(now: f64) {
+unsafe fn emit_summary(now: f64) {
     if SUM_T0.load(Ordering::Relaxed) == 0 {
         return;
     }
@@ -726,7 +811,7 @@ unsafe fn creature_of(node: usize) -> usize {
 
 /// Runs right after the AI has chosen a target for `ship`. An AI-run ship of the player's side (an ally) that
 /// picked a prize ship takes the nearest other enemy instead, or no target when only prizes are left.
-pub(crate) unsafe extern "C" fn on_target_chosen(ship: usize) {
+unsafe extern "C" fn on_target_chosen(ship: usize) {
     let _hook = diag::scope("on_target_chosen");
     if !plausible(ship) || !SPARE_PRIZES.load(Ordering::Relaxed) {
         return;
@@ -803,7 +888,7 @@ pub(crate) unsafe extern "C" fn on_target_chosen(ship: usize) {
 }
 
 /// Called at the start of the per-frame battle manager.
-pub(crate) unsafe extern "C" fn on_battle_tick() {
+unsafe extern "C" fn on_battle_tick() {
     let _hook = diag::scope("on_battle_tick");
     plane_loadouts::verify(read::<f64>(CLOCK));
     plane_loadouts::tick();
@@ -835,7 +920,7 @@ pub(crate) unsafe extern "C" fn on_battle_tick() {
         // between battles: arm again
         if ALLY_DONE.swap(false, Ordering::Relaxed) {
             log::info!("ALLY battle over, armed again");
-            flush_log();
+            diag::flush_log();
         }
         PLAYER_SEEN.store(0, Ordering::Relaxed);
         return;
@@ -878,7 +963,7 @@ pub(crate) unsafe extern "C" fn on_battle_tick() {
                     *p,
                     read::<i32>(*p + OFF_STATE)
                 );
-                flush_log();
+                diag::flush_log();
                 return false;
             }
             ships.contains(p)
@@ -973,7 +1058,7 @@ pub(crate) unsafe extern "C" fn on_battle_tick() {
         after.len(),
         read::<usize>(RESERVE + 8)
     );
-    flush_log();
+    diag::flush_log();
     if after.len() != before + 1 {
         return; // nothing new to fix up
     }

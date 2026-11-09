@@ -5,8 +5,9 @@
 //! prologues and state stay with their owner:
 //!
 //! * pre-combat / GUI sites and their prologues belong to `precombat`;
-//! * spawn, battle-manager, deploy, extract and prize-target hooks belong to the battle or
-//!   bootstrap stage;
+//! * spawn and Creature logging hooks belong to `lifecycle_log`;
+//! * battle-manager, deploy, extract and prize-target hooks belong to `battle`, while
+//!   `bootstrap` coordinates the one patch session;
 //! * sound playback, logging and wall-clock helpers stay with their respective owners.
 //!
 //! # Borrowed game memory
@@ -194,9 +195,9 @@ pub(crate) fn plausible(p: usize) -> bool {
 ///
 /// # Safety
 ///
-/// Call on the game thread with a current, readable native creature established independently
-/// of this predicate; its fields must remain valid for these reads. The result is a transient
-/// snapshot, not an identity/lifetime check for a cached address or a long-lived borrow.
+/// If `p` passes `plausible`, the caller must independently establish a current, readable native
+/// creature whose fields remain valid for these game-thread reads. Implausible values return false
+/// without dereferencing. This is not an identity/lifetime check for a cached address.
 pub(crate) unsafe fn live_ship(p: usize) -> bool {
     plausible(p)
         && read::<u8>(p + OFF_CODE) & 0x2f == 0x2f

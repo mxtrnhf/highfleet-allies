@@ -10,6 +10,8 @@ use std::sync::{
     Mutex,
 };
 
+use patchy::{PatchSession, ReturnType, Trampoline};
+
 use crate::native::{live_ship, plausible, read, LINK_STRIDE, SHIP_LIST_LIMIT};
 use crate::native_layout::{Body, Creature, Link, PartStats};
 
@@ -66,7 +68,7 @@ fn unit() -> f32 {
     static STATE: AtomicU64 = AtomicU64::new(0);
     let mut x = STATE.load(Ordering::Relaxed);
     if x == 0 {
-        x = 0x9e37_79b9_7f4a_7c15 ^ (crate::pick(1 << 30) as u64 + 1);
+        x = 0x9e37_79b9_7f4a_7c15 ^ (crate::time::pick(1 << 30) as u64 + 1);
     }
     x ^= x << 13;
     x ^= x >> 7;
@@ -117,13 +119,44 @@ static AMMO_FUNDING: Mutex<Vec<(usize, usize, i32, i32)>> = Mutex::new(Vec::new(
 /// The game credits each gun's pool to its current ammo index. The free base-shell pool starts
 /// at 9999 rounds (`InitBattleGunAmmoReserves`, 0x14025fa30); an AI doctrine switch must not
 /// turn that into 9999 priced rounds. Funding records preserve the original paid/free identity.
-pub(super) const REFUND: usize = 0x1_4026_98c0;
-pub(super) const REFUND_STOLEN: [u8; 10] =
-    [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10];
+const REFUND: usize = 0x1_4026_98c0;
+const REFUND_STOLEN: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10];
 const REFUND_GUN_LISTS: [usize; 2] = [
     offset_of!(Creature, gun_group_0),
     offset_of!(Creature, gun_group_1),
 ];
+
+/// Installs the refund detour when `ally_ai_ammo` is enabled. A differing site is logged and
+/// disables the doctrine roll, exactly as before.
+/// Returns patch-construction errors without committing the caller's session.
+///
+/// # Safety
+/// Call during serialized initialization in the verified Steam 1.163 preferred-base image.
+/// The native refund entry must be mapped code and remain unchanged until session commit.
+pub(crate) unsafe fn install_refund(
+    session: &mut PatchSession,
+    enabled: bool,
+) -> Result<(), String> {
+    if !enabled {
+        return Ok(());
+    }
+    let found = std::slice::from_raw_parts(REFUND as *const u8, REFUND_STOLEN.len());
+    if found == REFUND_STOLEN {
+        let mut trampoline = Trampoline::new();
+        trampoline.bytes(&[0x48, 0x83, 0xec, 0x08]);
+        trampoline.preserved_call(on_refund as *const (), &[], &[], ReturnType::None);
+        trampoline.bytes(&[0x48, 0x83, 0xc4, 0x08]);
+        trampoline.bytes(&REFUND_STOLEN);
+        trampoline.relative_jump(REFUND + REFUND_STOLEN.len());
+        session
+            .detour_trampoline(REFUND, REFUND_STOLEN.len(), trampoline)
+            .map_err(|e| e.to_string())?;
+    } else {
+        log::warn!("hf_ally: refund function bytes differ ({found:02x?}), not hooked: allies on AP / proximity would credit free ammo");
+        set_enabled(false);
+    }
+    Ok(())
+}
 
 pub(crate) fn enabled() -> bool {
     AMMO_ON.load(Ordering::Relaxed)
@@ -228,7 +261,7 @@ unsafe fn record_funding_locked(
 ///
 /// # Safety
 /// Called by the verified native refund detour on the game thread with the live creature in RCX.
-pub(super) unsafe extern "C" fn on_refund(creature: usize) {
+unsafe extern "C" fn on_refund(creature: usize) {
     let _hook = crate::diag::scope("on_refund");
     let ours = AMMO_ROLLED.lock().map_or(false, |v| v.contains(&creature));
     if !ours {

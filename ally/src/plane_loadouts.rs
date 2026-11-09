@@ -1,4 +1,4 @@
-//! Carrier plane armament chosen on the pre-combat screen (button `PLANE_LOADOUT_n`, drawn by `lib.rs`).
+//! Carrier plane armament chosen on the pre-combat screen (button `PLANE_LOADOUT_n`, drawn by the pre-combat GUI).
 //!
 //! Facts (hf_notes/docs/findings/carrier-plane-loadouts.md, read in Ghidra, not all yet seen in play):
 //! * Planes are parts (logic id 500) of the carrier creature: Link vector `+0x14c8..+0x14d0` (stride 0x18, the part at

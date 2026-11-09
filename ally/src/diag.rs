@@ -37,6 +37,11 @@ use windows_sys::Win32::System::{
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BUILD: &str = env!("HF_ALLY_BUILD");
+
+/// The modloader may buffer its log: flush after the lines that matter for a crash report.
+pub(crate) fn flush_log() {
+    log::logger().flush();
+}
 /// Debug mode (megalog file, watchdog, crash minidump, verbose lines), set from `logging.debug_log`.
 /// Off unless the JSON enables it; the legacy `megalog` cargo feature does not force it.
 static DEBUG_ON: AtomicBool = AtomicBool::new(false);
@@ -141,7 +146,7 @@ fn emit(report: &str, in_crash: bool) {
         write_file(line, in_crash);
     }
     log::error!("{report}");
-    crate::flush_log();
+    flush_log();
 }
 
 unsafe fn report(kind: &str, info: *const EXCEPTION_POINTERS) {
@@ -311,7 +316,7 @@ fn watchdog() {
             write_file(&heartbeat, false);
         }
         if tick.is_multiple_of(3) {
-            crate::flush_log();
+            flush_log();
         }
     }
 }

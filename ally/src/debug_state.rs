@@ -68,7 +68,7 @@ unsafe fn view() -> Option<usize> {
     if mapped != 0 {
         return Some(mapped);
     }
-    let now = crate::now_ms();
+    let now = crate::time::now_ms();
     if now.wrapping_sub(LAST_OPEN_MS.load(Ordering::Relaxed)) < RETRY_MS {
         return None;
     }

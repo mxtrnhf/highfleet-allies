@@ -14,7 +14,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindow
 
 use crate::native_layout::Link;
 
-pub static ENABLED: AtomicBool = AtomicBool::new(false);
+static ENABLED: AtomicBool = AtomicBool::new(false);
 static HELD_KEYS: AtomicU8 = AtomicU8::new(0b111);
 const KEYS: [i32; 3] = [0x31, 0x32, 0x09]; // 1, 2, TAB
 const IN_COMBAT: usize = 0x1_47fc_6fb7;
@@ -43,7 +43,7 @@ type LinkUnlinkFn = unsafe extern "win64" fn(*mut Link) -> *mut Link;
 type LinkVecGrowFn = unsafe extern "win64" fn(usize, *mut Link, *const Link) -> *mut Link;
 
 /// Verify the native AI-vector append/remove path before any battle hook is installed.
-pub fn verify_native() -> Result<(), String> {
+fn verify_native() -> Result<(), String> {
     for (name, address, expected) in [
         ("link_construct", LINK_CONSTRUCT, &LINK_CONSTRUCT_BYTES[..]),
         ("link_copy", LINK_COPY, &LINK_COPY_BYTES[..]),
@@ -61,6 +61,15 @@ pub fn verify_native() -> Result<(), String> {
             ));
         }
     }
+    Ok(())
+}
+
+/// Validates the native path when enabled, then stores the effective runtime switch.
+pub(crate) fn configure(enabled: bool) -> Result<(), String> {
+    if enabled {
+        verify_native()?;
+    }
+    ENABLED.store(enabled, Ordering::Relaxed);
     Ok(())
 }
 
