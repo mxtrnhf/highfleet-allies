@@ -1,5 +1,20 @@
 # hf_ai changelog
 
+## v1.0.2 — robust profiling sink resolution
+
+- The v1.0.1 research build never recorded a span in the 2026-11-08 captures:
+  it looked up the sink in a hardcoded `hf_perf_v0.4.0.dll` while the installed
+  profiler was v0.5.0, so `GetModuleHandleA` failed once and the `OnceLock`
+  cached "no sink" for the whole session (the empty `ai_*_us_total` columns in
+  `highfleet-benchmark/captures/`).
+- The sink lookup now scans the hf_perf module candidates once from
+  `Modloader/mods` (any `hf_perf*.dll` plus the unversioned name), tries each
+  loaded module for the `hf_perf_record_span_v1` export, and retries with a
+  bounded attempt counter instead of caching the first failure. With hf_perf
+  0.6.0 the five span columns are per-frame totals.
+- No gameplay/config/native-layout change; default builds still compile the
+  feature out entirely. Cross-build checked only; no in-game validation yet.
+
 ## v1.0.1 — optional inclusive profiling
 
 - Add a compile-time `profiling` feature for five bounded QPC span categories,

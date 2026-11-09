@@ -53,7 +53,9 @@ these two additions; the fleet guards are not a confirmed fix for every merge cr
 
 Optional `ai` research build: `cargo xwin build --release --features profiling`
 records inclusive steering, creature-update, threat-scan, tracking and boost spans
-through an already-loaded `hf_perf_v0.4.0.dll`. No gameplay/config changes. These
+through the `hf_perf_record_span_v1` export of any loaded `hf_perf*.dll` (the
+candidates are scanned from `Modloader/mods`; hf_perf 0.6.0 turns them into the
+per-frame `ai_*_us_total` CSV columns). No gameplay/config changes. These
 are nested wall timings including native callees, not a complete Rust CPU total.
 Build without that feature for normal releases. Source/evidence and CSV analysis:
 `highfleet-benchmark/docs/frame-profiling.md` in the development workspace.
