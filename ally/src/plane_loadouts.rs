@@ -87,11 +87,14 @@ enum Kind {
     Rockets,
     /// carries an air-to-air missile (ammo class 5)
     Aa,
+    /// a gun-only loadout (no parts, the game's `has_gun37mm` flag, a qol `gun_ammo` entry)
+    Gun,
     /// parts this module knows nothing about: armed and charged, the game's own flight script
     Other,
 }
 
-/// One armament: a loadout of the game's table with parts (the guns-only loadouts have none).
+/// One armament choice: a loadout of the game's table. Gun-only loadouts carry no parts and cost
+/// nothing; the rest are (item name, count of one plane) pairs charged from the profile.
 pub struct Arm {
     /// the loadout name (`LOADOUT_T7_FAB100`)
     pub key: String,
@@ -204,6 +207,37 @@ fn make_arm(craft: &str, key: String, parts: Vec<(String, i32)>, classes: &HashM
     Arm { kind: classify(&parts, classes), key, craft: craft.to_string(), label, parts }
 }
 
+/// The label of a gun-only loadout name: "LOADOUT_MB110_GUN57" -> "57MM GUN",
+/// "LOADOUT_LA29_GUN20_2" -> "20MM GUN 2"; anything else the loadout's last name segment.
+fn gun_label(key: &str) -> String {
+    let suffix = key.rsplit_once('_').map_or(key, |(_, last)| last);
+    let Some(rest) = suffix.strip_prefix("GUN") else {
+        return suffix.to_string();
+    };
+    let digits: &str = rest.split(|c: char| !c.is_ascii_digit()).next().unwrap_or(rest);
+    if digits.is_empty() {
+        return suffix.to_string();
+    }
+    let tail = rest[digits.len()..].trim_start_matches('_');
+    let mut label = format!("{digits}MM GUN");
+    if !tail.is_empty() {
+        label.push(' ');
+        label.push_str(tail);
+    }
+    label
+}
+
+/// A gun-only loadout as an armament: nothing to charge, no inventory read while arming.
+fn make_gun_arm(craft: &str, key: String) -> Arm {
+    Arm {
+        key: key.clone(),
+        craft: craft.to_string(),
+        label: gun_label(&key),
+        parts: Vec::new(),
+        kind: Kind::Gun,
+    }
+}
+
 fn make_craft(name: &str, guns_only: Option<String>) -> Craft {
     let guns_only = guns_only.unwrap_or_else(|| format!("LOADOUT_{}_GUNS", name.strip_prefix("CRAFT_").unwrap_or(name)));
     Craft { name: name.to_string(), label: craft_label(name), guns_only }
@@ -214,7 +248,9 @@ fn vanilla_table() -> Table {
     let classes = HashMap::new();
     let (mut crafts, mut arms) = (Vec::new(), Vec::new());
     for (craft, short) in [("CRAFT_T7", "T7"), ("CRAFT_LA29", "LA29")] {
-        crafts.push(make_craft(craft, Some(format!("LOADOUT_{short}_GUN37"))));
+        let gun = format!("LOADOUT_{short}_GUN37");
+        crafts.push(make_craft(craft, Some(gun.clone())));
+        arms.push(make_gun_arm(craft, gun));
         for (suffix, item, t7, la29) in VANILLA {
             let count = if craft == "CRAFT_T7" { t7 } else { la29 };
             if count > 0 {
@@ -284,8 +320,10 @@ unsafe fn ammo_classes() -> HashMap<String, i32> {
 }
 
 /// The crafts and armaments read from the live tables: every craft in `PLANE_TLL` (the two vanilla ones first, so their
-/// button places stay as they were) and every loadout in its vector that has parts. `None` when the craft map is empty
-/// or unreadable (the tables are filled by `PrepareMainLoop`, and qol's `planes` option replaces them after that).
+/// button places stay as they were) and every loadout in its vector: the gun-only ones (no parts, the game's
+/// `has_gun37mm` flag) as zero-cost gun armaments with the craft's default first, then the part-carrying ones. `None`
+/// when the craft map is empty or unreadable (the tables are filled by `PrepareMainLoop`, and qol's `planes` option
+/// replaces them after that).
 unsafe fn read_table() -> Option<Table> {
     let nodes = map_nodes(PLANE_TLL);
     if nodes.is_empty() {
@@ -306,25 +344,39 @@ unsafe fn read_table() -> Option<Table> {
             return None;
         }
         let mut guns_only: Option<String> = None;
+        let mut gun_arms: Vec<Arm> = Vec::new();
+        let mut part_arms: Vec<Arm> = Vec::new();
         for lo in (b..e).step_by(8).map(|a| rd::<usize>(a)) {
             if !crate::native::plausible(lo) {
                 return None;
             }
             let (pb, pe): (usize, usize) = (rd(lo + LO_PARTS.0), rd(lo + LO_PARTS.1));
             let key = string_at(lo).filter(|_| pe >= pb && (pe - pb) / PART_STRIDE <= 16)?;
+            let has_gun = rd::<u8>(lo + offset_of!(Loadout, has_gun37mm)) != 0;
             let parts: Vec<(String, i32)> = (pb..pe)
                 .step_by(PART_STRIDE)
                 .filter_map(|p| Some((string_at(p)?, rd::<i32>(p + PART_COUNT))))
                 .filter(|(n, c)| !n.is_empty() && *c > 0)
                 .collect();
             if parts.is_empty() {
-                if guns_only.is_none() || key.ends_with("GUN37") {
-                    guns_only = Some(key);
+                // a gun-only loadout the game itself arms through the `has_gun37mm` flag (qol's `gun_ammo`
+                // entries swap in the selected cannon); one without the flag arms nothing at all
+                if has_gun {
+                    if guns_only.is_none() || key.ends_with("GUN37") {
+                        guns_only = Some(key.clone());
+                    }
+                    gun_arms.push(make_gun_arm(&craft, key));
                 }
             } else {
-                arms.push(make_arm(&craft, key, parts, &classes));
+                part_arms.push(make_arm(&craft, key, parts, &classes));
             }
         }
+        // the craft's default (gunpod) loadout first, so the choice cycle starts at it (vanilla: the 37 mm)
+        if let Some(default) = &guns_only {
+            gun_arms.sort_by_key(|arm| arm.key != *default);
+        }
+        arms.extend(gun_arms);
+        arms.extend(part_arms);
         crafts.push(make_craft(&craft, guns_only));
     }
     Some(Table { crafts, arms })
@@ -364,14 +416,20 @@ pub fn crafts() -> &'static [Craft] {
     &table().crafts
 }
 
-/// The label drawn beside the button of plane type `craft`: what is chosen and how many of it the player still owns.
+/// The label drawn beside the button of plane type `craft`: the chosen armament (the craft's
+/// default gun while nothing is picked) and, for one with parts, the stock the player still owns.
 pub unsafe fn label_for(craft: usize, choice: Option<usize>) -> String {
+    let craft_label = crafts()[craft].label.as_str();
     match choice {
-        None => format!("{}: GUNS ONLY", crafts()[craft].label),
+        None => format!("{craft_label}: {}", gun_label(&crafts()[craft].guns_only)),
         Some(a) => {
             let arm = &arms()[a];
-            let stock = arm.parts.iter().map(|(n, _)| owned(n).to_string()).collect::<Vec<_>>().join("/");
-            format!("{}: {} [{}]", crafts()[craft].label, arm.label, stock)
+            if arm.parts.is_empty() {
+                format!("{craft_label}: {}", arm.label)
+            } else {
+                let stock = arm.parts.iter().map(|(n, _)| owned(n).to_string()).collect::<Vec<_>>().join("/");
+                format!("{craft_label}: {} [{}]", arm.label, stock)
+            }
         }
     }
 }
@@ -421,6 +479,10 @@ const SET_STATE: usize = 0x1_4000_ebb0;
 /// Plane parts armed with the K-13 choice. `on_update` manages their mode, state and target;
 /// the native aircraft update performs the launch (notes: carrier-plane-loadouts.md section 13).
 static AA: Mutex<Vec<(usize, usize, f64)>> = Mutex::new(Vec::new());
+/// Plane parts armed with a chosen gun loadout: (plane, owner ship, game time of the arming).
+/// `on_update` (`guns_engage`) manages their mode, target and departure; a normal battle launches
+/// them into mode 6, which never starts an attack on its own (notes section 17).
+static GUN_PLANES: Mutex<Vec<(usize, usize, f64)>> = Mutex::new(Vec::new());
 const UPDATE_FN: usize = 0x1_4000_b370;
 const UPDATE_BYTES: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20];
 static AA_LAST: Mutex<Vec<(usize, u64)>> = Mutex::new(Vec::new());
@@ -557,6 +619,9 @@ pub fn clear() {
     if let Ok(mut c) = AA.lock() {
         c.clear();
     }
+    if let Ok(mut c) = GUN_PLANES.lock() {
+        c.clear();
+    }
     if let Ok(mut c) = WATCH.lock() {
         c.clear();
     }
@@ -571,11 +636,16 @@ pub fn clear() {
     }
 }
 
-/// The next choice when the button is clicked: none -> first affordable -> ... -> none.
+/// The next choice when the button is clicked: first armament -> ... -> last -> back to the first.
+/// Every craft offers at least its guns, so the cycle never returns to an unchosen state.
 pub unsafe fn next_choice(ship: usize, craft: usize) -> Option<usize> {
     let available = available_arms(ship, craft);
     match choice(ship, craft) {
-        Some(current) => available.into_iter().find(|&a| a > current),
+        Some(current) => available
+            .iter()
+            .find(|&&a| a > current)
+            .copied()
+            .or_else(|| available.first().copied()),
         None => available.first().copied(),
     }
 }
@@ -671,20 +741,28 @@ pub unsafe extern "C" fn on_arm(plane: usize, owner: usize) {
     // The chosen loadout is the whole armament: stop the vanilla class-3 stock draw from topping a FAB loadout up with
     // NAR-122 from the craft's other loadout (seen in a Shipworks test fight: FAB100 plane also carried 6 rockets).
     no_rockets(plane);
-    if arm.kind == Kind::Aa {
-        if let Ok(mut a) = AA.try_lock() {
-            a.retain(|p| p.0 != plane);
-            a.push((plane, owner, now));
+    match arm.kind {
+        Kind::Aa => {
+            if let Ok(mut a) = AA.try_lock() {
+                a.retain(|p| p.0 != plane);
+                a.push((plane, owner, now));
+            }
         }
-    }
-    if arm.kind != Kind::Aa {
-        if let Ok(mut w) = WATCH.try_lock() {
-            w.retain(|e| e.0 != plane);
-            // `extra_gunpod` is for the two vanilla carrier planes only. Custom crafts (SB-15 etc.) keep their own
-            // loadout: if a custom plane was not given a gun in its loadout, it must not suddenly get one.
-            let gunpod = matches!(arm.kind, Kind::Bombs | Kind::Rockets)
-                && matches!(craft.as_str(), "CRAFT_T7" | "CRAFT_LA29");
-            w.push((plane, arm.kind == Kind::Bombs, gunpod, false, now));
+        Kind::Gun => {
+            if let Ok(mut g) = GUN_PLANES.try_lock() {
+                g.retain(|e| e.0 != plane);
+                g.push((plane, owner, now));
+            }
+        }
+        _ => {
+            if let Ok(mut w) = WATCH.try_lock() {
+                w.retain(|e| e.0 != plane);
+                // `extra_gunpod` is for the two vanilla carrier planes only. Custom crafts (SB-15 etc.) keep their own
+                // loadout: if a custom plane was not given a gun in its loadout, it must not suddenly get one.
+                let gunpod = matches!(arm.kind, Kind::Bombs | Kind::Rockets)
+                    && matches!(craft.as_str(), "CRAFT_T7" | "CRAFT_LA29");
+                w.push((plane, arm.kind == Kind::Bombs, gunpod, false, now));
+            }
         }
     }
     if crate::diag::debug() {
@@ -719,6 +797,90 @@ unsafe fn attackers_to_mode_3(logic: usize) {
         rd::<u64>(logic + LOGIC_ROCKET_COUNT),
         rd::<usize>(logic + LOGIC_TARGET)
     );
+}
+
+/// Gun-armed planes: a normal battle launches them into mode 6, which never starts an attack on its own
+/// (notes section 17). Mode 2 is the persistent fighter variant the `extra_gunpod` planes fly (verified in
+/// `Combat.seria`): it pursues the target and fires the gun while the rounds last, but never leaves by itself.
+/// The target is the one the launch took from the carrier (its locked enemy), else the nearest enemy plane or
+/// missile (the same hunt the K-13 interceptors use). When the gun is dry the plane goes home the way a K-13
+/// plane does (mode 6, state 5).
+unsafe fn guns_engage(logic: usize) {
+    let Ok(list) = GUN_PLANES.try_lock() else { return };
+    let Some(&(plane, owner, armed_at)) = list
+        .iter()
+        .find(|e| crate::native::plausible(e.0) && rd::<usize>(e.0 + OFF_LOGIC) == logic)
+    else {
+        return;
+    };
+    drop(list);
+
+    let mode = rd::<i32>(logic + LOGIC_MODE);
+    let state = rd::<i32>(logic + LOGIC_STATE);
+    if matches!(state, 5..=7) {
+        // leaving the battle (dry gun, recalled, owner gone): nothing left to manage here
+        if let Ok(mut g) = GUN_PLANES.try_lock() {
+            g.retain(|e| e.0 != plane);
+        }
+        return;
+    }
+    if crate::native::read::<f64>(crate::native::CLOCK) - armed_at
+        < f32::from_bits(ATTACK_DELAY_S.load(Ordering::Relaxed)) as f64
+    {
+        return; // let it take off and clear the carrier first (the same delay the bomb / rocket planes use)
+    }
+
+    let rounds = rd::<i32>(logic + LOGIC_GUN_LOAD) + rd::<i32>(logic + LOGIC_GUN_RESERVE_AMMO);
+    let set_state: unsafe extern "win64" fn(usize, i32) = std::mem::transmute(SET_STATE);
+    if mode == 2 && rounds <= 0 {
+        // the gun is dry: mode 2 never leaves by itself (notes section 14)
+        (logic as *mut i32).byte_add(LOGIC_MODE).write_unaligned(6);
+        set_state(logic, 5);
+        log::info!("PLANE gun: plane {plane:#x} out of gun rounds, leaving (mode 2 -> 6, state {state} -> 5)");
+        if let Ok(mut g) = GUN_PLANES.try_lock() {
+            g.retain(|e| e.0 != plane);
+        }
+        return;
+    }
+
+    let own_side = rd::<f32>(owner + OFF_SIDE);
+    let target = rd::<usize>(logic + LOGIC_TARGET);
+    let victim = if target != 0 {
+        target
+    } else if own_side != 0.0 {
+        find_target(owner, own_side)
+    } else {
+        0
+    };
+    let set_link: unsafe extern "win64" fn(usize, usize) = std::mem::transmute(SET_LINK);
+    match mode {
+        6 if victim != 0 => {
+            if victim != target {
+                set_link(logic + LOGIC_TARGET_LINK, victim);
+            }
+            (logic as *mut i32).byte_add(LOGIC_MODE).write_unaligned(2);
+            set_state(logic, 3);
+            log::info!(
+                "PLANE gun: plane {plane:#x} engages target {victim:#x} (mode 6 -> 2, state {state} -> 3, {rounds} rounds)"
+            );
+        }
+        6 if matches!(state, 1..=4) => {
+            // nothing to shoot yet (no carrier lock, no enemy aircraft): back to the carrier circle
+            set_state(logic, 0);
+        }
+        2 if target == 0 => {
+            if victim != 0 {
+                set_link(logic + LOGIC_TARGET_LINK, victim);
+                set_state(logic, 3);
+                log::info!("PLANE gun: plane {plane:#x} lost its target, engages {victim:#x} (state {state} -> 3)");
+            } else {
+                (logic as *mut i32).byte_add(LOGIC_MODE).write_unaligned(6);
+                set_state(logic, 0);
+                log::info!("PLANE gun: plane {plane:#x} lost its target, back to the circle (mode 2 -> 6, state 0)");
+            }
+        }
+        _ => {}
+    }
 }
 
 /// True only in the normal tactical battle (`Combat.seria`): mode selector 4 and not the scripted bomber / tutorial
@@ -787,6 +949,7 @@ pub unsafe extern "C" fn on_update(logic: usize, body: usize) {
     if crate::native::plausible(logic) {
         ensure_gunpod(logic);
         attackers_to_mode_3(logic);
+        guns_engage(logic);
     }
     if crate::diag::debug() {
         census(crate::native::read::<f64>(crate::native::CLOCK)); // the body array is only stable inside the aircraft update
@@ -1153,6 +1316,13 @@ unsafe fn census(now: f64) {
 }
 
 pub unsafe fn tick() {
+    // gun-plane bookkeeping: drop the entries whose plane is destroyed or gone (the dry-gun and
+    // leaving cases remove themselves in `guns_engage`)
+    if let Ok(mut g) = GUN_PLANES.try_lock() {
+        if !g.is_empty() {
+            g.retain(|(plane, _, _)| crate::native::plausible(*plane) && rd::<i32>(*plane + OFF_ACTIVE) != 0);
+        }
+    }
     let Ok(mut w) = WATCH.try_lock() else { return };
     if w.is_empty() {
         return;
