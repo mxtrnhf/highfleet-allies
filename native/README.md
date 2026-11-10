@@ -39,7 +39,8 @@ features in other DLLs, including an older perf-branch hf_ai's ally tick skip.
 |---|---|---|
 | `enabled` | false | Master startup installation switch |
 | `link_search` | true | Native reference-removal acceleration and aggregate counters |
-| `tail_probe` | true | Allow the link module's tail-match fast path |
+| `tail_probe` | true | Newest-cell probe for `Link_UnlinkFromNode` and the `SLink` destructor (measured 58.5% hit rate) |
+| `tail_probe_remove` | false | Newest-cell probe for `RemoveNodeLink`; measured 1.7% hit rate at 453.6 hops/call, so off by default |
 | `parts_direct_append` | true | Direct in-place Link construction in `Body_CollectSubtreeLinks` when capacity is available (elides temporary Link register/unlink/free churn) |
 | `contact_pool` | true | Scoped native contact allocation reuse |
 | `contact_pool_capacity` | 4096 | Maximum cached free blocks per contact size class; 1..65536 |

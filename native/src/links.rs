@@ -127,6 +127,11 @@ const SLINK_SCALAR_DELETING_DESTRUCTOR_BODY: [u8; 0x9c] = [
 const TAIL_PROBE_MIN_LENGTH: u64 = 2;
 
 static TAIL_PROBE: AtomicBool = AtomicBool::new(false);
+/// Separate switch for `RemoveNodeLink`. The live 2026-11-10 run measured
+/// 453.6 hops/call with only 1.7% newest-cell hits there, so the probe was a
+/// pure loss on the dominant owner-clear path; `Link_UnlinkFromNode` measured
+/// 4.9 hops/call with 58.5% hits, where it clearly pays.
+static TAIL_PROBE_REMOVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
 struct SiteCounters {
@@ -392,7 +397,7 @@ unsafe extern "C" fn remove_node_link(node: *mut u8, link: *mut u8) -> bool {
         return false;
     }
 
-    let tail_probe = TAIL_PROBE.load(Ordering::Relaxed);
+    let tail_probe = TAIL_PROBE_REMOVE.load(Ordering::Relaxed);
     let result = search(node, link, tail_probe);
     record_search(&REMOVE_NODE_LINK_COUNTERS, &result);
 
@@ -560,9 +565,11 @@ unsafe fn prepare_replacement(
 /// detours in `session`.
 ///
 /// `tail_probe` enables the newest-cell test on lists of at least
-/// [`TAIL_PROBE_MIN_LENGTH`] entries. With it disabled the replacements are
-/// still equivalent to native (and still collect counters), but provide no
-/// search-position advantage.
+/// [`TAIL_PROBE_MIN_LENGTH`] entries for `Link_UnlinkFromNode` and the `SLink`
+/// destructor. `tail_probe_remove` enables it separately for `RemoveNodeLink`,
+/// whose dominant caller clears long-lived owner links near the head. With a
+/// probe disabled the replacements are still equivalent to native (and still
+/// collect counters), but provide no search-position advantage.
 ///
 /// No patch is added unless every native body matches. The session remains
 /// droppable without touching the process; installation is the parent's
@@ -574,7 +581,11 @@ unsafe fn prepare_replacement(
 /// preferred base. The caller must install and keep this DLL resident for the
 /// process lifetime, and no other module may own the same three entry points.
 /// All three routines must remain game-thread-only, as native code assumes.
-pub unsafe fn prepare(session: &mut PatchSession, tail_probe: bool) -> Result<(), String> {
+pub unsafe fn prepare(
+    session: &mut PatchSession,
+    tail_probe: bool,
+    tail_probe_remove: bool,
+) -> Result<(), String> {
     validate_body(
         "RemoveNodeLink",
         REMOVE_NODE_LINK_ADDRESS,
@@ -614,5 +625,6 @@ pub unsafe fn prepare(session: &mut PatchSession, tail_probe: bool) -> Result<()
     )?;
 
     TAIL_PROBE.store(tail_probe, Ordering::Relaxed);
+    TAIL_PROBE_REMOVE.store(tail_probe && tail_probe_remove, Ordering::Relaxed);
     Ok(())
 }

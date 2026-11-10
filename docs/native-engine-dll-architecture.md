@@ -348,3 +348,38 @@ Built and integrated in [`native/`](../native/README.md) on `main`:
    near-CALL relays (`native/src/call_hook.rs`).
 4. **Excluded as requested:** ship module/status panel rendering (`0x1402fe109`
    and `ally_panels`) is untouched.
+
+## First live telemetry (`hf_native v0.1.0`, 2026-11-10 14:46–14:49)
+
+One real heavy battle (3 friendly / 2 hostile heavies, `max_allies 2`), 9 patches
+installed, no `hf_native` error and no crash. Counters are cumulative and
+independent of rendered FPS.
+
+| Module | Reading | Interpretation |
+|---|---|---|
+| `parts` | 11.09 M `direct`, 336 `growth`, 0 `fallback`, 0 `anomalies` | Direct in-place append served 99.997% of collected parts; the temporary `Link` register/copy/unlink/free churn is gone on that path |
+| `contacts` | `pooled=0`, `hits=0`, `cached=0`, all `native=` | **Pool was inert.** Every event was rejected as "foreign thread" |
+| `links` `RemoveNodeLink` | 6.15 M calls, 2.80 B hops, 56.8 k tail hits | **453.6 hops/call, 1.7% tail hits** |
+| `links` `Link_UnlinkFromNode` | 30.6 M calls, 148.8 M hops, 18.6 M tail hits | 4.9 hops/call, **58.5% tail hits** |
+| `links` `SLink` dtor | 0 | Never exercised in battle |
+
+Steady-state rates over a 10 s window: `RemoveNodeLink` 51.5 k calls/s and
+**23.3 M dependent pointer-chasing hops/s**; `Link_UnlinkFromNode` 278.9 k
+calls/s and 1.36 M hops/s; `parts` 100 k direct appends/s.
+
+Findings acted on in v0.1.1:
+
+1. The thread-identity gate on the contact pool was wrong: Modloader
+   initialization and the contact allocator/drain do not share a thread. The
+   pool now uses only its non-blocking lock, which already existed for safety.
+2. The newest-cell probe is **not** a win for `RemoveNodeLink`. Its dominant
+   caller clears long-lived owner links far from the tail, so the probe adds
+   loads and still scans ~454 cells. It is now a separate switch
+   (`tail_probe_remove`, default off) while `Link_UnlinkFromNode` keeps it.
+
+Still the largest measured native cost, and still blocked: the ~454-hop scan per
+owner clear. Splitting the two removal workloads shows that a position-independent
+handle is the only fix that targets it; a two-ended or tail scan cannot, because
+the cost is the dependent-load chain, not the comparison count. That remains
+gated on a positive proof that every free of a reachable registration cell passes
+through a site this DLL owns.

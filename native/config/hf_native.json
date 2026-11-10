@@ -2,6 +2,7 @@
   "enabled": false,
   "link_search": true,
   "tail_probe": true,
+  "tail_probe_remove": false,
   "parts_direct_append": true,
   "contact_pool": true,
   "contact_pool_capacity": 4096,

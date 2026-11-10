@@ -27,6 +27,11 @@
 //! the callback into the original caller. The callbacks never hold the pool
 //! lock across a native call.
 //!
+//! Access is serialised by a single non-blocking lock rather than restricted to
+//! the preparing thread: the live 1.163 run showed contact allocation and the
+//! physics drain on a different thread from Modloader initialization, so a
+//! thread-identity gate made every event fall back to native allocation.
+//!
 //! Correctness argument and residual risks are in the 2026-11-10 build report
 //! filed with the native-DLL run (`contacts.md`).
 
@@ -157,8 +162,8 @@ pub struct Snapshot {
     pub native_free_calls: u64,
     /// Hooks that skipped the pool because another thread held its lock.
     pub lock_busy: u64,
-    /// Hooks that fell back because the calling thread was not the prepare thread.
-    pub foreign_thread: u64,
+    /// Hooks that fell back because the pool was not active yet.
+    pub inactive: u64,
 }
 
 #[derive(Default)]
@@ -174,13 +179,13 @@ struct Counters {
     native_new_calls: AtomicU64,
     native_free_calls: AtomicU64,
     lock_busy: AtomicU64,
-    foreign_thread: AtomicU64,
+    inactive: AtomicU64,
 }
 
 impl Counters {
     fn snapshot(&self) -> Snapshot {
         Snapshot {
-            active: POOL.main_thread.load(Ordering::Relaxed) != 0,
+            active: POOL.prepare_thread.load(Ordering::Relaxed) != 0,
             capacity: POOL.capacity.load(Ordering::Relaxed),
             records_pooled: POOL.record_len.load(Ordering::Acquire),
             cells_pooled: POOL.cell_len.load(Ordering::Acquire),
@@ -196,7 +201,7 @@ impl Counters {
             native_new_calls: self.native_new_calls.load(Ordering::Relaxed),
             native_free_calls: self.native_free_calls.load(Ordering::Relaxed),
             lock_busy: self.lock_busy.load(Ordering::Relaxed),
-            foreign_thread: self.foreign_thread.load(Ordering::Relaxed),
+            inactive: self.inactive.load(Ordering::Relaxed),
         }
     }
 }
@@ -215,8 +220,8 @@ struct Pool {
     lock: AtomicBool,
     /// 0 until a successful `prepare`; keeps pushes out of the array.
     capacity: AtomicUsize,
-    /// Thread that called `prepare`; hooks on other threads use native paths.
-    main_thread: AtomicU32,
+    /// Thread that called `prepare`; used only to report activation in snapshots.
+    prepare_thread: AtomicU32,
     record_len: AtomicUsize,
     cell_len: AtomicUsize,
     records: UnsafeCell<[usize; MAX_CAPACITY]>,
@@ -224,16 +229,16 @@ struct Pool {
     counters: Counters,
 }
 
-// SAFETY: every access to the `UnsafeCell` arrays happens while `lock` is held
-// by a hook that already passed the prepare-thread check (or by `prepare`
-// itself). Foreign threads take the native path before `lock_pool`. The
+// SAFETY: every access to the `UnsafeCell` arrays happens while `lock` is held,
+// on any thread. Hooks that lose the lock, or that run before `prepare` set a
+// capacity, use the native allocator instead of touching the arrays. The
 // atomics are independently thread-safe.
 unsafe impl Sync for Pool {}
 
 static POOL: Pool = Pool {
     lock: AtomicBool::new(false),
     capacity: AtomicUsize::new(0),
-    main_thread: AtomicU32::new(0),
+    prepare_thread: AtomicU32::new(0),
     record_len: AtomicUsize::new(0),
     cell_len: AtomicUsize::new(0),
     records: UnsafeCell::new([0; MAX_CAPACITY]),
@@ -250,7 +255,7 @@ static POOL: Pool = Pool {
         native_new_calls: AtomicU64::new(0),
         native_free_calls: AtomicU64::new(0),
         lock_busy: AtomicU64::new(0),
-        foreign_thread: AtomicU64::new(0),
+        inactive: AtomicU64::new(0),
     },
 };
 
@@ -343,10 +348,15 @@ unsafe fn reuse(class: Class) -> Option<usize> {
     Some(block)
 }
 
-/// Whether this hook runs on the thread that called `prepare`.
-fn on_main_thread() -> bool {
-    let main_thread = POOL.main_thread.load(Ordering::Relaxed);
-    main_thread != 0 && unsafe { GetCurrentThreadId() } == main_thread
+/// Whether this hook may use the pool at all.
+///
+/// The pool is **not** restricted to the thread that ran `prepare`: HighFleet's
+/// contact allocation and the physics drain need not share that thread, and an
+/// earlier build proved they do not (every event fell back as "foreign"). Every
+/// free-list access is instead serialised by [`lock_pool`]; contention falls
+/// back to the native allocator instead of blocking.
+fn pool_active() -> bool {
+    POOL.capacity.load(Ordering::Relaxed) != 0
 }
 
 /// Calls the native allocator with the call site's original argument.
@@ -385,8 +395,8 @@ unsafe fn allocate(class: Class, size: usize) -> *mut u8 {
         });
         return native_new(size);
     }
-    if !on_main_thread() {
-        bump(&POOL.counters.foreign_thread);
+    if !pool_active() {
+        bump(&POOL.counters.inactive);
         bump(match class {
             Class::Record => &POOL.counters.record_native,
             Class::Cell => &POOL.counters.cell_native,
@@ -421,8 +431,8 @@ unsafe fn release(class: Class, block: usize, size: usize) {
         return;
     }
 
-    if !on_main_thread() {
-        bump(&POOL.counters.foreign_thread);
+    if !pool_active() {
+        bump(&POOL.counters.inactive);
         bump(forwarded_counter(class));
         native_free(block, size);
         return;
@@ -590,7 +600,7 @@ pub unsafe fn prepare(session: &mut PatchSession, capacity: usize) -> Result<(),
     POOL.record_len.store(0, Ordering::Relaxed);
     POOL.cell_len.store(0, Ordering::Relaxed);
     POOL.capacity.store(capacity, Ordering::Release);
-    POOL.main_thread
+    POOL.prepare_thread
         .store(GetCurrentThreadId(), Ordering::Release);
     Ok(())
 }
