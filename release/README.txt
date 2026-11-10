@@ -3,8 +3,11 @@ hf_ally @ALLY_VERSION@ + hf_ai @AI_VERSION@ + bundled QoL — Steam 1.163 only
 Source: https://github.com/mxtrnhf/highfleet-allies
 
 WHAT CHANGED
-- Improved debug overlay: more accurate aim markers and configurable pointer length.
-- Overlay confirmed working in game by the maintainer on 2026-11-09.
+- Fixed: ship bombers caused a huge performance drop. One of the bomber checks
+  was attached to a place in the game code that runs once for every part of a
+  ship, and a large ship has hundreds of parts. Each run redid the whole
+  situation check from scratch — target, speed, where to fly — hundreds of
+  times per frame. It now runs once per ship.
 
 DEBUG OVERLAY SETTINGS
 Modloader/config/ally.json -> debug_overlay:
@@ -34,7 +37,7 @@ CONTENTS
 - Allies_Manual.pdf, docs/: player manual and configuration references.
 - Media/Snd/RADIO/radio_stall_01.wav: custom Russian voice line.
 - manifest.json: source commit, component versions, validation and file metadata.
-- Built by GitHub Actions without diagnostic features.
+- Built without diagnostic features.
 
 CREDITS
 Built on logdot's Highfleet-Modloader, patchy-rs, highfleet-rs and highfleet-qol.
