@@ -1,0 +1,21 @@
+[package]
+name = "hf-native"
+version = "0.1.0"
+edition = "2021"
+description = "Experimental native engine work elimination for HighFleet Steam 1.163"
+
+[lib]
+name = "hf_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+highfleet = { git = "https://github.com/logdot/highfleet-rs.git", rev = "05c62078c6f896c141713a68b3991663e121b7bf" }
+highfleet-mod-api = { git = "https://github.com/logdot/Highfleet-Modloader.git", tag = "v4.0.0" }
+log = "0.4.28"
+patchy = { package = "patchy-rs", git = "https://github.com/logdot/patchy-rs.git", tag = "v0.1.0" }
+serde = { version = "1.0.221", features = ["derive"] }
+serde_json = "1.0.144"
+windows-sys = { version = "0.61", features = ["Win32_System_Diagnostics_Debug", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Threading"] }
+
+[profile.release]
+panic = "abort"

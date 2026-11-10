@@ -10,6 +10,11 @@ Two mods for **HighFleet (Steam 1.163)**, built on [logdot's Highfleet-Modloader
 
 Both are optional, independent DLLs. Everything is reverse-engineered, so **Steam 1.163 only**; they refuse to start on other versions. Back up your `Saves` folder first.
 
+Experimental native-engine acceleration is developed separately in
+[`native/`](native/README.md) (**hf_native**). It is not part of the player
+release pack and does not replace hf_ally, hf_ai or QoL. Native architecture and
+proof boundaries: [DLL architecture](docs/native-engine-dll-architecture.md).
+
 > **PACK v1.0.3 — IMPROVED DEBUG OVERLAY**
 > **From v0.15.0 or any later development build:** replace both `Modloader/config/ally.json` and `Modloader/config/hf_ai.json` with the v1.0.0 presets. In `ally.json`, `enabled` is the only master switch; `auto_retreat` and `enemy_all_at_once` are retired; `spawn_ally`, `ally_toggle`, `ally_reticles`, `max_enemy_ships`, `plane_bombers`, `marker_seam`, `marker_delay_ms` and the retired logging keys are ignored. In `hf_ai.json`, the retired curtain keys (`curtain_*` / `launch_flares_*`) and early-fire keys (`aim_fire_*`) do nothing, and `dive_dwell_s` defaults to `0.3`. Ally radio lines follow the game language (`Media/Snd/RADIO` in Russian, `Media/Snd/RADIO_ENG` in English); custom voice paths and custom audio are planned for a future version.
 > **From v0.14.13 or older:** replace both configs; the v1.0.0 presets include the earlier grouped/HEX/logging cleanups.
@@ -59,6 +64,10 @@ Rust nightly/stable ≥ 1.88 with `cargo-xwin` (cross-compiles to Windows MSVC f
     cd ally && cargo xwin build --release --target x86_64-pc-windows-msvc
     cd ai   && cargo xwin build --release --target x86_64-pc-windows-msvc
 
+For the separate experimental engine DLL:
+
+    cd native && cargo xwin build --release --locked --target x86_64-pc-windows-msvc
+
 Logging settings are grouped under `"logging"` in each mod's JSON. In `ally.json`, set `"logging": { "debug_log": true }` for a verbose megalog, watchdog and crash dump (`Modloader/logs/hf_ally_megalog_*.log`, `hf_ally_crash_*.dmp`; dumps may contain paths and campaign data, delete them after sending). `debug_log` is an on/off switch and defaults to `false`; the legacy `megalog` cargo feature does not force it on. `logging.gui_inspect` and `logging.log_creatures` remain available (both default false), as does `hf_ai.json`'s `logging.log_panic`. Old top-level forms of the kept keys remain readable; explicit nested settings take precedence. `max_lines`, `log_precombat`, `probe_lines`, `log_colors` and `dead_node` are retired and ignored. See [retired diagnostics](docs/retired-diagnostics.md) and [all ally settings](docs/ally-config.md). Ship/battle CSV capture, F9 capture markers and replay-analysis tools have been removed, including the `telemetry` cargo feature.
 Build and publish releases through [GitHub Actions](.github/workflows/release.yml): run **Build and publish release** with the pack version. It builds all three DLLs on Windows, packages the tracked presets, and publishes the ZIP to GitHub Releases. No separate pack checksum is published. For local packaging only: `python3 tools/package_release.py --version 1.0.3 --validation "Debug overlay confirmed working in game (2026-11-09)." --output ../release_packs`.
 
@@ -89,5 +98,6 @@ The game's addresses, struct layouts and findings are in a separate repo: **[mxt
 * Built on logdot's [Highfleet-Modloader](https://github.com/logdot/Highfleet-Modloader), [patchy-rs](https://github.com/logdot/patchy-rs), [highfleet-qol](https://github.com/logdot/highfleet-qol) and [highfleet-rs](https://github.com/logdot/highfleet-rs); the `ai_flares` and missile-dump ideas started in the QoL fork.
 * The combat ship-switching idea was inspired by **greatf1y** on Discord.
 * `hf_ally` and `hf_ai` pin `highfleet-rs` to revision `05c6207` for the Steam 1.163 aircraft/loadout, Body, AircraftLogic, PartStats, Creature and GUI layouts. Compile-time checks preserve the existing field offsets; game-native constructors, string assignment and link operations still manage game-owned objects. Fields upstream does not model yet stay local with their raw offsets.
+* Experimental `hf_native` uses the same reviewed full `highfleet-rs` revision for the native Node, Link and sentinel-list prefix contracts; native code retains allocation and lifetime ownership.
 * Much of the code and notes were written with the help of Claude Code (Anthropic); commits carry the co-author line.
 * Unofficial fan project, not affiliated with the HighFleet developers or publisher. No game files are included. MIT licensed, see [LICENSE](LICENSE).

@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "link_search": true,
+  "tail_probe": true,
+  "parts_direct_append": true,
+  "contact_pool": true,
+  "contact_pool_capacity": 4096,
+  "diagnostics_interval_seconds": 10
+}

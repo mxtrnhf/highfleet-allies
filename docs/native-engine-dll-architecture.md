@@ -1,0 +1,350 @@
+# Native engine sidesteps through injected DLLs — HighFleet 1.163
+
+Date: 2026-11-10. Source baseline: `highfleet-allies` **main**, `3030289`.
+Research only: no source behavior changes, builds, deployment, game launch or
+attachment, native edits or Ghidra writes. DeepSeek V4.1 Flash 1017 reviews were
+explicitly authorized by the user; parent synthesis and verification follow.
+
+## Evidence boundary
+
+Current measured baseline: [Nov 10 heavy-battle perf analysis](../../highfleet-benchmark/docs/perf-heavy-battle-2026-11-10.md).
+Native reverse-link removal accounts for 12.14% of sampled user CPU. Wine memory
+query routines account for 9.78%, incompletely attributed. Neither figure is
+a frame-time share, exclusive mod cost or promised saving. Native bookkeeping
+is a confirmed hotspot; the proposition that all mod code is cost-free is not.
+
+The goal is to remove repeated native work while retaining allies, native combat
+cadence and supported object/allocator contracts. A DLL can replace a bounded
+native subsystem; it does not need to parallelize or rewrite the entire engine.
+
+## Main versus perf branches
+
+| Branch/worktree | Reviewed head | Relevant state |
+|---|---|---|
+| `main`, `highfleet-allies/` | `3030289` | hf_ally 1.0.4; hf_ai 1.0.0; no profiling/tick-skip module in AI |
+| `perf/ai-profile-v1`, `/tmp/opencode/frame-profile-2026-11-08/mods` | `3fc8a05` | hf_ai 1.1.0, optional profiling and default-on ally tick skip |
+| `perf/highfleet-benchmark`, `highfleet-benchmark/` | `ff2c91c` | hf_perf 0.6.0, native AI spans and experimental engine optimizations |
+
+Read-only branch comparison, no checkout/cherry-pick/merge. The AI perf branch
+shares an older ancestor with main and lacks subsequent ally refactors; do not
+replace main wholesale with that worktree.
+
+### Captured hook conflict and behavioral confound
+
+- `perf/ai-profile-v1:ai/src/tick_skip.rs:19-29,40-44,80-116,137-169`
+  wraps native `CALL aiShipDriver` at **0x14001123a**. Positive-side kind-1
+  ships skip the driver on alternate game-clock parity. It skips decisions AND
+  per-tick timer advances, so this is a gameplay/cadence trade-off.
+- `perf/highfleet-benchmark:perf/src/ai_spans.rs:35-40, validate/prepare`
+  claims the **same instruction** and requires original bytes.
+- `perf/src/lib.rs:175-184` prepares profiling and then AI spans with error
+  propagation before permanent patch installation. Thus this conflict is not
+  merely an empty optional span; initialization fails.
+- The Nov 10 launch log line 128 confirms tick-skip prepared; line 169 reports
+  hf_perf's mismatch at 0x14001123a. Live Ghidra disassembly of SomethingAITask
+  confirms that native site calls 0x1400739c0 and resumes at 0x14001123f.
+
+Therefore the captured low direct native AI samples do not describe main's
+full-cadence AI. The log/source support competing hook owners, rather than a
+proven 1.163 executable mismatch. The link-search samples remain valid, but
+this distinction prevents generalizing the whole capture to unmodified cadence.
+
+### Integration decision
+
+Keep native-engine acceleration behavior-neutral and independently configurable
+on main. Do not inherit default-on AI tick skipping as its implementation.
+Assign one owner to each native patch site; measurements should observe that
+owner's wrapper or use disjoint sites, not bypass guards or chain unknown jumps.
+This is an integration requirement, not a proposal for a generic hook framework.
+
+The reviewed perf branches do **not** yet implement native reverse-registration
+indexing or a retained ship-topology/dynamic-stats split. They contain useful
+measurement infrastructure and other engine experiments, but their ally tick
+skip is a different product choice. Existing callback-local panel discovery
+sharing is already documented in `docs/ally-performance.md`; it should not be
+presented as a new native-engine architectural solution.
+
+## Validation rules for any native replacement
+
+1. **Compare decisions without performing side effects twice.** For destructive
+   link operations, a shadow implementation may predict which cell native code
+   will remove; it must not unlink/free it as well. Re-running CalculateStats
+   is not a harmless oracle if it changes histories, budgets, links or commands.
+2. **Record the exact executable and loaded DLL identities.** Main, perf branch,
+   source versions and installed binaries are distinct facts. A changed source
+   branch does not remove a hook from an already-running process.
+3. **Keep one operation owner and a known disabled path.** Startup-only byte
+   guards, no blind jump chaining, no live unload. Once native state depends on
+   a replacement, a mid-battle disable requires a proven resynchronization path;
+   otherwise disable before activation or at a safe scene boundary.
+4. **Measure wall-time outcomes separately from sampled attribution.** Use the
+   same battle/save, deployment, view and configuration with repeated paired
+   runs. Compare frame p50/p95 and simulation-to-wall-time ratio where reliable
+   timers exist. Sample shares do not prove wall-time gains or reproducible RNG.
+5. **Budget the accelerator itself.** Index lookups, lifecycle tracking, dirty
+   tracking, snapshot copies and validation can replace one cost with another.
+   Report hit rates, fallback counts, update costs and memory high-water marks.
+6. **Do not promise to solve the whole slowdown from this hotspot.** Removing
+   12.14% of sampled user CPU would still leave most sampled work. It supports
+   the first vertical slice, not a forecast that heavy battles will reach 50 Hz.
+
+## First native replacement: an indexed registration plane
+
+The engine's reverse-reference list serves two distinct responsibilities:
+membership/lifetime notification, and locating a registration to remove. The
+DLL need not replace ownership or suppress reference notifications to replace
+the expensive lookup. Keep the native list authoritative; retain a private
+`(Link identity, Node lifetime) → registration cell` index alongside it.
+
+What disappears is **removal-position dependence**: unregistering a reference
+no longer means searching all older references. Native list order, count,
+allocation ownership, Link id/node updates and teardown notifications remain.
+This is a bounded representation adapter, not a replacement engine/ECS.
+
+### Stronger caller attribution from the original capture
+
+Parent re-parsed all 428 RemoveNodeLink samples using **both** live prologues,
+not a scan for code-looking stack words. RemoveNodeLink allocates 0x28 bytes;
+SetLink pushes RDI and allocates 0x20. Its caller return address is therefore
+at sampled `[RSP+0x58]`, while `[RSP+0x28]` returns to SetLink:
+
+- 428/428 immediate returns are 0x140194e06 in SetLink.
+- **426/428 outer returns are 0x140049c88 in Node_UpdateDesowning.**
+- Its call at 0x140049c83 passes `RCX = part+0xb0`, `RDX = 0`: the owner-clear
+  operation, not targeting/ballistics. The other two samples return elsewhere.
+
+This supersedes the earlier **401** code-word candidates and their incomplete
+unwind caveat for this one additional caller level. It attributes sampled time,
+not call counts: 426 slow samples do not mean only 426 owner clears occurred.
+The five target Node pointers' actual object types remain unobserved.
+
+### Additional lifecycle sites independently verified by the parent
+
+Besides AddNodeLink/RemoveNodeLink/Link_UnlinkFromNode already verified for the
+capture, live decompilation confirms inline scan/unlink/free logic in
+SLink_Constructor (0x140194c20) and SLink_ScalarDeletingDestructor (0x140194e50).
+The constructor initializes its embedded Link to null before the branch; its
+presence in a byte search does not establish an active workload or a complete
+mutation audit. Hooking only the two sampled removers is not a lifecycle proof.
+
+**Important teardown correction:** live Node_Destructor instructions are:
+
+```
+0x14027f3a0  MOV RAX,[RBX+0x50]       ; reference-list sentinel
+0x14027f3a4  MOV RCX,[RAX+0x8]        ; sentinel.prev, LAST cell
+0x14027f3aa  MOV RCX,[RCX+0x10]       ; its Link*
+0x14027f3ae  CALL SetLink             ; clears it via head-first RemoveNodeLink
+```
+
+AddNodeLink appends at sentinel.prev. Thus this loop selects the **tail**, not
+the head as initially reported by the link-agent. With n entries and ordinary
+successful removals its searches can total `n + (n-1) + … + 1`: quadratic
+search work. This is a static mechanism, not measured destruction time in the
+battle capture. Do not reorder teardown notifications on the assumption that
+their order is unobservable. An exact index preserves the order naturally.
+
+### Feasibility gates
+
+- Establish all mutators, including inline unlink/free, vector relocation or
+  reassignment, Node destruction and reconstruction, exceptional cleanup, and
+  any third-party hooks. Byte-pattern searches are evidence, not exhaustive proof.
+- **Never dereference a possibly freed cached cell to validate its liveness.**
+  Backlink/data checks detect inconsistencies only after lifetime is established.
+  Scene epochs alone do not prevent same-scene destruction and address reuse.
+- A missed insertion can be a safe miss/native lookup. A missed removal can
+  leave a dangling entry: lookup validation alone does not repair that contract.
+- Native-allocated cells remain native-allocated. Reuse/migration/free-list
+  designs change the allocation protocol and are separate later experiments,
+  not required for the first lookup accelerator.
+- No full replacement of the reverse list itself until its readers and mutation
+  semantics are positively understood. "No other reader found" is insufficient.
+
+First measure search-hop distributions by caller, including teardown. A tail
+probe is attractive for confirmed tail-removal paths; a two-ended scan may help
+back-half matches but adds work for near-front hits. Neither should ship merely
+because it has no persistent state. Index only lists whose observed search
+cost justifies maintenance; any thresholds need evidence, not arbitrary constants.
+
+## Complementary boundary: phase-local contact storage
+
+The boundary-agent proposes replacing individual contact-record heap lifetimes
+with a private storage region, while the native engine still builds/consumes
+the same records. Parent independently verified these live 1.163 sites:
+
+| Operation | Site | Verified behavior |
+|---|---|---|
+| Allocate payload | 0x140284590 | New(0x48) in b2CListener_PostSolve |
+| Register references | 0x1402845d2 / 0x1402845de | SetLink on the record's two native Links |
+| Allocate list cell | 0x1402846ac | New(0x18) |
+| Destroy references | 0x140286631 / 0x140286639 | native Link destructors in PhysicTask cleanup |
+| Free payload / cell | 0x140286646 / 0x140286681 | native frees after consumption |
+
+This boundary removes per-record allocations, not the reference searches or
+physics computations. Runtime allocator cost is unmeasured; it is not the first
+replacement merely because the allocation sizes are known. First establish all
+normal/exceptional destruction paths and whether any consumer retains records.
+
+### Parent corrections to the arena proposal
+
+- Use an ownership/range registry belonging to the accelerator before classifying
+  a pointer. Do not inspect arbitrary `ptr - header_size` for a magic signature.
+  Non-owned pointers must use the original deallocator; original-allocation
+  fallbacks are expected, not anomalies.
+- Disabling new arena allocations must **not** disable dispatch for outstanding
+  arena-owned frees. Drain live allocations before resetting/reusing storage.
+  Wrong-thread allocation can fall back, but a later arena-owned free still
+  needs correct ownership handling. A single unconditional "disabled → native"
+  branch is not a valid allocator kill switch.
+- An extra frame of retention is not a lifetime proof. Two alternating arenas
+  do not automatically detect stale references; poisoning memory does not
+  automatically detect reads. Prove no escape before any bulk reset.
+- Uninitialized bytes and native Link addresses cannot be compared by raw-record
+  hash across allocations/runs. Compare initialized logical payload/order and
+  observable events; run the native destructors exactly once.
+
+These corrections are required design gates, not implemented code. Reject the
+arena if the measured boundary is small or its lifecycle cannot be closed.
+
+## Second boundary: stop rendering from rematerializing the simulation
+
+The stats-agent found that native `DrawBattleShipPanel` invokes full
+CalculateStats even after the PreTask pass. Parent independently verified
+the panel's zero arguments and call at **0x1402fe109**, then the following
+reads of ship bounds at +0x1840/+0x1844/+0x1850.
+
+But CalculateStats is **not a pure getter**. Parent verified its history call
+at **0x140080d4e**, timer stores to +0xc70 at **0x140080db7**, and thrust-sum
+zero stores at **0x140080dec / 0x140080df3 / 0x140080dfa**. The agent documents
+additional part power/activation and derived-list writes. A native render call
+can therefore advance simulation-related state, not merely read it.
+
+### Architectural target
+
+Use separate representations rather than one multifunctional native routine:
+
+```
+native simulation mutations (same main thread and order)
+        │
+        ├── authoritative native state + required reference notifications
+        │
+        └── one bounded projection at a proven observation point
+                    │
+                    └── read-only panel records → draw/composite
+```
+
+A read model is not a second authoritative ship. It contains only the initialized
+scalars/marker records needed for rendering, copied under a proven lifetime;
+it never invents owning native Link/CVec copies or writes back stale snapshots.
+Snapshot cost must be less than the work removed. Existing mod-side discovery
+sharing already exists; the proposed new boundary is native simulation work
+triggered from presentation.
+
+There are **two different product contracts**:
+
+1. **Equivalent acceleration:** replace repeated calculations only after proving
+   all required outputs and side effects are identical for that call. A same-frame
+   stamp, input fingerprint or replay of a few timer/history stores is not that
+   proof. PreTask and Video have physics/AI/Game mutations between them. A small
+   guarded ally-panel fast path is research, not yet a safe drop-in solution.
+2. **Intentional simulation/presentation separation:** make panel rendering
+   read-only and ensure simulation history/timers are advanced by simulation
+   alone. This removes the entire hidden simulation-on-draw contract, but may
+   change existing gameplay behavior. It requires an explicit behavior decision,
+   not a performance flag silently described as equivalent.
+
+The agent's suggestion that this explains an old thrust-history plateau remains
+an untraced hypothesis. The ResetStatAccumulators samples include every caller;
+they do not measure the panel's exclusive share.
+
+### Longer-term target: retained topology, dynamic reduction
+
+Compile stable ship membership/order once, then update dynamic scalar results
+without destroying and rebuilding every category list. Conceptually:
+
+```
+attach/detach/equipment transitions → update ordered topology/membership
+fuel/power/ammo/heat/control inputs → reduce dynamic values each simulation step
+presentation                     → read published projection
+```
+
+The split is not simply "damage means dirty". Coverage/activation, fuel,
+extinguisher charge, power routing, weapon groups/ammo selection, transforms,
+control/ownership, destruction and direct stats-block writes can affect lists
+or totals. Some memberships depend on outputs of the same calculation. Before
+retaining native lists, positively identify mutation coverage and evaluation
+order; otherwise invalidation maintenance becomes another incomplete engine.
+This is the larger architectural sidestep, **not** the first implementation.
+
+### Parent correction to sensor-allocation claims
+
+Reset calls helper **0x1400619b0** ten times with count 0x168 and a zero value.
+Live decompilation shows vector assign/fill of **360 four-byte elements**, not
+unconditional freeing of ten 360-byte arrays. With sufficient size/capacity it
+retains storage and fills it; allocation/free occurs on the growth path.
+Thus no design here counts ten steady-state heap round trips per reset.
+
+## Recommended route on main
+
+| Stage | Deliverable | Operation removed | Blocking gate |
+|---|---|---|---|
+| 0 | One-owner, counter/shadow-only native registration observer | None yet | Correct ABI/site ownership; bounded instrumentation overhead |
+| 1 | Per-caller stateless fast path, only where measured; or lifecycle-proven exact registration-cell index | Position-dependent reverse-list searches | List identity/order, all removal/free paths and reuse; no stale cache dereference |
+| 2 | One panel projection experiment | Presentation-triggered full materialization | Choose equivalent side-effect contract versus explicit behavior correction |
+| 3 | Retained topology + dynamic reductions for one category | Repeated discovery, temporary Link churn, membership rebuilds | Complete category input/writer/lifetime audit; identical ordered outputs |
+| Conditional | Phase-local contact storage | Contact payload/cell allocator round trips | Measured allocator cost; all escape/free paths; drain-safe fallback |
+| Later only | Pure-data worker for an actual measured consumer | Main-thread pure computation | Immutable copied inputs, no worker native calls, ordered checked commit, net saving |
+
+**Preferred architecture:** a DLL-owned accelerator behind native-compatible
+entry points, with native state authoritative and deliberately narrow retained
+metadata. First remove the search; then remove the reason for repeated
+registration/rebuild where a complete contract exists. This removes work
+without lowering AI tick frequency, ship counts, collision fidelity or ally
+functionality. It is a staged subsystem replacement, not a universal cache.
+
+Do not merge the AI perf branch wholesale, replace the process allocator,
+unregister supposedly temporary references before proving lifetime, infer
+thread-safety from readable memory, or turn every opaque native call into an
+off-thread task. Do not promise a whole-battle frame rate from one hotspot.
+
+## Review provenance and remaining gaps
+
+Three authorized `openrouter/deepseek/deepseek-v4.1-flash-1017` agents produced
+disjoint scratch reports under `/tmp/opencode/native-dll-architecture-2026-11-10/`:
+`links.md`, `stats.md`, `boundaries.md`. Parent independently checked decisive
+native instructions, source/log hook conflicts and original perf stack records.
+Raw reports are working evidence, not unchecked authorities: teardown direction,
+sensor-vector allocation, arena disable/ownership, and cache liveness required
+correction. Neither a negative mutator search nor a checksum of native object
+memory is an equivalence proof.
+
+Still unmeasured: search-position distributions, actual five Node types/list
+lengths, accelerator maintenance cost, panel-exclusive work, allocator-boundary
+cost, and full-cadence main's profile in the same scenario. No in-game validation
+or regression tests were performed or added; there are no behavior changes to test
+yet. The first implementation proposal should be scoped to one native boundary,
+with separately authorized regression coverage and controlled in-game A/B.
+
+## Implementation record (`hf_native v0.1.0`, 2026-11-10)
+
+Built and integrated in [`native/`](../native/README.md) on `main`:
+
+1. **`links` (`native/src/links.rs`):** stateless whole-body replacements for
+   `RemoveNodeLink` (`0x140194fb0`), `Link_UnlinkFromNode` (`0x140194d20`), and
+   `SLink_ScalarDeletingDestructor` (`0x140194e50`) with newest-cell tail probe
+   (`length >= 2`) and atomic hop/tail-hit/fallback counters. Persistent
+   `Link -> cell` caching remains unimplemented (no positive erase-completeness
+   proof).
+2. **`topology` (`native/src/topology.rs`):** direct in-place
+   `Link_ConstructFromBody` into `CVec<Link>` inside `Body_CollectSubtreeLinks`
+   (`0x14001d02c` CALL relay + `0x14001d031` decision trampoline) when capacity
+   is available, removing one temporary `New(0x18)`, `AddNodeLink`, and
+   `Link_UnlinkFromNode` per collected part while keeping stock growth/copy/dtor
+   at their original EH sites. Cross-frame retained `CalculateStats` lists remain
+   unimplemented (self-referential dynamic gates and incomplete writer inventory).
+3. **`contacts` (`native/src/contacts.rs`):** bounded DLL-private free lists
+   recycling native-allocated `0x48` contact records and `0x18` list cells
+   between `b2CListener_PostSolve` (`0x140284590`, `0x1402846ac`) and
+   `SomethingPhysicTask` (`0x140286646`, `0x140286681`), using `C-unwind`
+   near-CALL relays (`native/src/call_hook.rs`).
+4. **Excluded as requested:** ship module/status panel rendering (`0x1402fe109`
+   and `ally_panels`) is untouched.
