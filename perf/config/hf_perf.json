@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "hud_spatial_queries": true,
+  "verify_queries": true,
+  "kaz_fast_scan": true,
+  "frame_skip": false,
+  "profiling": false,
+  "profile_output_dir": ""
+}
