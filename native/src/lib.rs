@@ -80,8 +80,8 @@ unsafe extern "C" fn init() -> bool {
         return false;
     }
     log::info!(
-        "hf_native: installed: link_search={} tail_probe={} tail_probe_remove={} parts_direct_append={} contact_pool={} capacity={}; panels/AI cadence unchanged; in-game benefit unmeasured",
-        config.link_search, config.tail_probe, config.tail_probe_remove, config.parts_direct_append, config.contact_pool, config.contact_pool_capacity
+        "hf_native: installed: link_search={} link_index={} tail_probe={} tail_probe_remove={} parts_direct_append={} contact_pool={} capacity={}; panels/AI cadence unchanged; in-game benefit unmeasured",
+        config.link_search, config.link_index, config.tail_probe, config.tail_probe_remove, config.parts_direct_append, config.contact_pool, config.contact_pool_capacity
     );
     start_diagnostics(config.diagnostics_interval_seconds);
     true
@@ -96,7 +96,14 @@ unsafe fn install(config: &Config) -> Result<(), String> {
     let mut session = PatchSession::new();
     if config.link_search {
         // SAFETY: Caller provides the validated startup/version/base contract.
-        unsafe { links::prepare(&mut session, config.tail_probe, config.tail_probe_remove)? };
+        unsafe {
+            links::prepare(
+                &mut session,
+                config.tail_probe,
+                config.tail_probe_remove,
+                config.link_index,
+            )?
+        };
     }
     if config.contact_pool {
         // SAFETY: Same startup boundary; contacts validates every native site.
@@ -124,25 +131,34 @@ fn start_diagnostics(seconds: u64) {
             let parts = topology::snapshot();
             let contacts = contacts::snapshot();
             log::info!(
-                "hf_native: link [remove={:?} unlink={:?} slink={:?}]; parts [direct={} growth={} fallback={} anomalies={} disabled={}]; contacts [active={} cap={} pooled=({}/{}, {}B) hits=({}/{}) native=({}/{}) cached=({}/{}) fwd=({}/{}) new={} free={} busy={} inactive={}]",
+                "hf_native: link [remove={:?} unlink={:?} slink={:?} index add={} ins={} hit={} miss={} mismatch={} full={}]; parts [direct={} growth={} fallback={} anomalies={} disabled={}]; contacts [active={} cap={} pooled=({}/{}, {}B) hits=({}/{}) native=({}/{}) cached=({}/{}) fwd=({}/{}) new={} free={} busy={} inactive={}]",
                 (
                     links.remove_node_link.calls,
                     links.remove_node_link.search_hops,
                     links.remove_node_link.tail_hits,
                     links.remove_node_link.fallbacks,
+                    links.remove_node_link.indexed,
                 ),
                 (
                     links.link_unlink_from_node.calls,
                     links.link_unlink_from_node.search_hops,
                     links.link_unlink_from_node.tail_hits,
                     links.link_unlink_from_node.fallbacks,
+                    links.link_unlink_from_node.indexed,
                 ),
                 (
                     links.slink_destructor.calls,
                     links.slink_destructor.search_hops,
                     links.slink_destructor.tail_hits,
                     links.slink_destructor.fallbacks,
+                    links.slink_destructor.indexed,
                 ),
+                links.add_calls,
+                links.handles_inserted,
+                links.index_hits,
+                links.index_misses,
+                links.index_mismatches,
+                links.table_full,
                 parts.direct_appends,
                 parts.growth_appends,
                 parts.fallback_appends,

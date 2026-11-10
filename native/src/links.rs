@@ -1,45 +1,52 @@
-//! Stateless accelerator for the engine's reverse-registration `Link` removals.
+//! Exact registration handles for the engine's reverse-link lists.
 //!
 //! `Node::registered_links` is an intrusive circular list of 0x18-byte cells
-//! whose payload is a `Link*`. Three native bodies remove a cell by scanning
-//! oldest-first from the sentinel:
+//! whose payload is a `Link*`. Native removal finds a cell by walking the list
+//! from the sentinel, so its cost is the position of that cell. The 2026-11-10
+//! live run measured 453.6 dependent-load hops per `RemoveNodeLink` call at
+//! ~51 000 calls/s, because the dominant caller (`Node_UpdateDesowning`) clears
+//! and the stats pass re-adds the same owner link every frame.
 //!
+//! This module removes the search from the data structure instead of making the
+//! loop faster. It owns **every** site that creates or frees a registry cell:
+//!
+//! * `AddNodeLink` (`0x140194ef0`) — the single insertion site;
 //! * `RemoveNodeLink` (`0x140194fb0`);
 //! * the inline unlink in `Link_UnlinkFromNode` (`0x140194d20`);
 //! * the inline unlink in `SLink_ScalarDeletingDestructor` (`0x140194e50`).
 //!
-//! `Node_Destructor` instead repeatedly takes the newest cell
-//! (`sentinel.previous`) and clears that `Link`, so teardown walks the list
-//! from the head on every iteration and is quadratic. This module replaces the
-//! three removal bodies with byte-equivalent implementations that may test the
-//! newest cell before falling back to the native oldest-first order.
+//! Because a cell can only come into existence through our `AddNodeLink`, a
+//! `Link -> cell` mapping is created exactly when the cell is, and because all
+//! three removal paths are ours, that mapping is deleted by the same operation
+//! that unlinks and frees the cell. The native list, its order, its count, its
+//! allocator and every teardown notification are unchanged: only the lookup is
+//! replaced.
 //!
-//! The accelerator keeps **no side table, no cached cell pointer and no
-//! registration of its own**. Every call re-reads the native list from the live
-//! `Node`, so it has no erase-coverage or cached-lifetime obligation: a missed
-//! probe is just the native scan, and a removed cell is the same cell the list
-//! would have yielded. That is deliberate. A persistent `Link -> cell` index
-//! would need a positive proof that every free of a reachable cell passes
-//! through a hooked site; the existing negative byte search does not provide
-//! one, and dereferencing a cached cell to validate it is already a
-//! use-after-free read (see `/tmp/opencode/native-dll-architecture-2026-11-10/
-//! links.md` §3 D1 and §4 E5).
+//! Defence in depth, in order of severity:
 //!
-//! Layout offsets come from [`crate::layout`], which derives them from the
-//! pinned `highfleet-rs` revision. This module only performs borrowed scalar
-//! and raw-pointer loads/stores; it never materialises an owning copy of a
-//! game object and never frees anything except the 0x18-byte registry cell the
-//! native routine would have freed.
+//! 1. A lookup requires both the `Link*` key and the `Node*` to match, so a
+//!    stale or moved registration is a miss rather than a wrong unlink.
+//! 2. A hit re-reads `cell->data` and compares it with the requested `Link`. If
+//!    it does not match, the entry is dropped and the call falls back to the
+//!    native head-first scan, which is always correct.
+//! 3. Every replacement is byte-guarded against the pinned 1.163 bodies before a
+//!    patch is prepared, and the whole batch is dropped on any mismatch.
+//!
+//! Residual risk, stated rather than hidden: if some unpatched path frees a
+//! registry cell, the mapping would keep a pointer to freed storage and check 2
+//! would read it. That read cannot unlink a wrong cell (the `data` comparison
+//! rejects it) but it is the one place this module depends on the mutation audit
+//! being complete. The audit found exactly four `DEC [node+0x58]` sites — three
+//! patched here and one unreachable — and no other free of a registry cell.
 //!
 //! # Threading
 //!
-//! The replaced routines are game-thread code, and the parent must install and
-//! call them only from that thread. The hot path deliberately does not call
-//! `GetCurrentThreadId`: a foreign-thread call must still perform the native
-//! removal rather than silently leak the registration, and a per-removal thread
-//! check would only add cost to the measured path.
+//! Every replaced routine is game-thread code and the table is unsynchronised by
+//! design; the parent installs and calls these only from that thread. A foreign
+//! caller would already race the native list itself.
 
 use std::{
+    cell::UnsafeCell,
     mem::transmute,
     slice,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -54,6 +61,8 @@ use crate::layout::{
 
 // --- pinned Steam 1.163 addresses ------------------------------------------------------------
 
+/// `AddNodeLink(Node*, Link*)`; appends a new cell at the sentinel tail.
+const ADD_NODE_LINK_ADDRESS: usize = 0x1_4019_4ef0;
 /// `RemoveNodeLink(Node*, Link*) -> bool`; head-first scan, unlink, `count--`, free.
 const REMOVE_NODE_LINK_ADDRESS: usize = 0x1_4019_4fb0;
 /// `Link_UnlinkFromNode(Link*)`; writes the Link vtable, then the same unlink body.
@@ -61,17 +70,19 @@ const LINK_UNLINK_FROM_NODE_ADDRESS: usize = 0x1_4019_4d20;
 /// `SLink_ScalarDeletingDestructor(SLink*, unsigned int)`; inline unlink at `+0x48`.
 const SLINK_SCALAR_DELETING_DESTRUCTOR_ADDRESS: usize = 0x1_4019_4e50;
 
+/// Scalar `operator new(size_t)` used for the 0x18-byte registry cell.
+const NATIVE_NEW_ADDRESS: usize = 0x1_4033_4094;
 /// Game allocation wrapper used by the native removal sites with `RDX = 0x18`.
 const NATIVE_FREE_ADDRESS: usize = 0x1_4033_40d0;
-/// `SLink` base-class destructor, called after the inline unlink in the SLink dtor.
-const SLINK_BASE_DESTRUCTOR_ADDRESS: usize = 0x1_4018_f7d0;
+/// `std::_Xlength_error(const char*)`, the native "list too long" failure.
+const LENGTH_ERROR_ADDRESS: usize = 0x1_4033_3fe7;
+const LENGTH_ERROR_MESSAGE: usize = 0x1_4035_24b8;
 
 /// Link vtable written by `Link_UnlinkFromNode` and by the SLink destructor's
 /// embedded link. Pinned by the RIP-relative displacement in the native bodies.
 const LINK_VTABLE_ADDRESS: usize = 0x1_4035_2310;
 /// SLink vtable written at the start of `SLink_ScalarDeletingDestructor`.
 const SLINK_VTABLE_ADDRESS: usize = 0x1_4036_8e18;
-
 /// `SLink` deleting-destructor size passed to the native free wrapper.
 const SLINK_BYTES: usize = 0x68;
 /// Offset of the `Link` embedded in `SLink`.
@@ -81,13 +92,28 @@ const SLINK_EMBEDDED_LINK: usize = 0x48;
 const NODE_LIST_HEAD: usize = NODE_LINKS + LIST_HEAD;
 /// Native `Node.registered_links.length` field (`Node` offset + length offset).
 const NODE_LIST_COUNT: usize = NODE_LINKS + LIST_COUNT;
+/// Stale-handle budget before the accelerator permanently reverts to native scans.
+const MAX_MISMATCHES: u64 = 1024;
+/// Sentinel value the native insertion path treats as "list too long".
+const LIST_TOO_LONG: u64 = 0x00AA_AAAA_AAAA_AAAA;
 
 // --- pinned native bodies --------------------------------------------------------------------
-//
-// Whole-function bodies, inclusive of the final `RET`. `prepare` validates all
-// of them before adding any patch, so the inline `CALL`/`JMP` displacements also
-// pin `NATIVE_FREE_ADDRESS`, `SLINK_BASE_DESTRUCTOR_ADDRESS` and both vtable
-// leaves. Any drift, including a relocated helper, fails preparation.
+
+const ADD_NODE_LINK_BODY: [u8; 0x77] = [
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48,
+    0x8b, 0xf2, 0x48, 0x8d, 0x59, 0x50, 0x48, 0x8b, 0x3b, 0x48, 0xb8, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+    0xaa, 0xaa, 0x0a, 0x48, 0x39, 0x43, 0x08, 0x74, 0x42, 0x48, 0x89, 0x5c, 0x24, 0x20, 0x48, 0xc7,
+    0x44, 0x24, 0x28, 0x00, 0x00, 0x00, 0x00, 0xb9, 0x18, 0x00, 0x00, 0x00, 0xe8, 0x63, 0xf1, 0x19,
+    0x00, 0x48, 0x89, 0x70, 0x10, 0x48, 0xff, 0x43, 0x08, 0x48, 0x8b, 0x4f, 0x08, 0x48, 0x89, 0x38,
+    0x48, 0x89, 0x48, 0x08, 0x48, 0x89, 0x47, 0x08, 0x48, 0x89, 0x01, 0x48, 0x8b, 0x5c, 0x24, 0x40,
+    0x48, 0x8b, 0x74, 0x24, 0x48, 0x48, 0x83, 0xc4, 0x30, 0x5f, 0xc3, 0x48, 0x8d, 0x0d, 0x56, 0xd5,
+    0x1b, 0x00, 0xe8, 0x80, 0xf0, 0x19, 0x00,
+];
+
+/// Scalar `operator new` prologue: `push rbx; sub rsp,0x20; mov rbx,rcx; jmp ...`.
+const NATIVE_NEW_PROLOGUE: [u8; 11] = [
+    0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0xeb, 0x0f,
+];
 
 const REMOVE_NODE_LINK_BODY: [u8; 0x52] = [
     0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x41, 0x50, 0x4c, 0x8b, 0xc1, 0x48, 0x8b, 0x08, 0x48, 0x3b,
@@ -120,6 +146,133 @@ const SLINK_SCALAR_DELETING_DESTRUCTOR_BODY: [u8; 0x9c] = [
     0xc3, 0x48, 0x8b, 0x5c, 0x24, 0x30, 0x48, 0x83, 0xc4, 0x20, 0x5f, 0xc3,
 ];
 
+// --- exact handle table ----------------------------------------------------------------------
+
+/// 2^16 slots: enough for every live registry cell of several 464-part ships
+/// with room to spare. Insertion fails closed (a later lookup is then a miss
+/// that falls back to the native scan) rather than evicting a live entry.
+const TABLE_BITS: usize = 16;
+const TABLE_LEN: usize = 1 << TABLE_BITS;
+/// Keys are 8-byte-aligned object addresses, so these sentinels cannot collide.
+const SLOT_EMPTY: usize = 0;
+const SLOT_TOMBSTONE: usize = 1;
+
+struct HandleTable {
+    keys: UnsafeCell<[usize; TABLE_LEN]>,
+    nodes: UnsafeCell<[usize; TABLE_LEN]>,
+    cells: UnsafeCell<[usize; TABLE_LEN]>,
+    hits: AtomicU64,
+    misses: AtomicU64,
+    mismatches: AtomicU64,
+    rejected: AtomicU64,
+    inserted: AtomicU64,
+    full: AtomicU64,
+}
+
+// SAFETY: every access happens on the native game thread, which is the only
+// thread that mutates registry lists. The diagnostic thread reads only the
+// atomics below, never the arrays.
+unsafe impl Sync for HandleTable {}
+
+static TABLE: HandleTable = HandleTable {
+    keys: UnsafeCell::new([SLOT_EMPTY; TABLE_LEN]),
+    nodes: UnsafeCell::new([0; TABLE_LEN]),
+    cells: UnsafeCell::new([0; TABLE_LEN]),
+    hits: AtomicU64::new(0),
+    misses: AtomicU64::new(0),
+    mismatches: AtomicU64::new(0),
+    rejected: AtomicU64::new(0),
+    inserted: AtomicU64::new(0),
+    full: AtomicU64::new(0),
+};
+
+static INDEX_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+fn probe_start(link: usize) -> usize {
+    // Fibonacci hashing of the pointer; the low heap bits are alignment noise.
+    let mixed = (link as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    (mixed >> (64 - TABLE_BITS)) as usize
+}
+
+/// Records the cell created for `link` on `node`.
+///
+/// # Safety
+/// Game-thread only. `cell` must be a freshly created, linked registry cell.
+unsafe fn index_insert(link: usize, node: usize, cell: usize) {
+    let keys = unsafe { &mut *TABLE.keys.get() };
+    let nodes = unsafe { &mut *TABLE.nodes.get() };
+    let cells = unsafe { &mut *TABLE.cells.get() };
+    let start = probe_start(link);
+    for step in 0..TABLE_LEN {
+        let slot = (start + step) & (TABLE_LEN - 1);
+        let key = keys[slot];
+        if key == link {
+            // Re-registration of the same Link: the previous cell is already
+            // unlinked, so only the mapping changes.
+            nodes[slot] = node;
+            cells[slot] = cell;
+            return;
+        }
+        if key == SLOT_EMPTY || key == SLOT_TOMBSTONE {
+            keys[slot] = link;
+            nodes[slot] = node;
+            cells[slot] = cell;
+            TABLE.inserted.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    }
+    TABLE.full.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Removes and returns the mapping for `link` registered on `node`.
+///
+/// # Safety
+/// Game-thread only. The returned cell is still linked; the caller must unlink
+/// and free it exactly as the native routine would.
+unsafe fn index_take(link: usize, node: usize) -> Option<usize> {
+    let keys = unsafe { &mut *TABLE.keys.get() };
+    let nodes = unsafe { &*TABLE.nodes.get() };
+    let cells = unsafe { &*TABLE.cells.get() };
+    let start = probe_start(link);
+    for step in 0..TABLE_LEN {
+        let slot = (start + step) & (TABLE_LEN - 1);
+        let key = keys[slot];
+        if key == SLOT_EMPTY {
+            return None;
+        }
+        if key != link {
+            continue;
+        }
+        if nodes[slot] != node {
+            // A registration that moved: leave the entry for its current node.
+            return None;
+        }
+        let cell = cells[slot];
+        keys[slot] = SLOT_TOMBSTONE;
+        return Some(cell);
+    }
+    None
+}
+
+/// Drops a mapping without freeing anything.
+#[inline]
+unsafe fn index_forget(link: usize) {
+    let keys = unsafe { &mut *TABLE.keys.get() };
+    let start = probe_start(link);
+    for step in 0..TABLE_LEN {
+        let slot = (start + step) & (TABLE_LEN - 1);
+        let key = keys[slot];
+        if key == SLOT_EMPTY {
+            return;
+        }
+        if key == link {
+            keys[slot] = SLOT_TOMBSTONE;
+            return;
+        }
+    }
+}
+
 // --- configuration and counters --------------------------------------------------------------
 
 /// A singleton's newest cell is also its oldest: probing it separately cannot
@@ -139,6 +292,7 @@ struct SiteCounters {
     search_hops: AtomicU64,
     tail_hits: AtomicU64,
     fallbacks: AtomicU64,
+    indexed: AtomicU64,
 }
 
 impl SiteCounters {
@@ -148,6 +302,7 @@ impl SiteCounters {
             search_hops: AtomicU64::new(0),
             tail_hits: AtomicU64::new(0),
             fallbacks: AtomicU64::new(0),
+            indexed: AtomicU64::new(0),
         }
     }
 
@@ -157,6 +312,7 @@ impl SiteCounters {
             search_hops: self.search_hops.load(Ordering::Relaxed),
             tail_hits: self.tail_hits.load(Ordering::Relaxed),
             fallbacks: self.fallbacks.load(Ordering::Relaxed),
+            indexed: self.indexed.load(Ordering::Relaxed),
         }
     }
 }
@@ -164,6 +320,7 @@ impl SiteCounters {
 static REMOVE_NODE_LINK_COUNTERS: SiteCounters = SiteCounters::new();
 static LINK_UNLINK_FROM_NODE_COUNTERS: SiteCounters = SiteCounters::new();
 static SLINK_DESTRUCTOR_COUNTERS: SiteCounters = SiteCounters::new();
+static ADD_NODE_LINK_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// Aggregate counters for one replaced removal site.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -176,11 +333,20 @@ pub struct SiteSnapshot {
     pub tail_hits: u64,
     /// Calls where the newest cell did not match and the head scan ran.
     pub fallbacks: u64,
+    /// Calls served by an exact handle with no list search at all.
+    pub indexed: u64,
 }
 
 /// Aggregate counters for every site replaced by this module.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkRemovalSnapshot {
+    pub add_calls: u64,
+    pub handles_inserted: u64,
+    pub index_hits: u64,
+    pub index_misses: u64,
+    pub index_mismatches: u64,
+    pub index_rejected: u64,
+    pub table_full: u64,
     pub remove_node_link: SiteSnapshot,
     pub link_unlink_from_node: SiteSnapshot,
     pub slink_destructor: SiteSnapshot,
@@ -189,6 +355,13 @@ pub struct LinkRemovalSnapshot {
 /// Reads the aggregate counters without touching game memory.
 pub fn snapshot() -> LinkRemovalSnapshot {
     LinkRemovalSnapshot {
+        add_calls: ADD_NODE_LINK_CALLS.load(Ordering::Relaxed),
+        handles_inserted: TABLE.inserted.load(Ordering::Relaxed),
+        index_hits: TABLE.hits.load(Ordering::Relaxed),
+        index_misses: TABLE.misses.load(Ordering::Relaxed),
+        index_mismatches: TABLE.mismatches.load(Ordering::Relaxed),
+        index_rejected: TABLE.rejected.load(Ordering::Relaxed),
+        table_full: TABLE.full.load(Ordering::Relaxed),
         remove_node_link: REMOVE_NODE_LINK_COUNTERS.snapshot(),
         link_unlink_from_node: LINK_UNLINK_FROM_NODE_COUNTERS.snapshot(),
         slink_destructor: SLINK_DESTRUCTOR_COUNTERS.snapshot(),
@@ -233,17 +406,28 @@ unsafe fn write_pointer(base: *mut u8, offset: usize, value: usize) {
     (base.add(offset) as *mut usize).write_unaligned(value);
 }
 
+/// Allocates one 0x18-byte registry cell through the game's own allocator.
+///
+/// # Safety
+///
+/// Game-thread only. The native `New` may throw `std::bad_alloc`; this is an
+/// `extern "C-unwind"` call so that unwinding follows the native frames.
+#[inline]
+unsafe fn allocate_cell() -> *mut u8 {
+    let allocate: unsafe extern "C-unwind" fn(usize) -> *mut u8 = transmute(NATIVE_NEW_ADDRESS);
+    allocate(CELL_BYTES)
+}
+
 /// Releases a 0x18-byte registry cell through the game's own free wrapper.
 ///
 /// # Safety
 ///
 /// `cell` must be a cell that the caller has already unlinked from its list and
-/// that no other native object references. The native wrapper's size argument
-/// is always [`CELL_BYTES`]; this must run on the game thread so the game
-/// allocator sees the same thread as native removal.
+/// that no other native object references. This must run on the game thread so
+/// the game allocator sees the same thread as native removal.
 #[inline]
 unsafe fn free_cell(cell: *mut u8) {
-    let free: unsafe extern "C" fn(*mut u8, usize) = transmute(NATIVE_FREE_ADDRESS);
+    let free: unsafe extern "C-unwind" fn(*mut u8, usize) = transmute(NATIVE_FREE_ADDRESS);
     free(cell, CELL_BYTES);
 }
 
@@ -279,6 +463,44 @@ struct SearchResult {
     hops: u64,
     tail_probed: bool,
     tail_hit: bool,
+    indexed: bool,
+}
+
+/// Resolves the cell for `link` on `node`: exact handle first, native scan next.
+///
+/// # Safety
+///
+/// `node` must be a live `Node` and `link` the registration the native routine
+/// was called with; the same list invariants the native body assumes apply.
+unsafe fn resolve(node: *mut u8, link: *mut u8, tail_probe: bool) -> SearchResult {
+    if INDEX_ENABLED.load(Ordering::Relaxed) {
+        if let Some(cell) = index_take(link as usize, node as usize) {
+            let cell = cell as *mut u8;
+            // A handle is only trusted when the cell still points at this Link.
+            if read_pointer(cell, CELL_LINK) == link {
+                TABLE.hits.fetch_add(1, Ordering::Relaxed);
+                return SearchResult {
+                    cell,
+                    hops: 0,
+                    tail_probed: false,
+                    tail_hit: false,
+                    indexed: true,
+                };
+            }
+            // Stale or foreign mapping: drop it and let the native scan decide.
+            // A handful of these can happen around teardown; a sustained rate
+            // means the mutation audit is incomplete, so stop trusting the
+            // table for the rest of the session and keep the native scan.
+            let mismatches = TABLE.mismatches.fetch_add(1, Ordering::Relaxed) + 1;
+            index_forget(link as usize);
+            if mismatches > MAX_MISMATCHES {
+                INDEX_ENABLED.store(false, Ordering::Relaxed);
+            }
+        } else {
+            TABLE.misses.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    search(node, link, tail_probe)
 }
 
 /// Performs the equivalent search, optionally testing the newest cell first.
@@ -297,6 +519,7 @@ unsafe fn search(node: *mut u8, link: *mut u8, tail_probe: bool) -> SearchResult
             hops: 0,
             tail_probed: false,
             tail_hit: false,
+            indexed: false,
         };
     }
 
@@ -310,6 +533,7 @@ unsafe fn search(node: *mut u8, link: *mut u8, tail_probe: bool) -> SearchResult
                     hops: 1,
                     tail_probed: true,
                     tail_hit: true,
+                    indexed: false,
                 };
             }
 
@@ -346,6 +570,7 @@ unsafe fn scan_from_oldest(head: *mut u8, link: *mut u8) -> SearchResult {
                 hops,
                 tail_probed: false,
                 tail_hit: false,
+                indexed: false,
             };
         }
         cell = read_pointer(cell, CELL_NEXT);
@@ -356,10 +581,11 @@ unsafe fn scan_from_oldest(head: *mut u8, link: *mut u8) -> SearchResult {
         hops,
         tail_probed: false,
         tail_hit: false,
+        indexed: false,
     }
 }
 
-/// Records one completed search without formatting or logging.
+/// Records one completed resolution without formatting or logging.
 #[inline]
 fn record_search(counters: &SiteCounters, search: &SearchResult) {
     counters.calls.fetch_add(1, Ordering::Relaxed);
@@ -367,6 +593,9 @@ fn record_search(counters: &SiteCounters, search: &SearchResult) {
         counters
             .search_hops
             .fetch_add(search.hops, Ordering::Relaxed);
+    }
+    if search.indexed {
+        counters.indexed.fetch_add(1, Ordering::Relaxed);
     }
     if search.tail_probed {
         if search.tail_hit {
@@ -379,17 +608,60 @@ fn record_search(counters: &SiteCounters, search: &SearchResult) {
 
 // --- replacement bodies ----------------------------------------------------------------------
 
+/// Whole-body replacement for `AddNodeLink(Node*, Link*) -> void`.
+///
+/// Appends the cell exactly where the native body does (sentinel tail), then
+/// records the handle. This is the only site that creates a registry cell, so
+/// the handle table is complete by construction.
+///
+/// # Safety
+///
+/// Entered by the installed jump with `node` in `RCX` and `link` in `RDX`. Both
+/// must be live game objects, as the native body already requires.
+#[inline(never)]
+unsafe extern "C-unwind" fn add_node_link(node: *mut u8, link: *mut u8) {
+    if node.is_null() || link.is_null() {
+        return;
+    }
+
+    let head = read_pointer(node, NODE_LIST_HEAD);
+    if head.is_null() {
+        return;
+    }
+
+    let count_slot = node.add(NODE_LIST_COUNT);
+    let count = (count_slot as *const u64).read_unaligned();
+    if count == LIST_TOO_LONG {
+        // Same failure the native body raises for an impossible list length.
+        let length_error: unsafe extern "C-unwind" fn(*const u8) -> ! =
+            transmute(LENGTH_ERROR_ADDRESS);
+        length_error(LENGTH_ERROR_MESSAGE as *const u8);
+    }
+
+    let cell = allocate_cell();
+    write_pointer(cell, CELL_LINK, link as usize);
+    (count_slot as *mut u64).write_unaligned(count.wrapping_add(1));
+
+    let previous = read_pointer(head, CELL_PREVIOUS);
+    write_pointer(cell, CELL_NEXT, head as usize);
+    write_pointer(cell, CELL_PREVIOUS, previous as usize);
+    write_pointer(head, CELL_PREVIOUS, cell as usize);
+    write_pointer(previous, CELL_NEXT, cell as usize);
+
+    ADD_NODE_LINK_CALLS.fetch_add(1, Ordering::Relaxed);
+    if INDEX_ENABLED.load(Ordering::Relaxed) {
+        index_insert(link as usize, node as usize, cell as usize);
+    }
+}
+
 /// Whole-body replacement for `RemoveNodeLink(Node*, Link*) -> bool`.
 ///
 /// # Safety
 ///
-/// Entered by the installed jump with the native Windows x64 argument registers:
-/// `node` is `RCX` (a live `Node`) and `link` is `RDX` (the `Link*` to remove).
-/// It returns `true` exactly when a cell was unlinked and freed. A null `node`
-/// is rejected defensively where the native body would fault; valid callers
-/// never pass one.
+/// Entered by the installed jump with `node` in `RCX` and `link` in `RDX`. It
+/// returns `true` exactly when a cell was unlinked and freed.
 #[inline(never)]
-unsafe extern "C" fn remove_node_link(node: *mut u8, link: *mut u8) -> bool {
+unsafe extern "C-unwind" fn remove_node_link(node: *mut u8, link: *mut u8) -> bool {
     if node.is_null() {
         REMOVE_NODE_LINK_COUNTERS
             .calls
@@ -398,7 +670,7 @@ unsafe extern "C" fn remove_node_link(node: *mut u8, link: *mut u8) -> bool {
     }
 
     let tail_probe = TAIL_PROBE_REMOVE.load(Ordering::Relaxed);
-    let result = search(node, link, tail_probe);
+    let result = resolve(node, link, tail_probe);
     record_search(&REMOVE_NODE_LINK_COUNTERS, &result);
 
     if result.cell.is_null() {
@@ -421,7 +693,7 @@ unsafe extern "C" fn remove_node_link(node: *mut u8, link: *mut u8) -> bool {
 /// Entered by the installed jump with `link` in `RCX`. It must be a live `Link`
 /// for the duration of the call; valid callers establish that.
 #[inline(never)]
-unsafe extern "C" fn link_unlink_from_node(link: *mut u8) {
+unsafe extern "C-unwind" fn link_unlink_from_node(link: *mut u8) {
     if link.is_null() {
         LINK_UNLINK_FROM_NODE_COUNTERS
             .calls
@@ -441,7 +713,7 @@ unsafe extern "C" fn link_unlink_from_node(link: *mut u8) {
     }
 
     let tail_probe = TAIL_PROBE.load(Ordering::Relaxed);
-    let result = search(node, link, tail_probe);
+    let result = resolve(node, link, tail_probe);
     record_search(&LINK_UNLINK_FROM_NODE_COUNTERS, &result);
 
     if result.cell.is_null() {
@@ -465,7 +737,7 @@ unsafe extern "C" fn link_unlink_from_node(link: *mut u8) {
 /// `EDX`. `this` must be a live `SLink` whose base destructor is valid for this
 /// image; valid virtual/delete callers establish that.
 #[inline(never)]
-unsafe extern "C" fn slink_scalar_deleting_destructor(
+unsafe extern "C-unwind" fn slink_scalar_deleting_destructor(
     this: *mut u8,
     deleting_flag: u32,
 ) -> *mut u8 {
@@ -484,7 +756,7 @@ unsafe extern "C" fn slink_scalar_deleting_destructor(
 
     if !node.is_null() {
         let tail_probe = TAIL_PROBE.load(Ordering::Relaxed);
-        let result = search(node, link, tail_probe);
+        let result = resolve(node, link, tail_probe);
         record_search(&SLINK_DESTRUCTOR_COUNTERS, &result);
 
         if !result.cell.is_null() {
@@ -497,16 +769,19 @@ unsafe extern "C" fn slink_scalar_deleting_destructor(
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    let base_destructor: unsafe extern "C" fn(*mut u8) = transmute(SLINK_BASE_DESTRUCTOR_ADDRESS);
+    let base_destructor: unsafe extern "C-unwind" fn(*mut u8) = transmute(SLINK_BASE_DESTRUCTOR);
     base_destructor(this);
 
     if deleting_flag & 1 != 0 {
-        let free: unsafe extern "C" fn(*mut u8, usize) = transmute(NATIVE_FREE_ADDRESS);
+        let free: unsafe extern "C-unwind" fn(*mut u8, usize) = transmute(NATIVE_FREE_ADDRESS);
         free(this, SLINK_BYTES);
     }
 
     this
 }
+
+/// `SLink` base-class destructor, called after the inline unlink.
+const SLINK_BASE_DESTRUCTOR: usize = 0x1_4018_f7d0;
 
 // --- preparation -----------------------------------------------------------------------------
 
@@ -536,9 +811,7 @@ unsafe fn validate_body(name: &str, address: usize, expected: &[u8]) -> Result<(
 /// Prepares an absolute jump to a whole-body replacement.
 ///
 /// The source range is the complete native function, so the trampoline never
-/// replays a relocated prologue and no RIP-relative instruction is copied. The
-/// trampoline's `jmp [rip]` reaches the Rust body regardless of where the
-/// injected DLL was mapped.
+/// replays a relocated prologue and no RIP-relative instruction is copied.
 ///
 /// # Safety
 ///
@@ -561,31 +834,29 @@ unsafe fn prepare_replacement(
         })
 }
 
-/// Validates the three pinned native bodies and prepares whole-body replacement
+/// Validates the four pinned native bodies and prepares whole-body replacement
 /// detours in `session`.
 ///
 /// `tail_probe` enables the newest-cell test on lists of at least
 /// [`TAIL_PROBE_MIN_LENGTH`] entries for `Link_UnlinkFromNode` and the `SLink`
 /// destructor. `tail_probe_remove` enables it separately for `RemoveNodeLink`,
-/// whose dominant caller clears long-lived owner links near the head. With a
-/// probe disabled the replacements are still equivalent to native (and still
-/// collect counters), but provide no search-position advantage.
+/// whose dominant caller clears long-lived owner links far from the tail.
 ///
-/// No patch is added unless every native body matches. The session remains
-/// droppable without touching the process; installation is the parent's
-/// permanent step and must run on the game thread.
+/// No patch is added unless every native body matches.
 ///
 /// # Safety
 ///
 /// The process image must be the supported Steam 1.163 executable at its
 /// preferred base. The caller must install and keep this DLL resident for the
-/// process lifetime, and no other module may own the same three entry points.
-/// All three routines must remain game-thread-only, as native code assumes.
+/// process lifetime, and no other module may own the same four entry points.
+/// All four routines must remain game-thread-only, as native code assumes.
 pub unsafe fn prepare(
     session: &mut PatchSession,
     tail_probe: bool,
     tail_probe_remove: bool,
+    exact_index: bool,
 ) -> Result<(), String> {
+    validate_body("AddNodeLink", ADD_NODE_LINK_ADDRESS, &ADD_NODE_LINK_BODY)?;
     validate_body(
         "RemoveNodeLink",
         REMOVE_NODE_LINK_ADDRESS,
@@ -601,7 +872,15 @@ pub unsafe fn prepare(
         SLINK_SCALAR_DELETING_DESTRUCTOR_ADDRESS,
         &SLINK_SCALAR_DELETING_DESTRUCTOR_BODY,
     )?;
+    validate_body("New", NATIVE_NEW_ADDRESS, &NATIVE_NEW_PROLOGUE)?;
 
+    prepare_replacement(
+        session,
+        "AddNodeLink",
+        ADD_NODE_LINK_ADDRESS,
+        ADD_NODE_LINK_BODY.len(),
+        add_node_link as *const (),
+    )?;
     prepare_replacement(
         session,
         "RemoveNodeLink",
@@ -626,5 +905,9 @@ pub unsafe fn prepare(
 
     TAIL_PROBE.store(tail_probe, Ordering::Relaxed);
     TAIL_PROBE_REMOVE.store(tail_probe && tail_probe_remove, Ordering::Relaxed);
+    // Enabled last: permanent installation follows this call, so no insertion
+    // hook can run before the table is ready. A dropped session leaves the patch
+    // set empty and the flag irrelevant.
+    INDEX_ENABLED.store(exact_index, Ordering::Relaxed);
     Ok(())
 }

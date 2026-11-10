@@ -383,3 +383,64 @@ handle is the only fix that targets it; a two-ended or tail scan cannot, because
 the cost is the dependent-load chain, not the comparison count. That remains
 gated on a positive proof that every free of a reachable registration cell passes
 through a site this DLL owns.
+
+## Resolving the measured 454-hop owner clear (`hf_native v0.1.2`)
+
+Live telemetry from the first two seconds of the v0.1.1 run:
+
+| Reading | Value |
+|---|---|
+| `RemoveNodeLink` calls | 4.41 M |
+| `RemoveNodeLink` hops | 2.09 B (**474 hops/call**) |
+| `RemoveNodeLink` tail hits | 0 (probe off — correctly) |
+| `Link_UnlinkFromNode` | 22.5 M calls, 4.9 hops/call, 60% tail hits |
+| `AddNodeLink` | not yet instrumented |
+
+The search is not a loop-optimisation problem. Its cost is the dependent-load
+chain to the cell's position, and the dominant caller clears a long-lived owner
+link that sits far from either end, so neither a tail probe nor a two-ended scan
+can help. The fix is to stop searching.
+
+### Design: exact handles, complete by construction
+
+`Node::registered_links` has exactly one insertion site (`AddNodeLink`) and
+three live removal sites (`RemoveNodeLink`, `Link_UnlinkFromNode`, and the
+`SLink` deleting destructor; the `SLink_Constructor` sequence is dead because it
+nulls the target first). v0.1.2 replaces all four, so this DLL is the **only**
+code that creates or frees an 0x18-byte registry cell.
+
+That makes a `Link* -> (Node*, cell*)` table complete by construction: the
+mapping is created in the same function that allocates and links the cell, and
+destroyed by the same function that unlinks and frees it. No cross-frame object
+identity, no retained game pointer, no deferred free, and no change to the
+native list, its order, its count, the cell allocator or teardown notifications.
+
+```
+remove(node, link):
+    if let Some(cell) = table.take(link, node)   # Link* and Node* must both match
+        if cell->data == link                    # cheap re-check
+            unlink(cell); free(cell); return true
+        table.forget(link); downgrade counters
+    return native_head_first_scan(node, link)    # always available
+```
+
+Failure handling is layered: a `Node*` mismatch is a miss, a `data` mismatch
+drops the entry and falls back to the scan, a full table stops inserting (later
+lookups miss), and more than 1024 mismatches permanently revert the accelerator
+to native scans for the session. A missed insertion is therefore a performance
+regression, never a wrong unlink.
+
+Residual risk, stated plainly: a registry cell freed by a path this DLL does not
+own would leave a stale mapping whose `data` re-check reads freed storage. The
+`data` comparison cannot unlink the wrong cell, but it is the one place the
+design depends on the mutation audit being complete. The audit found exactly four
+`DEC [node+0x58]` sites — three replaced here, one unreachable — and no other
+free of a registry cell.
+
+Verification cost: `AddNodeLink`'s full 0x77-byte body is byte-guarded before any
+patch is prepared, alongside the three removal bodies and the `New` prologue.
+
+Expected outcome, to be confirmed by the next log rather than assumed: `hit`
+approaching `remove` call count and `search_hops` collapsing from ~2 B toward
+zero, with `miss`, `mismatch` and `full` staying near zero and `Link_UnlinkFromNode`
+keeping its existing 60 % tail-hit rate for the cases the table misses.

@@ -1,4 +1,4 @@
-# hf_native v0.1.0 — experimental native-engine acceleration
+# hf_native v0.1.2 — experimental native-engine acceleration
 
 Independent Modloader v4 DLL for **HighFleet Steam 1.163**. Source lives on
 `highfleet-allies` main. This is a tester build, not a measured FPS claim or a
@@ -17,7 +17,7 @@ cargo xwin clippy --release --locked --target x86_64-pc-windows-msvc -- -D warni
 ```
 
 Output: `target/x86_64-pc-windows-msvc/release/hf_native.dll`. Distribute/install
-with its versioned name **`hf_native_v0.1.0.dll`**. No game execution is part of
+with its versioned name **`hf_native_v0.1.2.dll`**. No game execution is part of
 the build. No new regression tests were added (repository permission policy).
 
 ## Install / disable
@@ -39,6 +39,7 @@ features in other DLLs, including an older perf-branch hf_ai's ally tick skip.
 |---|---|---|
 | `enabled` | false | Master startup installation switch |
 | `link_search` | true | Native reference-removal acceleration and aggregate counters |
+| `link_index` | true | Exact `Link* -> cell` handle table (owns `AddNodeLink` + all removal sites); removes the list search |
 | `tail_probe` | true | Newest-cell probe for `Link_UnlinkFromNode` and the `SLink` destructor (measured 58.5% hit rate) |
 | `tail_probe_remove` | false | Newest-cell probe for `RemoveNodeLink`; measured 1.7% hit rate at 453.6 hops/call, so off by default |
 | `parts_direct_append` | true | Direct in-place Link construction in `Body_CollectSubtreeLinks` when capacity is available (elides temporary Link register/unlink/free churn) |

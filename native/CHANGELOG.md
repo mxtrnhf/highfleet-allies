@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.2 — 2026-11-10
+
+- **Exact registration handles (`link_index`).** `AddNodeLink` is now replaced as
+  well, so this DLL owns the only site that creates a 0x18-byte registry cell.
+  A `Link* -> (Node*, cell*)` table is therefore created at cell creation and
+  removed by the same operation that unlinks and frees the cell. Removal stops
+  being a function of list position; the measured 453.6-hop owner-clear path
+  becomes a table lookup. The native list, its order, its count, the native cell
+  allocator and every teardown notification are unchanged.
+- A handle is trusted only when both the `Link*` and `Node*` match; the cell's
+  `data` field is re-checked before unlinking, and any mismatch or miss falls
+  back to the original head-first scan. Table-full degrades to the scan too.
+- `AddNodeLink` reproduces the native body byte-for-byte in behaviour, including
+  the tail append, the wrapping count increment and the `_Xlength_error` path.
+- New diagnostics: `add`, `ins`, `hit`, `miss`, `mismatch`, `full`, and per-site
+  `indexed` counts.
+- No panel/render hooks, AI cadence changes, or physics fidelity reductions.
+
 ## 0.1.1 — 2026-11-10
 
 - **Contact pool was entirely inert in the first live run.** Every allocate/free

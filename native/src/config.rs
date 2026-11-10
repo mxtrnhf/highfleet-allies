@@ -8,6 +8,7 @@ pub const PATH: &str = "Modloader/config/hf_native.json";
 pub struct Config {
     pub enabled: bool,
     pub link_search: bool,
+    pub link_index: bool,
     pub tail_probe: bool,
     pub tail_probe_remove: bool,
     pub parts_direct_append: bool,
@@ -21,6 +22,7 @@ impl Default for Config {
         Self {
             enabled: false,
             link_search: true,
+            link_index: true,
             tail_probe: true,
             tail_probe_remove: false,
             parts_direct_append: true,

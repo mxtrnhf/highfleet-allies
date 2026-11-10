@@ -1,6 +1,7 @@
 {
   "enabled": false,
   "link_search": true,
+  "link_index": true,
   "tail_probe": true,
   "tail_probe_remove": false,
   "parts_direct_append": true,
