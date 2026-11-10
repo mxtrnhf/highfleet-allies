@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.3 — 2026-11-10
+
+- **Fixes the unplayable lag introduced in 0.1.2.** The handle table used open
+  addressing with unbounded probing. It filled on the first frame (`ins=65536`,
+  `hit=0`), after which *every* insert and lookup walked all 65 536 slots; the
+  live log showed `full=1.56 M`, i.e. ~10^11 slot visits.
+- The table is now four-way set-associative with a hard cap of four probes per
+  operation, so a full or thrashing table can only lose hit rate, never latency.
+  Eviction is deterministic within a set and only discards a handle, which makes
+  that removal fall back to the native scan.
+- Only nodes with at least 64 registrations are indexed. Short lists cost a few
+  hops to scan natively, so indexing them wasted the table on traffic that never
+  needed help.
+- `full` is renamed `evict` in the diagnostics line.
+
 ## 0.1.2 — 2026-11-10
 
 - **Exact registration handles (`link_index`).** `AddNodeLink` is now replaced as

@@ -131,7 +131,7 @@ fn start_diagnostics(seconds: u64) {
             let parts = topology::snapshot();
             let contacts = contacts::snapshot();
             log::info!(
-                "hf_native: link [remove={:?} unlink={:?} slink={:?} index add={} ins={} hit={} miss={} mismatch={} full={}]; parts [direct={} growth={} fallback={} anomalies={} disabled={}]; contacts [active={} cap={} pooled=({}/{}, {}B) hits=({}/{}) native=({}/{}) cached=({}/{}) fwd=({}/{}) new={} free={} busy={} inactive={}]",
+                "hf_native: link [remove={:?} unlink={:?} slink={:?} index add={} ins={} hit={} miss={} mismatch={} evict={}]; parts [direct={} growth={} fallback={} anomalies={} disabled={}]; contacts [active={} cap={} pooled=({}/{}, {}B) hits=({}/{}) native=({}/{}) cached=({}/{}) fwd=({}/{}) new={} free={} busy={} inactive={}]",
                 (
                     links.remove_node_link.calls,
                     links.remove_node_link.search_hops,
@@ -158,7 +158,7 @@ fn start_diagnostics(seconds: u64) {
                 links.index_hits,
                 links.index_misses,
                 links.index_mismatches,
-                links.table_full,
+                links.table_evictions,
                 parts.direct_appends,
                 parts.growth_appends,
                 parts.fallback_appends,

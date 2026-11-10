@@ -444,3 +444,29 @@ Expected outcome, to be confirmed by the next log rather than assumed: `hit`
 approaching `remove` call count and `search_hops` collapsing from ~2 B toward
 zero, with `miss`, `mismatch` and `full` staying near zero and `Link_UnlinkFromNode`
 keeping its existing 60 % tail-hit rate for the cases the table misses.
+
+### Regression and correction (v0.1.2 → v0.1.3)
+
+v0.1.2's first live run was unplayable. Its own diagnostics named the cause:
+`ins=65536` (table exactly full), `hit=0`, `full=1,562,431`.
+
+The table used open addressing with **unbounded** probing. It filled on the
+first frame, after which there was no empty slot to terminate a probe and every
+insert and every lookup walked all 65 536 slots. At ~1.5 M inserts plus ~1.4 M
+lookups in 90 s that is on the order of 10^11 slot visits.
+
+Two independent design faults, both fixed in v0.1.3:
+
+1. **Unbounded probe depth.** The table is now four-way set-associative with at
+   most four probes per operation. A full or thrashing table can only lose hit
+   rate; it cannot change the cost of an operation.
+2. **Indexing traffic that does not need help.** Part-local lists hold a handful
+   of registrations and cost a few hops to scan. Inserting them filled the table
+   with entries whose lookups could never pay for the insert. Only nodes with at
+   least 64 registrations are indexed now.
+
+Eviction inside a set discards a handle, so the affected removal falls back to
+the native scan; that keeps the accelerator correct while bounding its memory
+and probe depth. The lesson recorded for the next iteration: an accelerator whose
+worst case is unbounded is not an accelerator, and the hit-rate counters must be
+read from the first run before the build is called working.

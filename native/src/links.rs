@@ -148,54 +148,67 @@ const SLINK_SCALAR_DELETING_DESTRUCTOR_BODY: [u8; 0x9c] = [
 
 // --- exact handle table ----------------------------------------------------------------------
 
-/// 2^16 slots: enough for every live registry cell of several 464-part ships
-/// with room to spare. Insertion fails closed (a later lookup is then a miss
-/// that falls back to the native scan) rather than evicting a live entry.
-const TABLE_BITS: usize = 16;
-const TABLE_LEN: usize = 1 << TABLE_BITS;
-/// Keys are 8-byte-aligned object addresses, so these sentinels cannot collide.
-const SLOT_EMPTY: usize = 0;
-const SLOT_TOMBSTONE: usize = 1;
+/// Set-associative handle table with a hard bounded probe depth.
+///
+/// The first live build used open addressing with unbounded probing; the table
+/// filled on the first frame and *every* lookup then walked all 65 536 slots,
+/// which made the game unplayable. Every operation here is now at most
+/// [`WAYS`] probes regardless of table state, so a full or thrashing table can
+/// only cost hit rate, never latency.
+///
+/// Only nodes with at least [`INDEX_MIN_NODE_LEN`] registrations are inserted.
+/// Short lists cost a handful of hops to scan natively, so indexing them would
+/// waste the table on the traffic that does not need help.
+const SET_BITS: usize = 16;
+const SETS: usize = 1 << SET_BITS;
+const WAYS: usize = 4;
+const SLOTS: usize = SETS * WAYS;
+
+/// Inserting only long lists keeps the live set small (a few 464-part ships),
+/// so the measured load factor stays far from the set count.
+const INDEX_MIN_NODE_LEN: u64 = 64;
 
 struct HandleTable {
-    keys: UnsafeCell<[usize; TABLE_LEN]>,
-    nodes: UnsafeCell<[usize; TABLE_LEN]>,
-    cells: UnsafeCell<[usize; TABLE_LEN]>,
+    keys: UnsafeCell<[usize; SLOTS]>,
+    nodes: UnsafeCell<[usize; SLOTS]>,
+    cells: UnsafeCell<[usize; SLOTS]>,
     hits: AtomicU64,
     misses: AtomicU64,
     mismatches: AtomicU64,
-    rejected: AtomicU64,
     inserted: AtomicU64,
-    full: AtomicU64,
+    evictions: AtomicU64,
 }
 
-// SAFETY: every access happens on the native game thread, which is the only
-// thread that mutates registry lists. The diagnostic thread reads only the
+// SAFETY: every array access happens on the native game thread, which is the
+// only thread that mutates registry lists. The diagnostic thread reads only the
 // atomics below, never the arrays.
 unsafe impl Sync for HandleTable {}
 
 static TABLE: HandleTable = HandleTable {
-    keys: UnsafeCell::new([SLOT_EMPTY; TABLE_LEN]),
-    nodes: UnsafeCell::new([0; TABLE_LEN]),
-    cells: UnsafeCell::new([0; TABLE_LEN]),
+    keys: UnsafeCell::new([0; SLOTS]),
+    nodes: UnsafeCell::new([0; SLOTS]),
+    cells: UnsafeCell::new([0; SLOTS]),
     hits: AtomicU64::new(0),
     misses: AtomicU64::new(0),
     mismatches: AtomicU64::new(0),
-    rejected: AtomicU64::new(0),
     inserted: AtomicU64::new(0),
-    full: AtomicU64::new(0),
+    evictions: AtomicU64::new(0),
 };
 
 static INDEX_ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[inline]
-fn probe_start(link: usize) -> usize {
-    // Fibonacci hashing of the pointer; the low heap bits are alignment noise.
-    let mixed = (link as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    (mixed >> (64 - TABLE_BITS)) as usize
+fn hash(link: usize) -> u64 {
+    // Fibonacci hashing; heap addresses differ mostly in the low, aligned bits.
+    (link as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
 
-/// Records the cell created for `link` on `node`.
+#[inline]
+fn set_base(link: usize) -> usize {
+    ((hash(link) >> (64 - SET_BITS)) as usize) * WAYS
+}
+
+/// Records the cell created for `link` on `node`. At most [`WAYS`] probes.
 ///
 /// # Safety
 /// Game-thread only. `cell` must be a freshly created, linked registry cell.
@@ -203,26 +216,33 @@ unsafe fn index_insert(link: usize, node: usize, cell: usize) {
     let keys = unsafe { &mut *TABLE.keys.get() };
     let nodes = unsafe { &mut *TABLE.nodes.get() };
     let cells = unsafe { &mut *TABLE.cells.get() };
-    let start = probe_start(link);
-    for step in 0..TABLE_LEN {
-        let slot = (start + step) & (TABLE_LEN - 1);
+    let base = set_base(link);
+    let mut empty = None;
+
+    for way in 0..WAYS {
+        let slot = base + way;
         let key = keys[slot];
         if key == link {
-            // Re-registration of the same Link: the previous cell is already
-            // unlinked, so only the mapping changes.
             nodes[slot] = node;
             cells[slot] = cell;
             return;
         }
-        if key == SLOT_EMPTY || key == SLOT_TOMBSTONE {
-            keys[slot] = link;
-            nodes[slot] = node;
-            cells[slot] = cell;
-            TABLE.inserted.fetch_add(1, Ordering::Relaxed);
-            return;
+        if key == 0 && empty.is_none() {
+            empty = Some(slot);
         }
     }
-    TABLE.full.fetch_add(1, Ordering::Relaxed);
+
+    // Prefer an unused way; otherwise evict deterministically from this set.
+    // Eviction only loses a handle (that removal falls back to the native
+    // scan), so it can never produce a wrong unlink.
+    let slot = empty.unwrap_or_else(|| {
+        TABLE.evictions.fetch_add(1, Ordering::Relaxed);
+        base + ((hash(link) >> SET_BITS) as usize & (WAYS - 1))
+    });
+    keys[slot] = link;
+    nodes[slot] = node;
+    cells[slot] = cell;
+    TABLE.inserted.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Removes and returns the mapping for `link` registered on `node`.
@@ -234,11 +254,12 @@ unsafe fn index_take(link: usize, node: usize) -> Option<usize> {
     let keys = unsafe { &mut *TABLE.keys.get() };
     let nodes = unsafe { &*TABLE.nodes.get() };
     let cells = unsafe { &*TABLE.cells.get() };
-    let start = probe_start(link);
-    for step in 0..TABLE_LEN {
-        let slot = (start + step) & (TABLE_LEN - 1);
+    let base = set_base(link);
+
+    for way in 0..WAYS {
+        let slot = base + way;
         let key = keys[slot];
-        if key == SLOT_EMPTY {
+        if key == 0 {
             return None;
         }
         if key != link {
@@ -249,7 +270,7 @@ unsafe fn index_take(link: usize, node: usize) -> Option<usize> {
             return None;
         }
         let cell = cells[slot];
-        keys[slot] = SLOT_TOMBSTONE;
+        keys[slot] = 0;
         return Some(cell);
     }
     None
@@ -259,15 +280,11 @@ unsafe fn index_take(link: usize, node: usize) -> Option<usize> {
 #[inline]
 unsafe fn index_forget(link: usize) {
     let keys = unsafe { &mut *TABLE.keys.get() };
-    let start = probe_start(link);
-    for step in 0..TABLE_LEN {
-        let slot = (start + step) & (TABLE_LEN - 1);
-        let key = keys[slot];
-        if key == SLOT_EMPTY {
-            return;
-        }
-        if key == link {
-            keys[slot] = SLOT_TOMBSTONE;
+    let base = set_base(link);
+    for way in 0..WAYS {
+        let slot = base + way;
+        if keys[slot] == link {
+            keys[slot] = 0;
             return;
         }
     }
@@ -345,8 +362,7 @@ pub struct LinkRemovalSnapshot {
     pub index_hits: u64,
     pub index_misses: u64,
     pub index_mismatches: u64,
-    pub index_rejected: u64,
-    pub table_full: u64,
+    pub table_evictions: u64,
     pub remove_node_link: SiteSnapshot,
     pub link_unlink_from_node: SiteSnapshot,
     pub slink_destructor: SiteSnapshot,
@@ -360,8 +376,7 @@ pub fn snapshot() -> LinkRemovalSnapshot {
         index_hits: TABLE.hits.load(Ordering::Relaxed),
         index_misses: TABLE.misses.load(Ordering::Relaxed),
         index_mismatches: TABLE.mismatches.load(Ordering::Relaxed),
-        index_rejected: TABLE.rejected.load(Ordering::Relaxed),
-        table_full: TABLE.full.load(Ordering::Relaxed),
+        table_evictions: TABLE.evictions.load(Ordering::Relaxed),
         remove_node_link: REMOVE_NODE_LINK_COUNTERS.snapshot(),
         link_unlink_from_node: LINK_UNLINK_FROM_NODE_COUNTERS.snapshot(),
         slink_destructor: SLINK_DESTRUCTOR_COUNTERS.snapshot(),
@@ -649,7 +664,7 @@ unsafe extern "C-unwind" fn add_node_link(node: *mut u8, link: *mut u8) {
     write_pointer(previous, CELL_NEXT, cell as usize);
 
     ADD_NODE_LINK_CALLS.fetch_add(1, Ordering::Relaxed);
-    if INDEX_ENABLED.load(Ordering::Relaxed) {
+    if count >= INDEX_MIN_NODE_LEN && INDEX_ENABLED.load(Ordering::Relaxed) {
         index_insert(link as usize, node as usize, cell as usize);
     }
 }

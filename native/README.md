@@ -1,4 +1,4 @@
-# hf_native v0.1.2 — experimental native-engine acceleration
+# hf_native v0.1.3 — experimental native-engine acceleration
 
 Independent Modloader v4 DLL for **HighFleet Steam 1.163**. Source lives on
 `highfleet-allies` main. This is a tester build, not a measured FPS claim or a
@@ -17,7 +17,7 @@ cargo xwin clippy --release --locked --target x86_64-pc-windows-msvc -- -D warni
 ```
 
 Output: `target/x86_64-pc-windows-msvc/release/hf_native.dll`. Distribute/install
-with its versioned name **`hf_native_v0.1.2.dll`**. No game execution is part of
+with its versioned name **`hf_native_v0.1.3.dll`**. No game execution is part of
 the build. No new regression tests were added (repository permission policy).
 
 ## Install / disable
