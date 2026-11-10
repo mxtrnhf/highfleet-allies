@@ -563,3 +563,173 @@ are evidence; their wall time is not an optimization A/B.** Pass timing verifies
 bracket behavior only. A later accelerator requires a separate build and a new
 controlled capture. The remaining Wine/CRT/D3D host cost is not attributed or
 modified by v0.1.4.
+
+## v0.1.4 runtime evidence and v0.1.5 admission gates
+
+The Nov 10 18:39 session exercises the observers with zero prediction
+mismatches, incomplete DFS walks, media caps or name-hash overflow. That is
+evidence about exercised search results, not proof of cache invalidation or
+unexercised object lifetimes.
+
+Media observed 299,608 calls, 301,751,667 candidates and 371,961,613 byte
+comparisons; 1,441 distinct `(type,name)` hash estimates and 54,469 native misses.
+Animation accounts for 99.18% of candidate visits, averaging 1427 candidates per
+lookup. Only 1.23 bytes are compared per candidate. The architectural problem is
+repeated discovery in the wrong representation, not an expensive string compare.
+
+Relink observed 258,621 queries, of which 217,393 (84.1%) fall outside the two
+rebuild brackets. The first-32-root census saturates, with 38,893 overflow
+events. Its 604 counted census nodes are a biased subset, not a valid denominator
+for an index-amortisation claim. The next measurement must cover outside-bracket
+queries with bounded sampled work rather than repeat every full search.
+
+The longer capture spans 119.923 seconds and 96,993 samples, with no lost
+samples. Four disjoint particle/effect bodies total 10.66% of samples (update
+3.66%, render traversal 3.11%, animation 2.70%, wrapper 1.19%). Ghidra body
+inspection, not their misleading import-like function names, establishes that
+grouping. Render/animation shares are not automatically an allowed optimization
+budget. The previous claim that a low hottest-instruction share meant no native
+subsystem target remained was too broad.
+
+Wine's `get_vprot_range_size` and `get_basic_memory_info` total 7.34%; the libc
+post-syscall location is 14.08%. Those remain unattributed execution shares, not
+proof of allocator cost, lock contention or a specific mod feature. v0.1.5 adds
+caller-DLL query counts without removing or caching a single readability check.
+
+### Link-table deletion-hole correction
+
+Review of the existing set-associative table found an early-empty return carried
+over from open addressing. Deletion creates holes: after deleting way 0, a key
+in way 1 remains valid. Returning a miss at way 0 could make the fallback free
+way 1's native cell without deleting the handle. Repopulating way 0 would then
+make the stale way-1 mapping reachable. Zero mismatch counters did not exclude
+this sequence. v0.1.5 searches all four ways, preserving the hard bound while
+preventing that missed erase. Native mutation order and cell ownership remain.
+
+### Host-query observer contract
+
+`native/src/host_queries.rs` is intentionally a small pinned import observer,
+not a general API-hook framework. The reviewed installed AI 1.1.0, ally 1.0.4
+and multicore 0.1.0 PE headers/import-name RVAs are checked, and each live IAT
+pointer must equal the unmodified `VirtualQuery` API. An aligned atomic exchange
+publishes the wrapper; the original page protection is restored. The wrapper
+increments one atomic before forwarding the exact arguments to the same API;
+it does not query time, format/log, modify output or change last-error behavior.
+
+Modloader permanently retains the DLLs. In the reviewed load order the first
+three are loaded before hf_native; QoL follows it and remains explicitly
+unobserved. Missing/different modules and pre-existing API hooks are refused
+per slot. Coverage and counts are separately logged. These counts cannot
+attribute queries by feature, Wine-internal queries or API duration.
+
+### GPU offload is a separate architecture decision
+
+The present workloads include scattered native pointers, linked lists,
+allocations and OS transitions. Sending them to the GPU would add data movement
+and synchronization rather than remove their cause. A visual-only particle data
+set could become a candidate after separating collision/lifetime/RNG feedback,
+but that crosses the currently excluded rendering boundary. No GPU, shader,
+rendering or particle-fidelity change belongs in this build. First remove
+redundant CPU discovery and measure the computation that remains.
+
+## Shipped v0.1.5 decisions
+
+### Animation-name cache: narrow acceleration, explicit lifetime gate
+
+The supported native manager is created by `Init_HGE`: constructor call
+`0x1401ad33a` completes the recursive `Media/media.res` parse before publication
+to `[0x143a119e8]` at `0x1401ad342`. The type-8 parse branch allocates a fresh
+0x168-byte descriptor, copies its name into `+8..+0x87`, writes `next +0x98`,
+then publishes the new head at `0x14017add8`. The recursive parser's identified
+code callers are the constructor and its own Include recursion. Type-8 names
+and next links are not mutated by runtime materialization; `URAnimation_Release`
+(`0x1401789a0`) frees the cached HGE object at `+0x90`, not the descriptor.
+
+**Duplicate correction:** both parse paths can copy fields from an older match
+into the fresh descriptor and still insert it. Shipped resources duplicate
+`ask_for_help` and `ask_for_help_eng`. The native head-most match is authoritative,
+not an assumed unique name. The earlier report's "merge without insertion"
+claim was wrong.
+
+v0.1.5 indexes only the three type-8 CALL sites: `0x140170241`, `0x14015d1ff`
+and `0x14015d226`. Native `CopyNameIntoMedia` remains callable and untouched.
+Only the published singleton is eligible. A positive entry records the pointer
+native actually returned; hash matches are checked by exact, case-sensitive
+early-exit name equality. Hash collisions and table eviction lose hit rate, not
+correctness. Unknown names are never negatively cached. The four other media
+lookup sites stay native in normal index mode.
+
+The metadata table is 2048 sets x4 ways (128 KiB), with at most four probes and
+128 name bytes. A non-blocking Acquire/Release lock protects only the table;
+it does not synchronize game-owned media. Native's manager/descriptor lifecycle
+still applies. Head/manager generation changes clear the table before reuse.
+
+The parent added a stronger erase gate than the agent's shutdown-only audit:
+the animation vtable's deleting-destructor slot at `0x140366ca0` is replaced by
+a delegating wrapper. The slot must point to `0x1401787a0`, whose entire70-byte
+body is guarded. The wrapper **disables the cache before** invoking that exact
+native body once with unchanged `this`/flags and returning native RAX. Thus a
+virtual deletion from an unexpected caller also prevents later cached reads;
+native HGE release/free and exception behavior are not reimplemented. Identified
+direct references to the destructor are vtable/RVA data, not direct calls.
+
+One hit in1024 is rechecked through native and returns native's answer. The
+first disagreement permanently disables acceleration; it is not tolerated for a
+fixed mismatch budget. Sampling is semantic defence, not proof that a freed
+pointer can be read. External code that arbitrarily writes native descriptors,
+their vtables or raw-frees them outside the supported contracts is not covered.
+The exhaustive v0.1.4 probe is off by default and mutually exclusive with the
+cache when explicitly requested.
+
+### Relink attribution: cheaper and honest about coverage
+
+The same three external query CALLs remain native-result observers. Child-count
+classification preserves native read order (`id +0x78` first, `count +0x108`
+only on a root-id miss). Root-vtable histograms record scalar identities, not
+objects to dereference later. Counts are collected both overall and outside the
+two rebuild brackets. First-seen histogram overflow is explicit, not hidden by
+a larger linear root table.
+
+Only1/256 queries per site runs the shadow DFS, capped at8192 visits/1024frames.
+Scratch storage has an Acquire/Release try-lock; contention skips the sample.
+Sampled root fingerprints have4096 slots/eight probes and are never used to
+answer a query. Fingerprints can merge recycled addresses, and deterministic
+sampling/histogram saturation can bias counts; these are measurement limits,
+not validity checks. No exhaustive census remains in the default path.
+
+Parent verification confirms child insertion at `0x14027fa2a` changes the child
+list count and links, and `0x14027f9db` calls `AssignRandomId`. Escadra's query
+at `0x1401048f3` uses the global root whereas `0x140104900/90d` use the escadra.
+Clone/reparent/ID mutation sites show why the current broad scope is invalid.
+This does **not** prove that every future operation-local index is impossible;
+its complete stable interval has simply not been established. No ID accelerator
+is hidden behind a disabled flag in this build.
+
+### Effect work: no speculative pool or additional hot observer
+
+Parent re-read the update loop at `0x140120628/630`: particle age load/add,
+comparison, store and next-node traversal precede the expiry/free branch at
+`0x14012066a/677`. The candidate0xf0 native-block pool would leave those hot
+updates, initialization, destruction and RNG calls intact. The observed hot
+body therefore does not itself justify the pool. Render/animation sites are
+excluded, and the wrapper also calls rendering, so no wrapper detour ships.
+
+The agent's reported0.16% allocator "ceiling" was rejected in parent review:
+low self samples in `New`, `free` and helpers omit their allocator/CRT/Wine
+callees and cannot bound inclusive savings. Allocation is still unresolved,
+not exonerated. The query-volume observer provides another attribution slice;
+it is not a replacement for inclusive allocator attribution. No effect hooks,
+private particle layout, frame skipping, duplicate-time reuse or RNG changes
+were added merely to claim that all proposed stages produced optimizations.
+
+### Review and validation boundary
+
+DeepSeek Flash1017 agents owned disjoint media/relink source and effect-research
+scopes under `/tmp/opencode/native-v015-2026-11-10/`. Parent independently
+verified decisive live Ghidra bytes, duplicate insertion, resource lifetime,
+root/mutation instructions and effect loop; corrected scratch synchronization,
+added singleton/destructor admission, and tightened mismatch disablement.
+No agent wrote Ghidra state or committed. Cross-build/lints are validation of
+the implementation, not in-game equivalence or a measured FPS/load-time claim.
+The existing hf_ai tick-skip, hf_mc and failing hf_perf binaries/settings remain
+unchanged and must be recorded as confounds in any comparison.

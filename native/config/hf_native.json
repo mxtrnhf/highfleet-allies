@@ -8,6 +8,8 @@
   "contact_pool": true,
   "contact_pool_capacity": 4096,
   "scene_relink_probe": true,
-  "media_lookup_probe": true,
+  "media_lookup_index": true,
+  "media_lookup_probe": false,
+  "host_query_probe": true,
   "diagnostics_interval_seconds": 10
 }

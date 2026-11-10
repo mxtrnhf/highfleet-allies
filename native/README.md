@@ -1,4 +1,4 @@
-# hf_native v0.1.4 — experimental native-engine acceleration
+# hf_native v0.1.5 — experimental native-engine acceleration
 
 Independent Modloader v4 DLL for **HighFleet Steam 1.163**. Source lives on
 `highfleet-allies` main. This is a tester build, not a measured FPS claim or a
@@ -17,7 +17,7 @@ cargo xwin clippy --release --locked --target x86_64-pc-windows-msvc -- -D warni
 ```
 
 Output: `target/x86_64-pc-windows-msvc/release/hf_native.dll`. Distribute/install
-with its versioned name **`hf_native_v0.1.4.dll`**. No game execution is part of
+with its versioned name **`hf_native_v0.1.5.dll`**. No game execution is part of
 the build. No new regression tests were added (repository permission policy).
 
 ## Install / disable
@@ -45,8 +45,10 @@ features in other DLLs, including an older perf-branch hf_ai's ally tick skip.
 | `parts_direct_append` | true | Direct in-place Link construction in `Body_CollectSubtreeLinks` when capacity is available (elides temporary Link register/unlink/free churn) |
 | `contact_pool` | true | Scoped native contact allocation reuse |
 | `contact_pool_capacity` | 4096 | Maximum cached free blocks per contact size class; 1..65536 |
-| `scene_relink_probe` | true | Observer-only scene relink brackets and bounded shadow DFS; no ID index or changed native result |
-| `media_lookup_probe` | true | Observer-only shadow media scans at seven call sites; no resource cache or changed native result |
+| `scene_relink_probe` | true | Exact query counts/root classification plus bounded 1/256 shadow samples; no ID index or changed native result |
+| `media_lookup_index` | true | Four-way positive animation-name cache; native fallback, singleton/head generation, destruction invalidation and 1/1024 native hit verification |
+| `media_lookup_probe` | false | Explicit exhaustive shadow experiment at seven sites; overrides the index and adds traversal overhead |
+| `host_query_probe` | true | Count unchanged `VirtualQuery` calls through pinned, already-loaded AI/ally/multicore imports; no region cache |
 | `diagnostics_interval_seconds` | 10 | Periodic atomic-counter snapshots in Modloader logs; 0 disables |
 
 Logs identify the effective feature choices and byte-guard failures. Installation
@@ -54,11 +56,33 @@ fails before permanent patching when requested modules cannot validate their
 supported native code. A log saying the DLL was found is not proof it installed.
 The diagnostic thread reads counters only, never native game objects.
 
-**v0.1.4 is an experiment build.** The two new probes repeat native searches to
-measure their shape, then return the untouched native result. They intentionally
-add work during scene loading; their counters are evidence, but load wall time
-from this build is not an optimization A/B. No relink ID index or media pointer
-cache is installed. The v0.1.3 link/topology/contact optimizations are unchanged.
+The host-query line identifies coverage separately from volume. Its array order
+is `(hf_ai 1.1.0, hf_ally 1.0.4, hf_mc 0.1.0)`. A missing DLL, different pinned
+PE header/import layout, or pre-existing API hook is refused for that slot. QoL
+loads after hf_native in the reviewed Modloader order and is not observed; Wine
+internal/allocator queries and dynamically resolved calls are not observed.
+Counts are not CPU-time measurements or per-feature attribution. Every observed
+call still executes the original API and every existing memory guard remains.
+
+**v0.1.5 accelerates positive animation lookups**, targeting the bucket responsible
+for 99.18% of observed media-chain visits. It stores native's first-match answer,
+including duplicate names, and compares names exactly on a hit. Unknown names
+are not negatively cached. The table has 8192 slots, four probes and a 128-byte
+name bound. Head/manager changes flush it; any virtual animation destruction
+disables it before native release/free, and a single verification disagreement
+also disables it. Native materialization, release and destruction still run.
+
+The old exhaustive media probe is off. Relink's full second traversal on every
+query and biased 32-root census are replaced by 1/256 bounded samples, root-class
+and child-count histograms that cover outside-rebuild traffic too. An ID index
+remains blocked on mutation/lifetime closure. No particle pool, rendering/GPU
+change or guard removal is shipped: effect-update work is substantial, but its
+inclusive allocator share has not been measured. Low self samples in allocator
+wrappers do not establish an upper bound on their callees.
+
+The four-way link table also fixes deletion-hole lookup: all four ways are
+searched even if an earlier one is empty. This preserves the existing probe
+bound while preventing a missed erase and stale cell mapping.
 
 ## Test instructions
 
@@ -68,32 +92,38 @@ camera in each run. Keep the other DLL versions/settings fixed.
 1. Restart with `enabled: true`. Confirm an `hf_native ... installed` line.
 2. Load the same heavy-battle save, remain in it for at least 30 seconds, then
    use RETRY once. Exercise destruction, retreat and ship switching; verify
-   native behavior and unchanged panel visuals. The load and RETRY exercise both
-   new probes.
-3. Report the newest Modloader log. Required observer health is `mismatch=0`,
-   `incomplete=0`, `capped=0`, and no hash/root table-full growth. Relink
-   `visits` versus `census nodes` decides whether an index can amortise; media
-   `hops`, `bytes`, `distinct`, and per-site counts decide between no action, a
-   repeat cache, or a future insert-time index.
-4. For a behavior comparison, restart with `enabled: false` and repeat the same
-   encounter. Do not compare probe-enabled load time with v0.1.3 as if the probes
-   were accelerators.
+   native behavior and unchanged panel visuals. Record cold-load and warm-RETRY
+   results separately; the animation table warms across scene loads.
+3. Report the newest Modloader log. `media_index` should show rising `hits`,
+   `verify_mismatches: 0`, `auto_disabled: false`, `lifetime_disabled: false`
+   during play. Destruction disabling at shutdown is expected. Misses, capped
+   names, collisions or evictions are native fallbacks/lower hit rate, not wrong
+   resources. Report unexpected epoch churn or disabling during play.
+4. Relink `sample_mismatches` should be zero. `sample_nodes` describes only the
+   sampled walks, not every native query; `sample_incomplete`, histogram overflow
+   and sampled-root saturation limit interpretation. Host arrays must be read
+   alongside `active`, in the order documented above.
+5. To isolate the media accelerator, restart with `media_lookup_index: false`
+   and `media_lookup_probe: false`, leaving all other switches unchanged. For a
+   whole-mod behavior comparison use `enabled: false`. Do not use v0.1.4's
+   deliberately inflated exhaustive-probe load time as an unbiased baseline.
 
 For optional Linux CPU sampling, start this command and then load/RETRY the same
 heavy battle during the 15-second window:
 
 ```bash
 PID=$(pgrep -n -x Highfleet.exe)
+LABEL=load  # use combat for a separate established-fighting capture
 perf record -e cpu-clock:u -F 999 --call-graph dwarf,16384 \
-  -p "$PID" -o /tmp/opencode/highfleet-v014-relink.perf.data -- sleep 15
-perf script -G -i /tmp/opencode/highfleet-v014-relink.perf.data \
+  -p "$PID" -o "/tmp/opencode/highfleet-v015-${LABEL}.perf.data" -- sleep 15
+perf script -G -i "/tmp/opencode/highfleet-v015-${LABEL}.perf.data" \
   -F comm,tid,time,period,ip,sym,dso \
-  > /tmp/opencode/highfleet-v014-relink.perf.txt
+  > "/tmp/opencode/highfleet-v015-${LABEL}.perf.txt"
 ```
 
 Select the actual game PID, not a Steam/Proton launcher. Keep the raw `.data`
 file for native-address and sampled-register analysis. Windows stacks may not
-unwind through Wine; leaf IPs remain useful. Use a different `v014-off` basename
+unwind through Wine; leaf IPs remain useful. Use a different `v015-off` basename
 for a disabled comparison and do not infer savings from different battles or
 from the intentionally instrumented load duration.
 

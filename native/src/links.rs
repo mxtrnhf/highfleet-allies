@@ -259,9 +259,10 @@ unsafe fn index_take(link: usize, node: usize) -> Option<usize> {
     for way in 0..WAYS {
         let slot = base + way;
         let key = keys[slot];
-        if key == 0 {
-            return None;
-        }
+        // Deletion leaves holes inside a set. Unlike open addressing, an empty
+        // earlier way does not terminate this four-way lookup: a live handle
+        // can remain in a later way. Missing it would leave a stale mapping
+        // when the native fallback removes and frees that registration cell.
         if key != link {
             continue;
         }

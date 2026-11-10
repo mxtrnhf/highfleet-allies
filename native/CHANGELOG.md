@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.1.5 — 2026-11-10
+
+- `media_lookup_index` adds a positive-only animation-name cache at the three
+  type-8 lookup CALL sites. Native first-match/duplicate selection is preserved;
+  unknown names and unsupported inputs remain native. Four probes, 8192 slots,
+  128-byte names, non-blocking metadata lock; no allocation or owning game copies.
+  Only the published singleton is admitted. Head/manager changes flush entries;
+  the guarded animation deleting-destructor vtable slot permanently disables
+  acceleration before calling the untouched native destructor. One in 1024 hits
+  is checked natively, and the first disagreement disables the cache.
+- The old `media_lookup_probe` remains available but now defaults off and
+  overrides indexing when explicitly enabled. This removes its exhaustive
+  second search from the normal tester build. Negative caching is not shipped.
+- Relink observation now shadows only 1/256 queries per site, with 8192-node and
+  1024-frame caps, replacing the exhaustive per-query DFS and biased 32-root
+  census. Root-shape/vtable histograms include outside-rebuild queries; native
+  hit/miss remains authoritative. Scratch storage is synchronized by a
+  non-blocking Acquire/Release guard. No ID index is shipped: a valid mutation
+  and object-lifetime scope has not been established.
+- Fix the four-way link table's deletion-hole lookup. An empty earlier way no
+  longer hides a live later-way handle. The previous early return could fall
+  back to a native scan, free the cell, and retain its stale table entry. Every
+  lookup still has the same hard four-way probe limit.
+- Add `host_query_probe`: counts unchanged `VirtualQuery` calls through the
+  pinned, already-loaded AI 1.1.0, ally 1.0.4 and multicore 0.1.0 import entries.
+  Installation validates module headers/import identity/original API pointer and
+  atomically publishes each observer. Missing/different modules or existing API
+  hooks are refused individually. No guards, query results or memory-region
+  lifetime rules change; QoL and Wine internal calls are explicitly uncovered.
+- Effect-update bookkeeping was audited further in Ghidra. No particle pool,
+  update shortcut, render/animation/GPU hook, or fidelity/cadence reduction is
+  shipped. Allocation benefit remains unmeasured; cold allocator-wrapper IPs do
+  not bound CRT/Wine callee cost. No additional observer was added to this path.
+
 ## 0.1.4 — 2026-11-10
 
 - Adds two **observer-only experiments** for the load-time bursts left by the

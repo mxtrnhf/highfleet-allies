@@ -15,7 +15,9 @@ pub struct Config {
     pub contact_pool: bool,
     pub contact_pool_capacity: usize,
     pub scene_relink_probe: bool,
+    pub media_lookup_index: bool,
     pub media_lookup_probe: bool,
+    pub host_query_probe: bool,
     pub diagnostics_interval_seconds: u64,
 }
 
@@ -31,7 +33,9 @@ impl Default for Config {
             contact_pool: true,
             contact_pool_capacity: 4096,
             scene_relink_probe: true,
-            media_lookup_probe: true,
+            media_lookup_index: true,
+            media_lookup_probe: false,
+            host_query_probe: true,
             diagnostics_interval_seconds: 10,
         }
     }

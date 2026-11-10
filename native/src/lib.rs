@@ -6,6 +6,7 @@
 mod call_hook;
 mod config;
 mod contacts;
+mod host_queries;
 mod layout;
 mod links;
 mod media;
@@ -81,9 +82,14 @@ unsafe extern "C" fn init() -> bool {
         log::error!("hf_native: not installed: {error}");
         return false;
     }
+    if config.host_query_probe {
+        // SAFETY: Only aligned imports in pinned, permanently retained modules
+        // are atomically observed. Missing modules remain explicitly uncovered.
+        unsafe { host_queries::install() };
+    }
     log::info!(
-        "hf_native: installed: link_search={} link_index={} tail_probe={} tail_probe_remove={} parts_direct_append={} contact_pool={} capacity={} relink_probe={} media_probe={}; panels/AI cadence unchanged; in-game benefit unmeasured",
-        config.link_search, config.link_index, config.tail_probe, config.tail_probe_remove, config.parts_direct_append, config.contact_pool, config.contact_pool_capacity, config.scene_relink_probe, config.media_lookup_probe
+        "hf_native: installed: link_search={} link_index={} tail_probe={} tail_probe_remove={} parts_direct_append={} contact_pool={} capacity={} relink_probe={} media_index={} media_probe={} host_query_probe={}; panels/AI cadence unchanged; in-game benefit unmeasured",
+        config.link_search, config.link_index, config.tail_probe, config.tail_probe_remove, config.parts_direct_append, config.contact_pool, config.contact_pool_capacity, config.scene_relink_probe, config.media_lookup_index, config.media_lookup_probe, config.host_query_probe
     );
     start_diagnostics(config.diagnostics_interval_seconds);
     true
@@ -116,10 +122,17 @@ unsafe fn install(config: &Config) -> Result<(), String> {
         // collector branch and preserves native exception/growth call locations.
         unsafe { topology::prepare(&mut session, true)? };
     }
-    if config.media_lookup_probe {
-        // SAFETY: Media validates every CALL and leaves the native lookup itself
-        // untouched; the native result remains authoritative on every call.
-        unsafe { media::prepare(&mut session)? };
+    if config.media_lookup_index || config.media_lookup_probe {
+        // SAFETY: Media validates every CALL/native body and its lifetime guard.
+        // Only published singleton animation descriptors are indexed; misses and
+        // unsupported cases retain the untouched native lookup.
+        unsafe {
+            media::prepare(
+                &mut session,
+                config.media_lookup_index,
+                config.media_lookup_probe,
+            )?
+        };
     }
     if config.scene_relink_probe {
         // SAFETY: Relink validates both pass brackets and all three external
@@ -197,51 +210,51 @@ fn start_diagnostics(seconds: u64) {
 
             let relink = relink::snapshot();
             log::info!(
-                "hf_native: relink [passes=(load {}, level {}, complete {}, nested {}) pass_us=(total {}, max {}) queries={} outside={} visits={} max_visits={} roots={} switches={} root_full={} census=(nodes {}, max {}) incomplete={} mismatch={}]; sites [link={:?} joint_master={:?} joint_a={:?}] (calls, shadow_visits); observer only, native result authoritative",
-                relink.passes_load,
-                relink.passes_level,
-                relink.passes_completed,
-                relink.nested_passes,
-                relink.pass_total_us,
-                relink.pass_max_us,
+                "hf_native: relink [rebuild=(load {}, level {}, complete {}, nested {}) us=(total {}, max {}) queries={} outside={} hits={} misses={} samples={} sample_nodes={} max_nodes={} complete={} incomplete={} mismatch={} contended={} sampled_roots=(distinct {}, repeat {}, full {})]; shapes={:?} shapes_outside={:?} vtables={:?} other={} vtables_outside={:?} other_outside={}; sites={:?}; shadow sample 1/256, native result authoritative",
+                relink.rebuild_passes_load,
+                relink.rebuild_passes_level,
+                relink.rebuilds_completed,
+                relink.nested_rebuilds,
+                relink.rebuild_total_us,
+                relink.rebuild_max_us,
                 relink.queries,
-                relink.queries_outside_pass,
-                relink.visits,
-                relink.max_query_visits,
-                relink.distinct_roots,
-                relink.root_switches,
-                relink.root_table_full,
-                relink.census_nodes,
-                relink.max_census_nodes,
-                relink.shadow_incomplete,
-                relink.shadow_mismatches,
-                (relink.sites[0].calls, relink.sites[0].visits),
-                (relink.sites[1].calls, relink.sites[1].visits),
-                (relink.sites[2].calls, relink.sites[2].visits),
+                relink.queries_outside_rebuild,
+                relink.hits,
+                relink.misses,
+                relink.samples,
+                relink.sample_nodes,
+                relink.sample_max_nodes,
+                relink.sample_complete,
+                relink.sample_incomplete,
+                relink.sample_mismatches,
+                relink.sample_contended,
+                relink.sample_distinct_roots,
+                relink.sample_repeat_roots,
+                relink.sample_root_table_full,
+                relink.root_shapes,
+                relink.root_shapes_outside,
+                relink.root_vtables,
+                relink.root_vtable_other,
+                relink.root_vtables_outside,
+                relink.root_vtable_other_outside,
+                relink.sites,
+            );
+
+            let queries = host_queries::snapshot();
+            log::info!(
+                "hf_native: host_queries [active={:?} calls={:?}] order=(ai1.1.0, ally1.0.4, mc0.1.0); VirtualQuery unchanged; QoL/native/Wine internal calls not covered",
+                queries.active,
+                queries.calls,
             );
 
             let media = media::snapshot();
             log::info!(
-                "hf_native: media [calls={} hits={} misses={} hops={} bytes={} max_hops={} capped={} mismatch={} distinct={} hash_full={} hash_capped={}]; sites [animation={:?} type11={:?} sound={:?} font={:?} texture={:?} map_a={:?} map_b={:?}] (calls, shadow_hops)",
-                media.calls,
-                media.hits,
-                media.misses,
-                media.hops,
-                media.compare_bytes,
-                media.max_hops,
-                media.capped,
-                media.mismatches,
-                media.distinct_names,
-                media.name_hash_full,
-                media.name_hash_capped,
-                (media.sites[0].calls, media.sites[0].hops),
-                (media.sites[1].calls, media.sites[1].hops),
-                (media.sites[2].calls, media.sites[2].hops),
-                (media.sites[3].calls, media.sites[3].hops),
-                (media.sites[4].calls, media.sites[4].hops),
-                (media.sites[5].calls, media.sites[5].hops),
-                (media.sites[6].calls, media.sites[6].hops),
+                "hf_native: media_index {:?}; sites order=(animation, map_a, map_b)",
+                media.index,
             );
+            if media.probe.active {
+                log::info!("hf_native: media_probe {:?}; observer only", media.probe);
+            }
         });
     if let Err(error) = result {
         // Diagnostics are optional; their failure must not affect native state
