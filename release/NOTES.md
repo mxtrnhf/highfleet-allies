@@ -1,6 +1,6 @@
 # HighFleet Allies v@PACK_VERSION@
 
-- **Fixed: ship bombers caused a huge performance drop.** One of the bomber checks was attached to a place in the game code that runs once for every part of a ship, and a large ship has hundreds of parts. Each run redid the whole situation check from scratch — target, speed, where to fly — hundreds of times per frame. It now runs once per ship.
+- **Fixed: gunpod plane loadouts could not be picked on the carrier plane buttons.** A loadout that carries no parts of its own — a gunpod, like the 20 mm or 100 mm cannon pods added for planes by QoL/ammo mods — was previously mistaken for the plain "guns only" choice, so the pre-battle carrier buttons never offered it. All of a craft's loadouts are now selectable, gunpods included: the cycle starts at the craft's default gun (vanilla: the 37 mm), gun choices cost no stock, and a launched gunpod plane strafes its target with the selected cannon until its rounds run out, then flies home.
 
 ## Debug overlay settings
 
@@ -20,4 +20,4 @@ Keep top-level `enabled: true`; restart after editing. `ally_reticle_scale` cont
 
 HighFleet **Steam 1.163**, Modloader v4. Back up `Saves`, extract the ZIP into the game directory, and remove older ally/AI DLLs so only one of each remains. Merge the included configs with your custom settings. Keep the QoL flare crash fix enabled.
 
-Includes **hf_ally v@ALLY_VERSION@**, **hf_ai v@AI_VERSION@**, bundled QoL, presets and the player manual. Bomber fix cross-build validated on 2026-11-10; run a bomber battle to confirm frame times.
+Includes **hf_ally v@ALLY_VERSION@**, **hf_ai v@AI_VERSION@**, bundled QoL, presets and the player manual. Gunpod loadout selection cross-build validated on 2026-11-11; launch a carrier battle with a gunpod choice to confirm it arms and attacks.

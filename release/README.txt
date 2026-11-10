@@ -3,11 +3,13 @@ hf_ally @ALLY_VERSION@ + hf_ai @AI_VERSION@ + bundled QoL — Steam 1.163 only
 Source: https://github.com/mxtrnhf/highfleet-allies
 
 WHAT CHANGED
-- Fixed: ship bombers caused a huge performance drop. One of the bomber checks
-  was attached to a place in the game code that runs once for every part of a
-  ship, and a large ship has hundreds of parts. Each run redid the whole
-  situation check from scratch — target, speed, where to fly — hundreds of
-  times per frame. It now runs once per ship.
+- Fixed: gunpod plane loadouts could not be picked on the carrier plane
+  buttons. A loadout that carries no parts of its own — a gunpod, like the
+  20 mm or 100 mm cannon pods added for planes by QoL/ammo mods — was
+  mistaken for the plain "guns only" choice and never offered. All of a
+  craft's loadouts are now selectable, gunpods first (vanilla: the 37 mm
+  default); gun choices cost no stock, and a launched gunpod plane strafes
+  its target until its rounds run out, then flies home.
 
 DEBUG OVERLAY SETTINGS
 Modloader/config/ally.json -> debug_overlay:
