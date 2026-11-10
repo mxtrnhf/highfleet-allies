@@ -13,7 +13,7 @@ use crate::bomber_math::{Flight, Phase, Run, PULL_OUT_S, RELEASE_HEIGHT};
 use crate::diag::rd;
 use crate::native::plausible;
 use crate::native_layout::{Body, Creature, Link, Node};
-use patchy::{PatchSession, ReturnType, Trampoline};
+use patchy::{Condition, PatchSession, ReturnType, Trampoline};
 
 // After hf_ai's waypoint hook: an armed bomber keeps its course instead of evading missiles.
 const WAYPOINT_SITE: usize = 0x1_4006_4a96;
@@ -583,8 +583,16 @@ unsafe fn owns_course(entry: &Entry, target: usize, now: f64) -> bool {
         && rd::<[f32; 2]>(entry.ship + OFF_WAYPOINT) == Some([entry.waypoint.0, entry.waypoint.1])
 }
 
+/// The secondary hooks below can fire many times per tick (per ship attempt or per engine
+/// part). Only pay for flight()'s page-checked target/parent walks once RUNS already holds a
+/// course for this ship; a contended table skips the work, as before.
+fn has_run(ship: usize) -> bool {
+    RUNS.try_lock()
+        .is_ok_and(|runs| runs.iter().any(|entry| entry.ship == ship))
+}
+
 unsafe fn raise_dive_speed(ship: usize) {
-    if FAILED.load(Ordering::Relaxed) || !battle::tracked(ship) {
+    if FAILED.load(Ordering::Relaxed) || !battle::tracked(ship) || !has_run(ship) {
         return;
     }
     let Some((target, flight)) = flight(ship) else {
@@ -627,12 +635,18 @@ unsafe extern "C" fn on_speed(ship: usize) {
 }
 
 unsafe fn boost_engines(ship: usize, command: usize) {
-    if FAILED.load(Ordering::Relaxed) || !battle::tracked(ship) {
+    if FAILED.load(Ordering::Relaxed) || !battle::tracked(ship) || !has_run(ship) {
         return;
     }
     let Some((target, flight)) = flight(ship) else {
         return;
     };
+    apply_engine_boost(ship, command, target, &flight);
+}
+
+/// boost_engines' body once a flight is validated; restore_engines reuses the flight it already
+/// validated this tick instead of walking the page-checked target chain twice.
+unsafe fn apply_engine_boost(ship: usize, command: usize, target: usize, flight: &Flight) {
     let Ok(mut runs) = RUNS.try_lock() else {
         return;
     };
@@ -729,7 +743,7 @@ unsafe extern "C" fn on_engines(ship: usize, command: usize) {
 /// hf_ai's engine hook has returned. Restore this tick's native stack commands before applying
 /// bomber thrust, so panic boost/spin cannot take over an armed bombing or recovery course.
 unsafe fn restore_engines(ship: usize, command: usize) {
-    if FAILED.load(Ordering::Relaxed) || !battle::tracked(ship) {
+    if FAILED.load(Ordering::Relaxed) || !battle::tracked(ship) || !has_run(ship) {
         return;
     }
     let Some((target, flight)) = flight(ship) else {
@@ -755,7 +769,7 @@ unsafe fn restore_engines(ship: usize, command: usize) {
     // SAFETY: the byte-validated 0x140065750 hook receives the same writable native stack
     // commands snapshot at 0x140065734. The copy is plain stack data, not a native owner.
     (command_start as *mut [u8; ENGINE_COMMANDS_SIZE]).write_unaligned(native_commands);
-    boost_engines(ship, command);
+    apply_engine_boost(ship, command, target, &flight);
 }
 
 unsafe extern "C" fn on_final_engines(ship: usize, command: usize) {
@@ -840,6 +854,9 @@ unsafe fn predict_bomb(
 }
 
 unsafe fn release(ship: usize) {
+    if !has_run(ship) {
+        return;
+    }
     let Some((target, flight)) = flight(ship) else {
         return;
     };
@@ -958,6 +975,13 @@ pub unsafe fn blocks_launch(ship: usize) -> bool {
     if FAILED.load(Ordering::Relaxed) || !battle::tracked(ship) {
         return false;
     }
+    let has_course = match RUNS.try_lock() {
+        Ok(runs) => runs.iter().any(|entry| entry.ship == ship),
+        Err(_) => return true,
+    };
+    if !has_course {
+        return false;
+    }
     let Some((target, flight)) = flight(ship) else {
         return false;
     };
@@ -1070,6 +1094,16 @@ pub unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
         .detour_trampoline(ENGINE_SITE, ENGINE_BYTES.len(), engines)
         .map_err(|error| error.to_string())?;
     let mut final_engines = Trampoline::new();
+    // 0x140065750 is the head of the per-part engine dispatch loop, not a once-per-ship
+    // site: JC 0x140065750 at 0x1400657d3 returns here once per part, with RDI advancing
+    // 0x18 per part (0x140065744: MOV RDI,RBX gives RDI = 0 only on the first iteration).
+    // Only the first iteration may enter the Rust callback; parts after the first replay the
+    // replaced instruction directly. Flags are dead here: TEST RCX,RCX at 0x140065755 writes
+    // them before the loop's first flag consumer, and the loop's own CMP at 0x1400657d0
+    // feeds the JC, so test rdi,rdi does not disturb the loop condition.
+    let skip_repeated_parts = final_engines.new_label();
+    final_engines.bytes(&[0x48, 0x85, 0xff]); // test rdi,rdi
+    final_engines.jump_if(Condition::NotEqual, skip_repeated_parts);
     final_engines.preserved_call(
         on_final_engines as *const (),
         &[0x4c, 0x89, 0xf1, 0x48, 0x8d, 0x55, 0x28], // mov rcx,r14; lea rdx,[rbp+0x28]
@@ -1077,6 +1111,9 @@ pub unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
         ReturnType::None,
     );
     final_engines.bytes(&FINAL_ENGINE_BYTES);
+    final_engines
+        .bind(skip_repeated_parts)
+        .map_err(|error| error.to_string())?;
     final_engines.absolute_jump(FINAL_ENGINE_SITE + FINAL_ENGINE_BYTES.len());
     session
         .detour_trampoline(FINAL_ENGINE_SITE, FINAL_ENGINE_BYTES.len(), final_engines)
