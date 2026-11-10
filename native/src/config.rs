@@ -14,6 +14,8 @@ pub struct Config {
     pub parts_direct_append: bool,
     pub contact_pool: bool,
     pub contact_pool_capacity: usize,
+    pub scene_relink_probe: bool,
+    pub media_lookup_probe: bool,
     pub diagnostics_interval_seconds: u64,
 }
 
@@ -28,6 +30,8 @@ impl Default for Config {
             parts_direct_append: true,
             contact_pool: true,
             contact_pool_capacity: 4096,
+            scene_relink_probe: true,
+            media_lookup_probe: true,
             diagnostics_interval_seconds: 10,
         }
     }

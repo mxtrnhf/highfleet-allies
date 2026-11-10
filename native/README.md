@@ -1,4 +1,4 @@
-# hf_native v0.1.3 — experimental native-engine acceleration
+# hf_native v0.1.4 — experimental native-engine acceleration
 
 Independent Modloader v4 DLL for **HighFleet Steam 1.163**. Source lives on
 `highfleet-allies` main. This is a tester build, not a measured FPS claim or a
@@ -17,7 +17,7 @@ cargo xwin clippy --release --locked --target x86_64-pc-windows-msvc -- -D warni
 ```
 
 Output: `target/x86_64-pc-windows-msvc/release/hf_native.dll`. Distribute/install
-with its versioned name **`hf_native_v0.1.3.dll`**. No game execution is part of
+with its versioned name **`hf_native_v0.1.4.dll`**. No game execution is part of
 the build. No new regression tests were added (repository permission policy).
 
 ## Install / disable
@@ -45,6 +45,8 @@ features in other DLLs, including an older perf-branch hf_ai's ally tick skip.
 | `parts_direct_append` | true | Direct in-place Link construction in `Body_CollectSubtreeLinks` when capacity is available (elides temporary Link register/unlink/free churn) |
 | `contact_pool` | true | Scoped native contact allocation reuse |
 | `contact_pool_capacity` | 4096 | Maximum cached free blocks per contact size class; 1..65536 |
+| `scene_relink_probe` | true | Observer-only scene relink brackets and bounded shadow DFS; no ID index or changed native result |
+| `media_lookup_probe` | true | Observer-only shadow media scans at seven call sites; no resource cache or changed native result |
 | `diagnostics_interval_seconds` | 10 | Periodic atomic-counter snapshots in Modloader logs; 0 disables |
 
 Logs identify the effective feature choices and byte-guard failures. Installation
@@ -52,32 +54,48 @@ fails before permanent patching when requested modules cannot validate their
 supported native code. A log saying the DLL was found is not proof it installed.
 The diagnostic thread reads counters only, never native game objects.
 
+**v0.1.4 is an experiment build.** The two new probes repeat native searches to
+measure their shape, then return the untouched native result. They intentionally
+add work during scene loading; their counters are evidence, but load wall time
+from this build is not an optimization A/B. No relink ID index or media pointer
+cache is installed. The v0.1.3 link/topology/contact optimizations are unchanged.
+
 ## Test instructions
 
 Use the same saved encounter, friendly/enemy heavy cruisers, configuration and
 camera in each run. Keep the other DLL versions/settings fixed.
 
 1. Restart with `enabled: true`. Confirm an `hf_native ... installed` line.
-2. Run the heavy battle for at least 30 seconds. Exercise destruction, retreat,
-   ship switching and RETRY; verify native behavior and unchanged panel visuals.
-3. Restart with `enabled: false`, repeat the same encounter, then compare.
-4. Report crashes, visible/gameplay differences and the newest Modloader log.
-   The aggregate counters explain exercised paths, not FPS or frame-time gains.
+2. Load the same heavy-battle save, remain in it for at least 30 seconds, then
+   use RETRY once. Exercise destruction, retreat and ship switching; verify
+   native behavior and unchanged panel visuals. The load and RETRY exercise both
+   new probes.
+3. Report the newest Modloader log. Required observer health is `mismatch=0`,
+   `incomplete=0`, `capped=0`, and no hash/root table-full growth. Relink
+   `visits` versus `census nodes` decides whether an index can amortise; media
+   `hops`, `bytes`, `distinct`, and per-site counts decide between no action, a
+   repeat cache, or a future insert-time index.
+4. For a behavior comparison, restart with `enabled: false` and repeat the same
+   encounter. Do not compare probe-enabled load time with v0.1.3 as if the probes
+   were accelerators.
 
-For optional Linux CPU sampling during the battle:
+For optional Linux CPU sampling, start this command and then load/RETRY the same
+heavy battle during the 15-second window:
 
 ```bash
 PID=$(pgrep -n -x Highfleet.exe)
-perf record -e cpu-clock:u -F 999 --call-graph dwarf,8192 \
-  -p "$PID" -o /tmp/opencode/hf-native-on.perf.data -- sleep 10
-perf script -G -i /tmp/opencode/hf-native-on.perf.data \
-  -F comm,tid,time,period,ip,sym,dso > /tmp/opencode/hf-native-on.leaves.txt
+perf record -e cpu-clock:u -F 999 --call-graph dwarf,16384 \
+  -p "$PID" -o /tmp/opencode/highfleet-v014-relink.perf.data -- sleep 15
+perf script -G -i /tmp/opencode/highfleet-v014-relink.perf.data \
+  -F comm,tid,time,period,ip,sym,dso \
+  > /tmp/opencode/highfleet-v014-relink.perf.txt
 ```
 
-Select the actual game PID, not a Steam/Proton launcher. Use `hf-native-off`
-filenames for the disabled comparison to preserve both captures. Windows stacks
-may not unwind through Wine; leaf IPs remain useful. Do not infer savings from
-one sampled function disappearing or from different battles.
+Select the actual game PID, not a Steam/Proton launcher. Keep the raw `.data`
+file for native-address and sampled-register analysis. Windows stacks may not
+unwind through Wine; leaf IPs remain useful. Use a different `v014-off` basename
+for a disabled comparison and do not infer savings from different battles or
+from the intentionally instrumented load duration.
 
 The older hf_perf 0.6.0 and perf-branch hf_ai tick-skip hooks compete at
 0x14001123a. This DLL must not work around that conflict by bypassing guards;

@@ -8,6 +8,8 @@ mod config;
 mod contacts;
 mod layout;
 mod links;
+mod media;
+mod relink;
 mod topology;
 
 use std::{
@@ -80,8 +82,8 @@ unsafe extern "C" fn init() -> bool {
         return false;
     }
     log::info!(
-        "hf_native: installed: link_search={} link_index={} tail_probe={} tail_probe_remove={} parts_direct_append={} contact_pool={} capacity={}; panels/AI cadence unchanged; in-game benefit unmeasured",
-        config.link_search, config.link_index, config.tail_probe, config.tail_probe_remove, config.parts_direct_append, config.contact_pool, config.contact_pool_capacity
+        "hf_native: installed: link_search={} link_index={} tail_probe={} tail_probe_remove={} parts_direct_append={} contact_pool={} capacity={} relink_probe={} media_probe={}; panels/AI cadence unchanged; in-game benefit unmeasured",
+        config.link_search, config.link_index, config.tail_probe, config.tail_probe_remove, config.parts_direct_append, config.contact_pool, config.contact_pool_capacity, config.scene_relink_probe, config.media_lookup_probe
     );
     start_diagnostics(config.diagnostics_interval_seconds);
     true
@@ -113,6 +115,16 @@ unsafe fn install(config: &Config) -> Result<(), String> {
         // SAFETY: Same startup/version/base contract; topology validates its
         // collector branch and preserves native exception/growth call locations.
         unsafe { topology::prepare(&mut session, true)? };
+    }
+    if config.media_lookup_probe {
+        // SAFETY: Media validates every CALL and leaves the native lookup itself
+        // untouched; the native result remains authoritative on every call.
+        unsafe { media::prepare(&mut session)? };
+    }
+    if config.scene_relink_probe {
+        // SAFETY: Relink validates both pass brackets and all three external
+        // queries; native recursion and every returned Node remain untouched.
+        unsafe { relink::prepare(&mut session)? };
     }
     session
         .install_permanently()
@@ -181,6 +193,54 @@ fn start_diagnostics(seconds: u64) {
                 contacts.native_free_calls,
                 contacts.lock_busy,
                 contacts.inactive,
+            );
+
+            let relink = relink::snapshot();
+            log::info!(
+                "hf_native: relink [passes=(load {}, level {}, complete {}, nested {}) pass_us=(total {}, max {}) queries={} outside={} visits={} max_visits={} roots={} switches={} root_full={} census=(nodes {}, max {}) incomplete={} mismatch={}]; sites [link={:?} joint_master={:?} joint_a={:?}] (calls, shadow_visits); observer only, native result authoritative",
+                relink.passes_load,
+                relink.passes_level,
+                relink.passes_completed,
+                relink.nested_passes,
+                relink.pass_total_us,
+                relink.pass_max_us,
+                relink.queries,
+                relink.queries_outside_pass,
+                relink.visits,
+                relink.max_query_visits,
+                relink.distinct_roots,
+                relink.root_switches,
+                relink.root_table_full,
+                relink.census_nodes,
+                relink.max_census_nodes,
+                relink.shadow_incomplete,
+                relink.shadow_mismatches,
+                (relink.sites[0].calls, relink.sites[0].visits),
+                (relink.sites[1].calls, relink.sites[1].visits),
+                (relink.sites[2].calls, relink.sites[2].visits),
+            );
+
+            let media = media::snapshot();
+            log::info!(
+                "hf_native: media [calls={} hits={} misses={} hops={} bytes={} max_hops={} capped={} mismatch={} distinct={} hash_full={} hash_capped={}]; sites [animation={:?} type11={:?} sound={:?} font={:?} texture={:?} map_a={:?} map_b={:?}] (calls, shadow_hops)",
+                media.calls,
+                media.hits,
+                media.misses,
+                media.hops,
+                media.compare_bytes,
+                media.max_hops,
+                media.capped,
+                media.mismatches,
+                media.distinct_names,
+                media.name_hash_full,
+                media.name_hash_capped,
+                (media.sites[0].calls, media.sites[0].hops),
+                (media.sites[1].calls, media.sites[1].hops),
+                (media.sites[2].calls, media.sites[2].hops),
+                (media.sites[3].calls, media.sites[3].hops),
+                (media.sites[4].calls, media.sites[4].hops),
+                (media.sites[5].calls, media.sites[5].hops),
+                (media.sites[6].calls, media.sites[6].hops),
             );
         });
     if let Err(error) = result {

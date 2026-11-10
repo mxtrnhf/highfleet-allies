@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.4 — 2026-11-10
+
+- Adds two **observer-only experiments** for the load-time bursts left by the
+  post-v0.1.3 profile. Existing link, topology and contact optimizations are
+  unchanged; no panel/render hook, AI cadence change or physics reduction.
+- `scene_relink_probe`: brackets both verified callers of
+  `Scene_RebuildFromProfile` and observes all three external
+  `RecursiveFindByID` CALL sites. A bounded iterative shadow DFS records query
+  visits, per-root full-subtree census cost, root switching, pass timing and
+  native/shadow agreement. The native recursive call and native return pointer
+  remain untouched.
+- `media_lookup_probe`: observes all seven `CopyNameIntoMedia` CALL sites with
+  bounded shadow scans, per-caller hop/byte counts, hit/miss totals and a bounded
+  distinct-name hash estimate. The untouched native lookup always supplies the
+  returned descriptor.
+- Both probes are intentionally measurement overhead, not accelerators. Their
+  load timing must not be presented as an FPS or load-time improvement.
+- The proposed relink ID index is **not shipped**: IDs are re-randomized during
+  rebuild, roots alternate between escadra/global trees, and some virtual
+  relink/load mutation paths remain unaudited. A media pointer cache is also not
+  shipped before repeat/chain measurements justify its larger lifecycle audit.
+- Caps: 32 relink roots/pass, 1024 DFS frames, 1 M shadow visits/query, 4096 media
+  candidates/lookup, 4096 hashed name bytes, and 16 name-hash probes. Incomplete
+  observations fall back to the untouched native call and are counted.
+
 ## 0.1.3 — 2026-11-10
 
 - **Fixes the unplayable lag introduced in 0.1.2.** The handle table used open

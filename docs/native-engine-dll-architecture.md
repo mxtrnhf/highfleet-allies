@@ -470,3 +470,96 @@ the native scan; that keeps the accelerator correct while bounding its memory
 and probe depth. The lesson recorded for the next iteration: an accelerator whose
 worst case is unbounded is not an accelerator, and the hit-rate counters must be
 read from the first run before the build is called working.
+
+## Epoch experiments (`hf_native v0.1.4`, 2026-11-10)
+
+The post-fix profile leaves two different architectural problems: flat steady
+state and short scene-load bursts. v0.1.4 deliberately changes only the latter's
+**measurement plane**. It does not claim a new acceleration, and it leaves every
+v0.1.3 fast path unchanged. Twelve near-CALL relays preserve native return
+addresses and call the original functions for every authoritative result.
+
+### Distinguish a materialized index from a query-result cache
+
+Sampled registers in the old capture contain 250 distinct `RecursiveFindByID`
+IDs in 269 samples (235 singleton IDs). These are samples, not exact query
+counts, but they reject the simple theory that repeated queries dominate. A
+cache of previous answers would mostly miss. A build-once tree index could still
+help first-time queries by replacing repeated O(subtree) searches with one tree
+walk plus bounded lookups.
+
+Live Ghidra review then rejected a map spanning the whole rebuild:
+
+- `AssignRandomId` (`0x140280840`) rewrites `Node.id` and registered `Link.id`;
+  `Scene_RebuildFromProfile` invokes it eight times and also recreates objects.
+- `Escadra::Relink` alternates queries between the escadra root and the global
+  scene node at `[0x147fc6f88]`; a single-current-root index would thrash.
+- The global subtree size is unknown, and some virtual relink/`Body::Load` paths
+  do not yet have a complete `children`/`m_id` mutation audit.
+
+Thus the ID index remains **unimplemented**, not hidden behind a default-off
+stub. It needs multi-root sizing, complete invalidation (including the
+interleaved `0x140294712` ID rewrite), and the remaining mutation proof.
+
+### Relink observer: five relays, native recursion untouched
+
+`RecursiveFindByID` (`0x140280080`, 122 bytes) compares `Node.id` at `+0x78`,
+then traverses the circular child list at `+0x100/+0x108` in pre-order. The first
+duplicate ID wins; a miss returns null. The observer byte-guards this complete
+body but does not replace it or its internal recursive CALL.
+
+Two relays bracket the only verified callers of `Scene_RebuildFromProfile`
+(`0x1402942a1` and `0x1402ba141`). Three more observe external queries from
+`Link::Relink` (`0x140195063`) and `Joint_Relink` (`0x1401940f5`,
+`0x14019414e`). Each query runs an iterative shadow DFS and then invokes the
+untouched native function. The native pointer is always returned, and completed
+predictions are compared with it.
+
+The first query for each root in a pass performs a full subtree census; later
+queries stop at the first match. This separates potential one-time index build
+cost (`census nodes`) from repeated search cost (`visits`). Root switching,
+outside-pass queries, pass brackets/timing, per-caller visits, caps and
+mismatches are logged. Root addresses are cleared at pass end and never read by
+the diagnostic thread.
+
+Hard bounds are 32 roots/pass, 1024 DFS frames and 1 M visits/observation. A cap
+makes only the observation incomplete; it never alters native behavior. Static
+scratch storage avoids allocation and per-query initialization of a large stack.
+
+Stage-2 admission requires zero mismatches/incomplete observations, an explained
+root population, no unexpected outside-pass traffic, and measured repeated work
+comfortably above full-index construction cost (initial decision rule: at least
+4×). The virtual mutation audit and ID-rewrite invalidation remain mandatory even
+if the arithmetic is attractive.
+
+### Media observer: seven relays, native descriptor authoritative
+
+`CopyNameIntoMedia` (`0x140178950`, 74 bytes) indexes 13 resource-type buckets,
+not name-length buckets. It walks a singly linked descriptor list (`next +0x98`)
+and performs a case-sensitive early-exit byte comparison against `name +8`.
+Animation is the large shipped bucket (2249 resource blocks). The earlier
+same-length description and the identification of `0x1401702b0` as a generic
+effect getter were wrong; that wrapper is the sound getter (type 3).
+
+The probe covers all seven lookup CALL sites: animation, type 11, sound, font,
+texture, and two inline map-decoration animation lookups. It repeats the scan
+with a 4096-candidate cap, records calls/hops/compared bytes/hit/miss/max depth
+per caller, and then calls the untouched native lookup. A completed prediction
+must equal the native descriptor. A bounded 2^16-entry atomic table of 64-bit
+`(type,name)` hashes (16 probes, no pointers or strings) estimates repeat rate.
+
+No media cache ships in this build. Static analysis found descriptor lifetimes
+unusually long, but an insert-time index would require every parser/runtime
+writer and a session/thread lifecycle contract. Measure first:
+
+- high hops/call with low distinct/calls supports a repeat-cache investigation;
+- high hops/call with mostly first-touch names points toward an insert-time
+  index, not a query-result cache;
+- short chains or a work budget far below the sampled CPU falsifies the theory
+  that this 74-byte function explains the burst.
+
+Both probes intentionally repeat native work during loading. **Their counters
+are evidence; their wall time is not an optimization A/B.** Pass timing verifies
+bracket behavior only. A later accelerator requires a separate build and a new
+controlled capture. The remaining Wine/CRT/D3D host cost is not attributed or
+modified by v0.1.4.

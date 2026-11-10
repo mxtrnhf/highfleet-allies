@@ -7,5 +7,7 @@
   "parts_direct_append": true,
   "contact_pool": true,
   "contact_pool_capacity": 4096,
+  "scene_relink_probe": true,
+  "media_lookup_probe": true,
   "diagnostics_interval_seconds": 10
 }

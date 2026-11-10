@@ -1,6 +1,6 @@
 [package]
 name = "hf-native"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "Experimental native engine work elimination for HighFleet Steam 1.163"
 
