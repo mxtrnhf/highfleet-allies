@@ -1,6 +1,7 @@
 //! Experimental vanilla engine work elimination; independent of ally/AI/QoL.
 
 mod ai_spans;
+mod call_hook;
 mod font_color;
 mod frame_skip;
 mod hud_hooks;
@@ -174,20 +175,14 @@ unsafe fn install(config: &Config) -> Result<(), String> {
     }
     let mut session = PatchSession::new();
     if config.profiling {
+        if config.ai_spans {
+            // SAFETY: Startup-only fixed-image contract; each independent
+            // optional group validates all its CALL sites before preparation.
+            unsafe { ai_spans::prepare(&mut session)? };
+        }
         // SAFETY: same startup/version/base contract; prepare validates stolen
         // instructions before creating the asynchronous output session.
         unsafe { profile::prepare(&mut session, &config.profile_output_dir, config)? };
-        if config.ai_spans {
-            // Validate the entire optional group before preparing any of its
-            // patches. A conflict must not discard the core frame/task hook.
-            // SAFETY: same startup-only, fixed-image contract as core profiling.
-            match unsafe { ai_spans::validate() } {
-                Ok(()) => unsafe { ai_spans::prepare(&mut session)? },
-                Err(error) => log::warn!(
-                    "hf_perf: optional AI spans unavailable: {error}; core frame/task profiling continues; ai_driver/ai_scan columns will be blank"
-                ),
-            }
-        }
     }
     if config.enabled {
         let mut trampoline = Trampoline::new();

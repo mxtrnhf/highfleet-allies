@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.2 — 2026-11-10
+
+- Validate driver and obstacle-scan timing groups independently. The occupied
+  driver site remains untouched, while the two original, disjoint scan CALLs can
+  be measured. Both scan sites must match before either is prepared. Unexpected
+  preparation or core installation failures still abort the uninstalled batch.
+- Driver/scan CSV availability is tracked separately: absent coverage stays
+  blank, measured zero stays zero. Core ai_us remains inclusive of both native
+  AI and installed mod hooks. Scan timing excludes the previous obstacle-list
+  free loop and must not be added to inclusive ai_us.
+- Sidecars record prepared AI span coverage and the ally configuration read at
+  initialization, making panels-on/off runs distinguishable. No panel, AI
+  decision/cadence, render, physics or memory-guard changes.
+
 ## 0.6.1 — 2026-11-10
 
 - Refuse conflicting optional AI span sites without aborting core frame/task

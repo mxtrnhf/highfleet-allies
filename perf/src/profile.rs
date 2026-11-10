@@ -154,7 +154,10 @@ pub unsafe fn prepare(
     writeln!(writer, "schema,sequence,wall_s,loop_interval_us,frame_call_us,observer_before_us,observer_after_us,simulation_delta_s,paused,frame_native_us,pre_us,physics_us,input_us,ai_us,game_us,sound_us,video_us,bodies,physics_bodies,contacts,joints,ai_list_entries,warning_calls,query_calls,indexed_rays,fallback_rays,font_calls,kaz_scan_calls,kaz_scan_targets,kaz_prefilter_rejections,render_skip_frames,render_calls,render_false,heuristic_p25_us,heuristic_p50_us,ai_steering_us_total,ai_creature_update_us_total,ai_threat_scan_us_total,ai_tracking_us_total,ai_boost_us_total,ai_steering_calls_total,ai_creature_update_calls_total,ai_threat_scan_calls_total,ai_tracking_calls_total,ai_boost_calls_total,ai_driver_us_total,ai_scan_us_total,ai_driver_calls_total,ai_scan_calls_total,dropped_rows_total,quit").map_err(|e| e.to_string())?;
     writer.flush().map_err(|e| e.to_string())?;
     let metadata = serde_json::json!({"schema":1,"version":env!("CARGO_PKG_VERSION"),"pid":pid,"qpc_frequency":frequency,"config":config,
-        "measurement":"game-loop wall timings; NOT presented frames or Rust-only CPU time; ai_*_us_total and ai_driver/ai_scan columns are per-frame span totals", "source":"docs/frame-profiling.md"});
+        "measurement":"game-loop wall timings; NOT presented frames or Rust-only CPU time; ai_*_us_total and ai_driver/ai_scan columns are per-frame span totals",
+        "ally_config": std::fs::read_to_string("Modloader/config/ally.json").ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()),
+        "ai_span_coverage":{"driver":crate::ai_spans::driver_installed(),"scans":crate::ai_spans::scan_installed()},
+        "source":"docs/frame-profiling.md"});
     let mut sidecar = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -284,11 +287,13 @@ unsafe extern "win64" fn frame() -> u8 {
         dropped: DROPPED.load(Ordering::Relaxed),
         quit,
     };
-    if crate::ai_spans::installed() {
+    if crate::ai_spans::driver_installed() {
         let (driver_ticks, driver_calls) = crate::ai_spans::take_driver();
-        let (scan_ticks, scan_calls) = crate::ai_spans::take_scan();
         row.driver_ticks = driver_ticks;
         row.driver_calls = driver_calls;
+    }
+    if crate::ai_spans::scan_installed() {
+        let (scan_ticks, scan_calls) = crate::ai_spans::take_scan();
         row.scan_ticks = scan_ticks;
         row.scan_calls = scan_calls;
     }
@@ -354,12 +359,13 @@ fn write_row(
     for calls in row.mod_calls {
         optional(writer, row.mod_observed.then_some(calls))?;
     }
-    let spans_installed = crate::ai_spans::installed();
-    for ticks in [row.driver_ticks, row.scan_ticks] {
-        optional(writer, spans_installed.then_some(micros(ticks as i64)))?;
+    let driver = crate::ai_spans::driver_installed();
+    let scans = crate::ai_spans::scan_installed();
+    for (available, ticks) in [(driver, row.driver_ticks), (scans, row.scan_ticks)] {
+        optional(writer, available.then_some(micros(ticks as i64)))?;
     }
-    for calls in [row.driver_calls, row.scan_calls] {
-        optional(writer, spans_installed.then_some(calls))?;
+    for (available, calls) in [(driver, row.driver_calls), (scans, row.scan_calls)] {
+        optional(writer, available.then_some(calls))?;
     }
     writeln!(writer, ",{},{}", row.dropped, row.quit)
 }

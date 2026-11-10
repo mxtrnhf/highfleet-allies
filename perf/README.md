@@ -1,7 +1,7 @@
 # hf_perf — vanilla engine optimization and frame profiling
 
 Standalone **Steam 1.163 / Modloader v4** DLL. No dependency on ally/AI/QoL.
-Current version **v0.6.1** contains:
+Current version **v0.6.2** contains:
 
 | Feature | Purpose |
 |---|---|
@@ -12,7 +12,7 @@ Current version **v0.6.1** contains:
 | Frame/task profiler | Whole native frame, seven task timers, simulation progress, workload and activation counters, bounded asynchronous CSV |
 | Optional hf_ai span sink | Inclusive/nested measurements from a separately instrumented AI build; not Rust-only time |
 
-**No in-game validation of v0.6.1 yet.**
+**v0.6.1 core initialization was confirmed in game. v0.6.2 scan spans need runtime validation.**
 The user performs runtime testing; the agent does not launch or attach to the game.
 
 - [Frame-skip restoration and validation](../docs/frame-skip.md)
@@ -27,7 +27,7 @@ Build:
 cargo xwin build --release --target x86_64-pc-windows-msvc --locked
 ```
 
-Install as `Modloader/mods/hf_perf_v0.6.1.dll`; keep only one active hf_perf DLL.
+Install as `Modloader/mods/hf_perf_v0.6.2.dll`; keep only one active hf_perf DLL.
 Tracked/missing configuration defaults to fully disabled. The installed research
 config explicitly enables the existing optimizations, KAZ fast scan, frame skip and
 profiling. Invalid config, unexpected version/base, or native byte mismatch fails
@@ -36,10 +36,13 @@ closed.
 ### Optional AI-hook compatibility
 
 With `profiling:true`, `ai_spans:true` requests three additional CALL-site
-timers. If any site differs (including hf_ai's tick-skip at `0x14001123a`),
-v0.6.1 logs a warning and leaves the entire optional group untouched. Core
-frame/task profiling continues, including the native inclusive `ai_us` timer.
-The driver/scan columns remain blank: this means unavailable, not zero cost.
+timers. v0.6.2 admits the driver and the two-scan group independently. If the
+driver site differs (including hf_ai's tick-skip at `0x14001123a`), it stays
+untouched and driver columns stay blank. Both scan CALLs must match before
+either is wrapped; a mismatch leaves scan columns blank instead. Core profiling
+continues either way, including the native inclusive `ai_us` timer.
+Blank means unavailable, not zero cost. Scan time nests inside ai_us, covers
+the two AiShip_ScanObstacles calls and excludes the previous-list free loop.
 Preparation/allocation failures and core byte mismatches still fail closed.
 
 For profiling without activating legacy engine/HUD/render optimizations use
@@ -48,6 +51,11 @@ the other feature settings are preserved but gated off. No gameplay or AI
 cadence change is needed. The CSV output directory is retained from the live
 config. Check the startup log for `profile CSV prepared` and final
 `profiling=true`; runtime initialization still requires a user game run.
+
+For the panels-off AI measurement, preserve `ally_panels:false` in ally.json.
+See [the capture procedure](../docs/native-ai-attribution-2026-11-10.md#next-capture).
+The profiler sidecar records the initialization-time ally config and prepared
+driver/scan coverage; installation success must still be checked in the log.
 
 Source was selectively imported from benchmark commit `aa9c5dd`; results and
 unrelated benchmark-branch edits were not imported. Historical documentation
