@@ -1110,10 +1110,10 @@ pub unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
         &[],
         ReturnType::None,
     );
-    final_engines.bytes(&FINAL_ENGINE_BYTES);
     final_engines
         .bind(skip_repeated_parts)
         .map_err(|error| error.to_string())?;
+    final_engines.bytes(&FINAL_ENGINE_BYTES);
     final_engines.absolute_jump(FINAL_ENGINE_SITE + FINAL_ENGINE_BYTES.len());
     session
         .detour_trampoline(FINAL_ENGINE_SITE, FINAL_ENGINE_BYTES.len(), final_engines)
