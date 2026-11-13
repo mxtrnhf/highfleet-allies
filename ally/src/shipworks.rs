@@ -6,6 +6,7 @@ mod design;
 
 use std::{
     ffi::{CStr, CString},
+    fmt::Write as _,
     mem::offset_of,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
@@ -118,6 +119,14 @@ const GET_PROFILE_BYTES: [u8; 16] = [
 const PROFILE_ESCADRAS: usize = 0x1f8;
 /// Sanity bound for the profile escadra vector during the prune scan.
 const ESCADRA_VECTOR_LIMIT: usize = 0x8000;
+/// Enemy-side fleet list: vector of 0x18-byte link nodes (begin +0x0, end +0x8, cap +0x10);
+/// the escadra pointer sits at node+0x8. The pre-combat screen builds PRECOMBAT_B cards from it.
+const ENEMY_LIST: usize = 0x1_43a1_59c0;
+const LINK_NODE_STRIDE: usize = 0x18;
+/// Ship count of an Escadra, as read by the pre-combat card builder (escadra+0x56c).
+const ESCADRA_SHIP_COUNT: usize = 0x56c;
+/// Sanity bound for list scans in diagnostics/prune.
+const LIST_ENTRY_LIMIT: usize = 64;
 
 struct Entry {
     name: CString,
@@ -649,6 +658,7 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
         drop(state);
         // Also drop the last test enemy Escadra from the profile so a later FIGHT (or a
         // campaign battle) does not re-link the cleared enemies.
+        dump_enemy_state("clear");
         prune_enemy_escadra();
         sound::button("Shipworks CLEAR");
         log::info!("hf_ally: Shipworks CLEAR removed {allies} allies and {enemies} enemies");
@@ -732,14 +742,74 @@ unsafe extern "C" fn on_fleet(fleet: usize) {
 
 type CreateEscadra = unsafe extern "C" fn(usize, f32, u32, usize, usize, u32) -> usize;
 
-/// Remove the previously created test enemy Escadra from the profile's escadra vector, so the
-/// next Combat level load does not re-link it into the enemy fleet (it would accumulate across
-/// test battles). Only pointer values are compared; the escadra object is never dereferenced,
-/// so a game-destroyed object cannot be read through a stale pointer.
+/// One-line bounded dump of where enemy escadras currently live: the stored test escadra, the
+/// profile's escadra vector (8-byte cells) and the enemy-side fleet list (0x18-byte nodes).
+/// Pointer values are only compared, never dereferenced beyond page-checked scalar reads.
 ///
 /// # Safety
-/// Game thread only (on_enemy_fleet / on_click / on_level callbacks). The profile vector is
-/// bounds-checked before the scan.
+/// Game thread only. All reads go through `diag::rd` (page-checked) and are count-bounded.
+unsafe fn dump_enemy_state(tag: &str) {
+    let stored = SESSION
+        .try_lock()
+        .map(|state| state.enemy_escadra)
+        .unwrap_or(0);
+    let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(GET_PROFILE);
+    let profile = get_profile();
+    let (pbegin, pend) = (
+        diag::rd::<usize>(profile.wrapping_add(PROFILE_ESCADRAS)).unwrap_or(0),
+        diag::rd::<usize>(profile.wrapping_add(PROFILE_ESCADRAS + 8)).unwrap_or(0),
+    );
+    let mut profile_entries = String::new();
+    let pcount = if pbegin != 0 && pend >= pbegin && (pend - pbegin) / 8 <= LIST_ENTRY_LIMIT {
+        for index in 0..(pend - pbegin) / 8 {
+            let fleet = diag::rd::<usize>(pbegin + index * 8).unwrap_or(0);
+            let ships = diag::rd::<usize>(fleet.wrapping_add(ESCADRA_SHIP_COUNT)).unwrap_or(0);
+            let _ = write!(
+                profile_entries,
+                " {fleet:#x}({}{ships})",
+                if fleet == stored { "*" } else { "" },
+            );
+        }
+        (pend - pbegin) / 8
+    } else {
+        0
+    };
+    let (lbegin, lend) = (
+        diag::rd::<usize>(ENEMY_LIST).unwrap_or(0),
+        diag::rd::<usize>(ENEMY_LIST + 8).unwrap_or(0),
+    );
+    let mut list_entries = String::new();
+    let lcount = if lbegin != 0
+        && lend >= lbegin
+        && (lend - lbegin) / LINK_NODE_STRIDE <= LIST_ENTRY_LIMIT
+    {
+        for index in 0..(lend - lbegin) / LINK_NODE_STRIDE {
+            let fleet = diag::rd::<usize>(lbegin + index * LINK_NODE_STRIDE + 8).unwrap_or(0);
+            let ships = diag::rd::<usize>(fleet.wrapping_add(ESCADRA_SHIP_COUNT)).unwrap_or(0);
+            let _ = write!(
+                list_entries,
+                " {fleet:#x}({}{ships})",
+                if fleet == stored { "*" } else { "" },
+            );
+        }
+        (lend - lbegin) / LINK_NODE_STRIDE
+    } else {
+        0
+    };
+    log::info!(
+        "hf_ally: enemy state {tag}: stored={stored:#x} profile[{pcount}]{profile_entries} list[{lcount}]{list_entries}"
+    );
+}
+
+/// Remove the previously created test enemy Escadra from both containers that can re-link it
+/// into a later battle: the profile's escadra vector (8-byte cells at profile+0x1f8) and the
+/// enemy-side fleet list (0x18-byte link nodes at 0x143a159c0, escadra at node+0x8). Only
+/// pointer values are compared; the escadra object is never dereferenced, so a game-destroyed
+/// object cannot be read through a stale pointer.
+///
+/// # Safety
+/// Game thread only (on_enemy_fleet / on_click / on_level callbacks). Both vectors are
+/// bounds-checked before any scan or write.
 unsafe fn prune_enemy_escadra() {
     let escadra = match SESSION.try_lock() {
         Ok(state) => state.enemy_escadra,
@@ -753,34 +823,66 @@ unsafe fn prune_enemy_escadra() {
     }
     let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(GET_PROFILE);
     let profile = get_profile();
-    if profile == 0 || !diag::readable_span(profile + PROFILE_ESCADRAS, 0x18) {
-        return;
-    }
-    let begin = read::<usize>(profile + PROFILE_ESCADRAS);
-    let end = read::<usize>(profile + PROFILE_ESCADRAS + 8);
-    let bytes = end.wrapping_sub(begin);
-    if begin == 0
-        || end < begin
-        || !bytes.is_multiple_of(8)
-        || bytes > ESCADRA_VECTOR_LIMIT
-        || !diag::readable_span(begin, bytes)
+    let (pbegin, pend) = (
+        diag::rd::<usize>(profile.wrapping_add(PROFILE_ESCADRAS)).unwrap_or(0),
+        diag::rd::<usize>(profile.wrapping_add(PROFILE_ESCADRAS + 8)).unwrap_or(0),
+    );
+    let pbytes = pend.wrapping_sub(pbegin);
+    if pbegin != 0
+        && pend >= pbegin
+        && pbytes.is_multiple_of(8)
+        && pbytes <= ESCADRA_VECTOR_LIMIT
+        && diag::readable_span(pbegin, pbytes)
     {
-        return;
-    }
-    let mut cell = begin;
-    while cell < end {
-        if read::<usize>(cell) == escadra {
-            let mut source = cell + 8;
-            while source < end {
-                write::<usize>(source - 8, read::<usize>(source));
-                source += 8;
+        let mut cell = pbegin;
+        while cell < pend {
+            if read::<usize>(cell) == escadra {
+                let mut source = cell + 8;
+                while source < pend {
+                    write::<usize>(source - 8, read::<usize>(source));
+                    source += 8;
+                }
+                write::<usize>(profile + PROFILE_ESCADRAS + 8, pend - 8);
+                log::info!("hf_ally: pruned previous test enemy escadra {escadra:#x} from the profile escadra vector");
+                return;
             }
-            write::<usize>(profile + PROFILE_ESCADRAS + 8, end - 8);
-            log::info!("hf_ally: pruned previous test enemy escadra from the profile");
-            return;
+            cell += 8;
         }
-        cell += 8;
     }
+    let (lbegin, lend) = (
+        diag::rd::<usize>(ENEMY_LIST).unwrap_or(0),
+        diag::rd::<usize>(ENEMY_LIST + 8).unwrap_or(0),
+    );
+    let lbytes = lend.wrapping_sub(lbegin);
+    if lbegin != 0
+        && lend >= lbegin
+        && lbytes.is_multiple_of(LINK_NODE_STRIDE)
+        && lbytes / LINK_NODE_STRIDE <= LIST_ENTRY_LIMIT
+        && diag::readable_span(lbegin, lbytes)
+    {
+        let mut node = lbegin;
+        while node < lend {
+            if read::<usize>(node + 8) == escadra {
+                let mut source = node + LINK_NODE_STRIDE;
+                while source < lend {
+                    for offset in 0..LINK_NODE_STRIDE {
+                        write::<u8>(
+                            source - LINK_NODE_STRIDE + offset,
+                            read::<u8>(source + offset),
+                        );
+                    }
+                    source += LINK_NODE_STRIDE;
+                }
+                write::<usize>(ENEMY_LIST + 8, lend - LINK_NODE_STRIDE);
+                log::info!("hf_ally: pruned previous test enemy escadra {escadra:#x} from the enemy fleet list");
+                return;
+            }
+            node += LINK_NODE_STRIDE;
+        }
+    }
+    log::info!(
+        "hf_ally: previous test enemy escadra {escadra:#x} not found in profile vector or enemy list"
+    );
 }
 
 /// Replaces the FIGHT call that builds the enemy Escadra from generated ship names.
@@ -802,6 +904,7 @@ unsafe extern "C" fn on_enemy_fleet(
 ) -> usize {
     let _hook = diag::scope("Shipworks test enemy fleet");
     let create: CreateEscadra = std::mem::transmute(CREATE_ESCADRA);
+    dump_enemy_state("fight entry");
     // Drop the previous test enemy Escadra from the profile before this battle: the Combat
     // level loader re-links every profile escadra into the enemy fleet, so leaving it would
     // accumulate the previous fight's enemies into this one.
@@ -842,6 +945,7 @@ unsafe extern "C" fn on_enemy_fleet(
         }
     }
     log::info!("hf_ally: Shipworks FIGHT overrides default enemy generation");
+    dump_enemy_state("fight built");
     escadra
 }
 
@@ -867,6 +971,7 @@ unsafe extern "C" fn on_enemy_append(escadra: usize) {
         }
     }
     log::info!("hf_ally: Shipworks FIGHT added {added} enemies");
+    dump_enemy_state("fight appended");
 }
 
 unsafe extern "C" fn on_level(path: usize) {
@@ -900,6 +1005,7 @@ unsafe extern "C" fn on_level(path: usize) {
     clear_roster(&mut state);
     state.last_clear_ms = None;
     drop(state);
+    dump_enemy_state("leaving shipworks");
     prune_enemy_escadra();
 }
 
