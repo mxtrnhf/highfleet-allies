@@ -944,7 +944,8 @@ unsafe extern "C" fn on_battle_tick() {
         PLAYER_SEEN.store(now.to_bits(), Ordering::Relaxed);
         return;
     }
-    if now - seen < f64::from_bits(ALLY_DELAY.load(Ordering::Relaxed)) {
+    let test_allies = crate::shipworks::test_allies();
+    if test_allies == 0 && now - seen < f64::from_bits(ALLY_DELAY.load(Ordering::Relaxed)) {
         return;
     }
 
@@ -970,12 +971,17 @@ unsafe extern "C" fn on_battle_tick() {
         });
         allies.len() as u32
     };
-    if alive >= MAX_ALLIES.load(Ordering::Relaxed) {
+    let max_allies = if test_allies > 0 {
+        test_allies
+    } else {
+        MAX_ALLIES.load(Ordering::Relaxed)
+    };
+    if alive >= max_allies {
         return;
     }
     // at most one deploy per 3 game seconds
     let last = f64::from_bits(LAST_DEPLOY.load(Ordering::Relaxed));
-    if last != 0.0 && now - last < 3.0 {
+    if test_allies == 0 && last != 0.0 && now - last < 3.0 {
         return;
     }
     let reserve: usize = read(RESERVE + 8);
@@ -990,7 +996,7 @@ unsafe extern "C" fn on_battle_tick() {
             ships.len(),
             prize_enemies().len(),
             precombat::selected_mask(),
-            MAX_ALLIES.load(Ordering::Relaxed),
+            max_allies,
             enemy.map(|p| read::<i32>(p + OFF_MODE_D70))
         );
     }

@@ -12,7 +12,7 @@ use crate::native::IMAGE_BASE;
 use crate::{
     ally_ammo, ally_hud, ally_panels, ally_reticles, battle, bomber, diag, enemy_waves,
     honor_share, intercept, lifecycle_log, missile_guard, plane_loadouts, precombat, ship_switch,
-    sound,
+    shipworks, sound,
 };
 
 static GAME_IS_STEAM_1_163: AtomicBool = AtomicBool::new(false);
@@ -104,6 +104,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     lifecycle_log::install_hooks(&mut session, lifecycle, config.logging.log_creatures)?;
     // The pre-combat ALLY and plane-loadout buttons are part of the mod; install them whenever it is enabled.
     precombat::install(&mut session, config.logging.gui_inspect)?;
+    shipworks::install(&mut session)?;
     ally_ammo::install_refund(&mut session, config.ally_ai_ammo)?;
     battle::install_prize_guard(&mut session, config.spare_prizes)?;
     let guard_missiles = config.ally_bombers || !config.ally_zenith_autofire;

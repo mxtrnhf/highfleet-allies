@@ -37,6 +37,7 @@ mod native_layout;
 mod plane_loadouts;
 mod precombat;
 mod ship_switch;
+mod shipworks;
 mod sound;
 mod time;
 
