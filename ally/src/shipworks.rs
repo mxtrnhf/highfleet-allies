@@ -107,6 +107,17 @@ const COPY_STRING: usize = 0x1_4000_56e0;
 const COPY_STRING_BYTES: [u8; 12] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57,
 ];
+/// Get_Profile_(): selects the active profile. Its escadra vector (CVec of 8-byte pointers)
+/// sits at profile+0x1f8 (begin) / +0x200 (end); the Combat level loader re-links every profile
+/// escadra into the enemy fleet list, so a test enemy Escadra left there accumulates into the
+/// next test battle.
+const GET_PROFILE: usize = 0x1_4029_2a90;
+const GET_PROFILE_BYTES: [u8; 16] = [
+    0x0f, 0xb6, 0x15, 0xea, 0x44, 0xd3, 0x07, 0x0f, 0xb6, 0x0d, 0xe2, 0x44, 0xd3, 0x07, 0xe9, 0x0d,
+];
+const PROFILE_ESCADRAS: usize = 0x1f8;
+/// Sanity bound for the profile escadra vector during the prune scan.
+const ESCADRA_VECTOR_LIMIT: usize = 0x8000;
 
 struct Entry {
     name: CString,
@@ -136,6 +147,9 @@ struct Session {
     last_enemy_add_ms: Option<u64>,
     last_clear_ms: Option<u64>,
     saved_mask: Option<u32>,
+    /// The enemy Escadra created by the last custom FIGHT, so it can be pruned from the
+    /// profile's escadra vector before the next battle (it would otherwise accumulate).
+    enemy_escadra: usize,
 }
 
 static SESSION: Mutex<Session> = Mutex::new(Session {
@@ -148,6 +162,7 @@ static SESSION: Mutex<Session> = Mutex::new(Session {
     last_enemy_add_ms: None,
     last_clear_ms: None,
     saved_mask: None,
+    enemy_escadra: 0,
 });
 static READY: AtomicBool = AtomicBool::new(false);
 static CONTROLS_VISIBLE: AtomicBool = AtomicBool::new(false);
@@ -178,6 +193,7 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
         (ENEMY_FLEET_SEAM, &ENEMY_FLEET_BYTES[..]),
         (CREATE_ESCADRA, &CREATE_ESCADRA_BYTES[..]),
         (ENEMY_APPEND_SEAM, &ENEMY_APPEND_BYTES[..]),
+        (GET_PROFILE, &GET_PROFILE_BYTES[..]),
         (LEVEL_ENTRY, &LEVEL_BYTES[..]),
         (COPY_STRING, &COPY_STRING_BYTES[..]),
     ] {
@@ -630,6 +646,10 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
         let allies = state.entries.len();
         let enemies = state.enemy_entries.len();
         clear_roster(&mut state);
+        drop(state);
+        // Also drop the last test enemy Escadra from the profile so a later FIGHT (or a
+        // campaign battle) does not re-link the cleared enemies.
+        prune_enemy_escadra();
         sound::button("Shipworks CLEAR");
         log::info!("hf_ally: Shipworks CLEAR removed {allies} allies and {enemies} enemies");
         return true;
@@ -712,6 +732,57 @@ unsafe extern "C" fn on_fleet(fleet: usize) {
 
 type CreateEscadra = unsafe extern "C" fn(usize, f32, u32, usize, usize, u32) -> usize;
 
+/// Remove the previously created test enemy Escadra from the profile's escadra vector, so the
+/// next Combat level load does not re-link it into the enemy fleet (it would accumulate across
+/// test battles). Only pointer values are compared; the escadra object is never dereferenced,
+/// so a game-destroyed object cannot be read through a stale pointer.
+///
+/// # Safety
+/// Game thread only (on_enemy_fleet / on_click / on_level callbacks). The profile vector is
+/// bounds-checked before the scan.
+unsafe fn prune_enemy_escadra() {
+    let escadra = match SESSION.try_lock() {
+        Ok(state) => state.enemy_escadra,
+        Err(_) => return,
+    };
+    if escadra == 0 {
+        return;
+    }
+    if let Ok(mut state) = SESSION.try_lock() {
+        state.enemy_escadra = 0;
+    }
+    let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(GET_PROFILE);
+    let profile = get_profile();
+    if profile == 0 || !diag::readable_span(profile + PROFILE_ESCADRAS, 0x18) {
+        return;
+    }
+    let begin = read::<usize>(profile + PROFILE_ESCADRAS);
+    let end = read::<usize>(profile + PROFILE_ESCADRAS + 8);
+    let bytes = end.wrapping_sub(begin);
+    if begin == 0
+        || end < begin
+        || !bytes.is_multiple_of(8)
+        || bytes > ESCADRA_VECTOR_LIMIT
+        || !diag::readable_span(begin, bytes)
+    {
+        return;
+    }
+    let mut cell = begin;
+    while cell < end {
+        if read::<usize>(cell) == escadra {
+            let mut source = cell + 8;
+            while source < end {
+                write::<usize>(source - 8, read::<usize>(source));
+                source += 8;
+            }
+            write::<usize>(profile + PROFILE_ESCADRAS + 8, end - 8);
+            log::info!("hf_ally: pruned previous test enemy escadra from the profile");
+            return;
+        }
+        cell += 8;
+    }
+}
+
 /// Replaces the FIGHT call that builds the enemy Escadra from generated ship names.
 /// With a custom enemy roster, the Escadra is created from a single unresolvable name, so
 /// the default generation adds no ships; the roster's snapshots are appended at
@@ -731,6 +802,10 @@ unsafe extern "C" fn on_enemy_fleet(
 ) -> usize {
     let _hook = diag::scope("Shipworks test enemy fleet");
     let create: CreateEscadra = std::mem::transmute(CREATE_ESCADRA);
+    // Drop the previous test enemy Escadra from the profile before this battle: the Combat
+    // level loader re-links every profile escadra into the enemy fleet, so leaving it would
+    // accumulate the previous fight's enemies into this one.
+    prune_enemy_escadra();
     let custom = SESSION
         .try_lock()
         .map(|state| !state.enemy_entries.is_empty())
@@ -761,6 +836,11 @@ unsafe extern "C" fn on_enemy_fleet(
         name,
         morale,
     );
+    if escadra != 0 {
+        if let Ok(mut state) = SESSION.try_lock() {
+            state.enemy_escadra = escadra;
+        }
+    }
     log::info!("hf_ally: Shipworks FIGHT overrides default enemy generation");
     escadra
 }
@@ -819,6 +899,8 @@ unsafe extern "C" fn on_level(path: usize) {
     }
     clear_roster(&mut state);
     state.last_clear_ms = None;
+    drop(state);
+    prune_enemy_escadra();
 }
 
 /// Drop both rosters' snapshots and statuses; keep the editor ship and capture serial intact.

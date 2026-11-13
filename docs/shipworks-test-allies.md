@@ -1,4 +1,12 @@
-# Shipworks test allies and enemies (hf_ally v1.2.7)
+# Shipworks test allies and enemies (hf_ally v1.2.8)
+
+**v1.2.8:** a custom FIGHT's enemy Escadra is registered in the profile's escadra
+vector (`profile+0x1f8..0x200`), and the Combat level loader re-links every profile
+escadra into the enemy fleet list — so cleared enemies accumulated into later test
+battles (2, 10, 18 PRECOMBAT_B cards across consecutive FIGHTs). The mod now prunes
+its previous enemy Escadra from that vector at each FIGHT, on CLEAR, and when
+leaving Shipworks (bounds-checked scan of pointer values only; the object is never
+dereferenced).
 
 **v1.2.7:** the enemy-append trampoline's argument setup mis-encoded the register
 move (`49 89 df` = `MOV R15, RBX`, not `MOV RCX, RBX`), so the callback received a
@@ -80,6 +88,7 @@ Read-only verification against the live Ghidra program
 | `0x14013df8e` | After the enemy Escadra's init call (`0x1400f9460`), RBX is the enemy Escadra. Hook appends each custom enemy snapshot via the Escadra virtual `+0x50` with ship side `-1.0`, then replays the seven-byte `LEA RCX,[0x143a159c0]` that starts linking the fleet lists. |
 | `0x1401c7060` | `Fleet_CreateEscadraFromShips` entry (byte-checked): allocates the 0x618 Escadra, copies the name, adds one resolved ship per 0x20 name element, then runs the role/profile/proximity tail. |
 | `0x14025afd0` | SetLevelSeriaToLoad(path, flags). Entry hook preserves arguments, replays two complete home-space stores, and pads entry RSP by eight before the preserved callback. `Combat.seria`, test `City_generated.seria`, and return `Editor.seria` belong to the same session; another level ends it. |
+| `0x140292a90` | `Get_Profile_()` (byte-checked). Its escadra vector (`profile+0x1f8` begin, `+0x200` end) is read by the Combat level loader (`0x1402c3e49..0x1402c3f61`), which re-links each profile escadra into `0x143a158e0`/`0x143a159c0`. The mod erases its previous test enemy Escadra pointer from this vector before each FIGHT / on CLEAR / on session end. |
 | `0x1401351b7..0x1401353d3` | LANDING test sets the editor-test flag `0x147fc6fb6` and requests **City_generated.seria**, not a hypothetical Landing.seria. |
 
 New native function entries and both hook sites are byte-checked at install.
@@ -101,7 +110,7 @@ Release Windows Clippy with `megalog` completes with the existing 22 warnings
 (none in the new feature files). Changed Rust files pass targeted rustfmt checks;
 full `cargo fmt --check` still reports pre-existing differences in other files.
 The no-default-features local build is
-`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.2.7.dll`.
+`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.2.8.dll`.
 
 Manual pass on Steam 1.163:
 
