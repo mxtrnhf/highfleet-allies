@@ -7,10 +7,13 @@ WHAT CHANGED
   Lightning, and put a bit of brakes on them. In theory this should reduce
   the collisions caused by their new exceptional piloting skills.
 - Defaults: twr_cutoff: 2, twr_limit: 5, twr_deceleration: 0.75.
-  Above TWR 5, final AI engine strength (including boosts) is multiplied by
-  0.75. Player control is unaffected. To disable, set twr_limit or
+  Above TWR 5, only hf_ai aim/dive boosts, panic boosts and boosted barrel
+  rolls are multiplied by 0.75: boost 2 becomes 1.5. Normal engine strength,
+  vanilla avoidance, boost settings of 1 and player control are unaffected.
+  To disable, set twr_limit or
   twr_deceleration to 0.
-- Temporary mitigation, not a direct speed cap; braking is reduced too.
+- Replaces withdrawn v1.3.2, which incorrectly reduced all engine strength.
+- Temporary mitigation, not a direct speed cap; stock braking is unchanged.
   In-game collision validation is pending.
 - No AI tick skipping. Remove obsolete ally_tick_skip / ai_tick_skip keys
   from experimental configs; they have no effect.

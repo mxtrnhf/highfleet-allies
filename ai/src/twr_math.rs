@@ -1,4 +1,4 @@
-//! Pure strategic/Shipworks TWR maneuver gate and engine-strength limiter.
+//! Pure strategic/Shipworks TWR maneuver gate and hf_ai boost-strength limiter.
 pub fn sanitize_cutoff(cutoff: f32) -> f32 {
     if cutoff.is_finite() {
         cutoff.max(0.0)

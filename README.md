@@ -15,11 +15,11 @@ Experimental native-engine acceleration is developed separately in
 release pack and does not replace hf_ally, hf_ai or QoL. Native architecture and
 proof boundaries: [DLL architecture](docs/native-engine-dll-architecture.md).
 
-> **PACK v1.3.2 — OPTIONAL HIGH-TWR AI ENGINE LIMITER**
+> **PACK v1.3.3 — OPTIONAL HIGH-TWR HF_AI BOOST LIMITER**
 > **From v0.15.0 or any later development build:** replace both `Modloader/config/ally.json` and `Modloader/config/hf_ai.json` with the v1.0.0 presets. In `ally.json`, `enabled` is the only master switch; `auto_retreat` and `enemy_all_at_once` are retired; `spawn_ally`, `ally_toggle`, `ally_reticles`, `max_enemy_ships`, `plane_bombers`, `marker_seam`, `marker_delay_ms` and the retired logging keys are ignored. In `hf_ai.json`, the retired curtain keys (`curtain_*` / `launch_flares_*`) and early-fire keys (`aim_fire_*`) do nothing, and `dive_dwell_s` defaults to `0.3`. Ally radio lines follow the game language (`Media/Snd/RADIO` in Russian, `Media/Snd/RADIO_ENG` in English); custom voice paths and custom audio are planned for a future version.
 > **From v0.14.13 or older:** replace both configs; the v1.0.0 presets include the earlier grouped/HEX/logging cleanups.
 
-Release pack **v1.3.2** contains **hf_ally v1.3.1**, **hf_ai v1.2.0** and the bundled QoL build ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). The AI preset keeps `twr_cutoff: 2`, adds `twr_limit: 5` and `twr_deceleration: 0.75` to tame high-TWR ships such as Lightning; either new key at `0` disables limiting. No AI tick skipping is included. Collision reduction still needs in-game validation.
+Release pack **v1.3.3** contains **hf_ally v1.3.1**, **hf_ai v1.2.1** and the bundled QoL build ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). The AI preset keeps `twr_cutoff: 2`, `twr_limit: 5` and `twr_deceleration: 0.75` to tame hf_ai boosts on high-TWR ships such as Lightning; either limiter key at `0` disables limiting. Normal thrust and vanilla avoidance are unchanged. Replaces withdrawn v1.3.2, whose limiter incorrectly affected normal thrust. No AI tick skipping is included. Collision reduction still needs in-game validation.
 
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).

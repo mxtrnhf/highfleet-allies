@@ -141,7 +141,7 @@ fn twr_limiter_enabled() -> bool {
     TWR_LIMIT.load(Ordering::Relaxed) != 0 && TWR_DECELERATION.load(Ordering::Relaxed) != 0
 }
 
-fn engine_strength_multiplier(creature: usize) -> f32 {
+fn boost_strength_multiplier(creature: usize) -> f32 {
     if !twr_limiter_enabled() {
         return 1.0;
     }
@@ -317,9 +317,9 @@ struct Config {
     plane_group_launch_delay_seconds: f32,
     /// Minimum strategic/Shipworks TWR for maneuvers; 0 disables the gate.
     twr_cutoff: f32,
-    /// Above this strategic/Shipworks TWR, scale AI engine strengths; 0 disables.
+    /// Above this strategic/Shipworks TWR, scale hf_ai boosts only; 0 disables.
     twr_limit: f32,
-    /// Engine strength multiplier (0 disables, otherwise clamped to 0..1).
+    /// hf_ai boost strength multiplier (0 disables, otherwise clamped to 0..1).
     twr_deceleration: f32,
     logging: LoggingConfig,
     /// The ported qol `ai_flares` (flares burst, sidestep, panic evasion, barrel roll, allies). Enabled by player default:
@@ -429,7 +429,7 @@ unsafe extern "C" fn init() -> bool {
     TWR_LIMIT.store(limit.to_bits(), Ordering::Relaxed);
     TWR_DECELERATION.store(deceleration.to_bits(), Ordering::Relaxed);
     log::info!(
-        "hf_ai: AI engine TWR limit {limit}, strength multiplier {deceleration} (0 disables)"
+        "hf_ai: hf_ai boost-only TWR limit {limit}, strength multiplier {deceleration} (0 disables)"
     );
     tactics::init(&config.tactics);
     let module = match ProcessModule::main() {
@@ -467,8 +467,7 @@ unsafe extern "C" fn init() -> bool {
             &mut session, module, config.plane_group_per_launch,
             config.plane_group_launch_delay_seconds,
         )?;
-        let boost_wanted = twr_limiter_enabled()
-            || tactics::wants_engine_boost()
+        let boost_wanted = tactics::wants_engine_boost()
             || (with_flares && ai_flares::wants_engine_boost(&config.ai_flares));
         let boost = if boost_wanted {
             ai_flares::prepare_boost_hook(&mut session, module, steering_ok).map_err(|e| e.to_string())?

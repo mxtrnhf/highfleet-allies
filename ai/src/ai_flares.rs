@@ -398,7 +398,7 @@ pub unsafe fn patch_ai_flares(
     Ok(())
 }
 
-/// Installs the engine-command detour at `0x140065744` for boosts or the TWR limiter.
+/// Installs the engine-command detour at `0x140065744` for hf_ai boosts.
 pub unsafe fn prepare_boost_hook(
     session: &mut PatchSession,
     module: ProcessModule,
@@ -948,15 +948,13 @@ unsafe fn panic_waypoint_inner(creature: usize, now: f64, wanted: (f32, f32), sh
 /// raises the strength of the `0x66` and `0x67` commands to the configured boost, the way the
 /// player's Shift key does.
 unsafe extern "C" fn on_engine_commands(creature: *mut u8, command: *mut f32) {
-    guarded("engine commands", || {
-        engine_commands(creature as usize, command);
-        limit_engine_strength(creature as usize, command);
-    });
+    guarded("engine commands", || engine_commands(creature as usize, command));
 }
 
-/// Scale the final commands, including stock thrust and every boost/roll path.
-/// Independent of the maneuver cutoff and per-feature allied switches.
-unsafe fn limit_engine_strength(creature: usize, command: *mut f32) {
+/// Called only after an active hf_ai boost writes its commands, never for stock
+/// thrust or vanilla avoidance. The original boost decides whether to activate,
+/// even when the coefficient reduces its resulting strength below 1.
+unsafe fn limit_boost_strength(creature: usize, command: *mut f32) {
     if command.is_null() || !crate::twr_limiter_enabled() {
         return;
     }
@@ -964,7 +962,7 @@ unsafe fn limit_engine_strength(creature: usize, command: *mut f32) {
     if !rd::<u8>(creature + CREATURE_AI_FLAG).is_some_and(|flag| flag != 0) {
         return;
     }
-    let multiplier = crate::engine_strength_multiplier(creature);
+    let multiplier = crate::boost_strength_multiplier(creature);
     if multiplier == 1.0 {
         return;
     }
@@ -1011,6 +1009,9 @@ unsafe fn engine_commands(creature: usize, command: *mut f32) {
     let boost = runtime.config.panic_boost.max(1.0);
     if barrel_roll {
         let angles = spin(runtime, creature, command, side, boost);
+        if angles.is_some() && boost > 1.0 {
+            limit_boost_strength(creature, command);
+        }
         if let (true, Some((heading, first, second))) = (trace_engine, angles) {
             trace(
                 runtime,
@@ -1025,6 +1026,7 @@ unsafe fn engine_commands(creature: usize, command: *mut f32) {
     if boost > 1.0 {
         if let Some(dir) = flight {
             if let Some(changed) = write_escape(command, dir, boost) {
+                limit_boost_strength(creature, command);
                 if trace_engine {
                     trace(
                         runtime,
@@ -1049,6 +1051,7 @@ unsafe fn engine_commands(creature: usize, command: *mut f32) {
                 changed[slot] = (current, boosted);
             }
         }
+        limit_boost_strength(creature, command);
         if trace_engine {
             trace(
                 runtime,
@@ -1074,6 +1077,7 @@ unsafe fn apply_dodge_boost(creature: usize, command: *mut f32, now: f64) {
     }
     if let Some(dir) = escape {
         if write_escape(command, dir, boost).is_some() {
+            limit_boost_strength(creature, command);
             return;
         }
     }
@@ -1083,6 +1087,7 @@ unsafe fn apply_dodge_boost(creature: usize, command: *mut f32, now: f64) {
             strength.write_unaligned(boosted);
         }
     }
+    limit_boost_strength(creature, command);
 }
 
 /// Sets the four engine-command angles in one go: the two force commands (`0x66` at `+0x10`,

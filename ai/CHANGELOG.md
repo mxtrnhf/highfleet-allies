@@ -1,5 +1,18 @@
 # hf_ai changelog
 
+## v1.2.1 — limit hf_ai boosts only
+
+- Correct v1.2.0's overly broad limiter: normal engine strength and vanilla
+  avoidance are untouched. Scale commands only when hf_ai applies an aim/dive
+  boost, panic boost or boosted barrel roll. Boost settings of 1 stay unscaled.
+- Keep `twr_cutoff: 2`, `twr_limit: 5`, `twr_deceleration: 0.75`.
+  Strictly above Shipworks TWR 5, a boost strength of 2 becomes 1.5.
+  Either limiter key at zero disables scaling.
+- The limiter no longer installs an engine hook by itself.
+- Withdraw release pack v1.3.2; corrected pack is v1.3.3.
+  Windows release cross-build and Clippy completed (11 existing warnings).
+  No regression tests added; in-game validation pending.
+
 ## v1.2.0 — optional high-TWR engine limiter
 
 - Add `twr_limit: 5.0` and `twr_deceleration: 0.75` immediately below

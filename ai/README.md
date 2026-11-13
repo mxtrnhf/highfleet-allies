@@ -65,13 +65,14 @@ independently of whether `ai_flares.enabled` is on; `panic_boost` belongs to the
 flare subsystem and requires it to be enabled.
 
 Top-level `twr_limit` (**5.0**) and `twr_deceleration` (**0.75**) optionally
-reduce final AI engine-command strengths for ships strictly above that live
+reduce only hf_ai boost-command strengths for ships strictly above that live
 strategic/Shipworks TWR. Either key set to `0` disables this limiter. It applies
-to enemies and AI allies, including stock thrust, boosts and rolls, independently
-of the maneuver gate and tactics/flare switches; never to the player-flown ship.
+to enemies and AI allies during hf_ai aim/dive boosts, panic boosts and boosted
+rolls; never to normal thrust, vanilla avoidance or the player-flown ship.
+Boost settings of `1` remain unscaled; each feature's existing switches apply.
 The coefficient is clamped to `0..1`; negative/non-finite values disable it.
 This is a temporary ramming mitigation, not collision avoidance or a direct speed
-cap: braking thrust is reduced too. Restart the game after changing settings.
+cap. Stock braking is unchanged. Restart the game after changing settings.
 
 ## Build and validation
 
