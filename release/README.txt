@@ -3,16 +3,20 @@ hf_ally @ALLY_VERSION@ + hf_ai @AI_VERSION@ + bundled QoL — Steam 1.163 only
 Source: https://github.com/mxtrnhf/highfleet-allies
 
 WHAT CHANGED
+- Added ability to construct custom enemy formation for shipworks battle:
+  ADD ENEMY, right of ADD, captures the edited ship into an enemy list (red
+  text); with a non-empty list, FIGHT overrides the default enemy generation
+  and fields exactly those ships as enemies. Up to eight enemies.
 - Shipworks test allies: ADD, beside TEST in the top row, captures the edited
-  ship, including unsaved changes, into the ship list.
-- CLEAR, beside ADD, empties the list without leaving Shipworks or changing
-  the edited ship.
-- The existing FIGHT button brings the listed ships into test combat as
-  friendly AI allies. Add up to eight allies.
-- Loading/switching designs, RESET, RETRY and returning from test combat
-  preserve the list. Leaving Shipworks clears it.
+  ship, including unsaved changes, into the ship list; FIGHT brings them into
+  test combat as friendly AI allies. Add up to eight allies.
+- CLEAR, beside ADD, empties both lists without leaving Shipworks or changing
+  the edited ship. Loading/switching designs, RESET, RETRY and returning from
+  test combat preserve the lists. Leaving Shipworks clears them.
+- A custom FIGHT's enemy fleet is pruned again afterwards, so cleared enemies
+  never leak into later battles.
 - Buttons use native Shipworks styling; ship names use the PLAYER-marker font.
-- ADD/FIGHT confirmed in game. CLEAR still needs in-game verification.
+- ADD ENEMY/FIGHT/CLEAR confirmed in game.
 
 INSTALL
 1. Back up Saves. Read Allies_Manual.pdf.
