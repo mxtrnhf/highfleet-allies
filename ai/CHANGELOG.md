@@ -1,5 +1,20 @@
 # hf_ai changelog
 
+## v1.2.0 — optional high-TWR engine limiter
+
+- Add `twr_limit: 5.0` and `twr_deceleration: 0.75` immediately below
+  `twr_cutoff` in the preset. Either set to zero disables the limiter.
+- Ships strictly above the live strategic/Shipworks TWR limit multiply both
+  final AI engine-command strengths by the coefficient, including stock thrust,
+  aim/dive dashes, panic boosts and barrel rolls. Player control is excluded.
+- Independent of the low-TWR maneuver gate and tactics/flare switches. This
+  temporary ramming mitigation reduces thrust (including braking), not velocity
+  directly, and does not guarantee collision avoidance.
+- Based on main's stable AI, not the experimental v1.1.0 profiling/tick-skip branch.
+  Windows release cross-build and Clippy completed (11 existing warnings).
+  Formatting check still reports pre-existing crate-wide differences; no unrelated
+  reformatting performed. No regression tests added; in-game validation pending.
+
 ## v1.0.0 — first stable release
 
 - No behaviour changes since v0.10.20. This release packages the completed

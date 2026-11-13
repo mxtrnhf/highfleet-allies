@@ -134,6 +134,21 @@ unsafe extern "C" fn on_steering(creature: usize) {
 static LOGGED_STEER_PANIC: AtomicBool = AtomicBool::new(false);
 
 static TWR_CUTOFF: AtomicU32 = AtomicU32::new(0);
+static TWR_LIMIT: AtomicU32 = AtomicU32::new(0);
+static TWR_DECELERATION: AtomicU32 = AtomicU32::new(0);
+
+fn twr_limiter_enabled() -> bool {
+    TWR_LIMIT.load(Ordering::Relaxed) != 0 && TWR_DECELERATION.load(Ordering::Relaxed) != 0
+}
+
+fn engine_strength_multiplier(creature: usize) -> f32 {
+    if !twr_limiter_enabled() {
+        return 1.0;
+    }
+    let limit = f32::from_bits(TWR_LIMIT.load(Ordering::Relaxed));
+    let multiplier = f32::from_bits(TWR_DECELERATION.load(Ordering::Relaxed));
+    twr_math::strength_multiplier(strategic_twr(creature), limit, multiplier)
+}
 
 /// Steam 1.163 strategic TWR shown in Shipworks, not battle TWR (+0x1604).
 /// Verified displayinShipworks? reads +0x160c at 0x1400d7443 for TWR_STAT.
@@ -302,6 +317,10 @@ struct Config {
     plane_group_launch_delay_seconds: f32,
     /// Minimum strategic/Shipworks TWR for maneuvers; 0 disables the gate.
     twr_cutoff: f32,
+    /// Above this strategic/Shipworks TWR, scale AI engine strengths; 0 disables.
+    twr_limit: f32,
+    /// Engine strength multiplier (0 disables, otherwise clamped to 0..1).
+    twr_deceleration: f32,
     logging: LoggingConfig,
     /// The ported qol `ai_flares` (flares burst, sidestep, panic evasion, barrel roll, allies). Enabled by player default:
     /// use it only with qol's `ai_flares.enabled` (and `evade`) turned off.
@@ -323,6 +342,8 @@ impl Default for Config {
             plane_group_per_launch: plane_group_math::DEFAULT_GROUP_SIZE,
             plane_group_launch_delay_seconds: plane_group_math::DEFAULT_DELAY,
             twr_cutoff: 2.0,
+            twr_limit: 5.0,
+            twr_deceleration: 0.75,
             logging: LoggingConfig::default(),
             ai_flares: AiFlaresConfig::default(),
             tactics: TacticsConfig::default(),
@@ -403,6 +424,13 @@ unsafe extern "C" fn init() -> bool {
     let cutoff = twr_math::sanitize_cutoff(config.twr_cutoff);
     TWR_CUTOFF.store(cutoff.to_bits(), Ordering::Relaxed);
     log::info!("hf_ai: maneuver strategic/Shipworks TWR cutoff {cutoff}");
+    let limit = twr_math::sanitize_cutoff(config.twr_limit);
+    let deceleration = twr_math::sanitize_cutoff(config.twr_deceleration).min(1.0);
+    TWR_LIMIT.store(limit.to_bits(), Ordering::Relaxed);
+    TWR_DECELERATION.store(deceleration.to_bits(), Ordering::Relaxed);
+    log::info!(
+        "hf_ai: AI engine TWR limit {limit}, strength multiplier {deceleration} (0 disables)"
+    );
     tactics::init(&config.tactics);
     let module = match ProcessModule::main() {
         Ok(module) => module,
@@ -439,7 +467,8 @@ unsafe extern "C" fn init() -> bool {
             &mut session, module, config.plane_group_per_launch,
             config.plane_group_launch_delay_seconds,
         )?;
-        let boost_wanted = tactics::wants_engine_boost()
+        let boost_wanted = twr_limiter_enabled()
+            || tactics::wants_engine_boost()
             || (with_flares && ai_flares::wants_engine_boost(&config.ai_flares));
         let boost = if boost_wanted {
             ai_flares::prepare_boost_hook(&mut session, module, steering_ok).map_err(|e| e.to_string())?

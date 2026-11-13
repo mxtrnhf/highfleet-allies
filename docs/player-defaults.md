@@ -36,8 +36,9 @@ delays of 1 s, fuel retreat at 30%, and battle honor sharing at 50%
 `logging.debug_log` is the runtime debug switch and defaults to `false`; set it
 `true` only for a tester log.
 
-AI (`hf_ai v1.0.0`, preset introduced in v0.10.11): 38 gameplay settings plus `logging.log_panic`
-(39 total leaf settings). Flares, allied reactions, universal
+AI (`hf_ai v1.2.0`, preset introduced in v0.10.11): 40 gameplay settings plus `logging.log_panic`
+(41 total leaf settings). The optional high-TWR limiter uses `twr_limit: 5.0`
+and `twr_deceleration: 0.75` (either at zero disables it). Flares, allied reactions, universal
 aim dodging (`aim_chance: 0.75`, `aim_boost: 2.0`), and dive avoidance (`dive_chance: 0.8`, `dive_dwell_s: 0.3`,
 `dive_boost: 2.0`) are on. Top-level `twr_cutoff` is `2.0`. Carrier groups launch
 up to three planes at `0.5` s intervals. Missile-dump chance is `0.4` with

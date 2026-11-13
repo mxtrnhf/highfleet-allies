@@ -4,6 +4,8 @@
     "log_panic": false
   },
   "twr_cutoff": 2.0,
+  "twr_limit": 5.0,
+  "twr_deceleration": 0.75,
   "plane_group_per_launch": 3,
   "plane_group_launch_delay_seconds": 0.5,
   "ai_missile_dump_chance": 0.4,

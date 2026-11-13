@@ -398,7 +398,7 @@ pub unsafe fn patch_ai_flares(
     Ok(())
 }
 
-/// Installs the engine-command boost detour at `0x140065744` when either `ai_flares` or `tactics` needs engine boost.
+/// Installs the engine-command detour at `0x140065744` for boosts or the TWR limiter.
 pub unsafe fn prepare_boost_hook(
     session: &mut PatchSession,
     module: ProcessModule,
@@ -948,7 +948,36 @@ unsafe fn panic_waypoint_inner(creature: usize, now: f64, wanted: (f32, f32), sh
 /// raises the strength of the `0x66` and `0x67` commands to the configured boost, the way the
 /// player's Shift key does.
 unsafe extern "C" fn on_engine_commands(creature: *mut u8, command: *mut f32) {
-    guarded("engine commands", || engine_commands(creature as usize, command));
+    guarded("engine commands", || {
+        engine_commands(creature as usize, command);
+        limit_engine_strength(creature as usize, command);
+    });
+}
+
+/// Scale the final commands, including stock thrust and every boost/roll path.
+/// Independent of the maneuver cutoff and per-feature allied switches.
+unsafe fn limit_engine_strength(creature: usize, command: *mut f32) {
+    if command.is_null() || !crate::twr_limiter_enabled() {
+        return;
+    }
+    // SAFETY: scalar flag read is page-checked; a cleared flag excludes the player.
+    if !rd::<u8>(creature + CREATURE_AI_FLAG).is_some_and(|flag| flag != 0) {
+        return;
+    }
+    let multiplier = crate::engine_strength_multiplier(creature);
+    if multiplier == 1.0 {
+        return;
+    }
+    // SAFETY: the validated Steam 1.163 hook supplies the live tick's stack command
+    // buffer. These same two scalar fields are written by the boost paths below;
+    // no ownership is transferred and the callback runs synchronously on that tick.
+    for offset in [COMMAND_STRENGTH, COMMAND_NEXT_STRENGTH] {
+        let field = command.byte_add(offset);
+        let strength = field.read_unaligned();
+        if strength.is_finite() {
+            field.write_unaligned(strength * multiplier);
+        }
+    }
 }
 
 unsafe fn engine_commands(creature: usize, command: *mut f32) {

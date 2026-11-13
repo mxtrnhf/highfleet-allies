@@ -1,10 +1,10 @@
 # hf_ai settings (`Modloader/config/hf_ai.json`)
 
-The checked-in [player preset](../ai/config/hf_ai.json) and compiled defaults use the same values (hf_ai 1.0.0; the preset dropped early-fire keys in 0.10.19 and changed the default `dive_dwell_s` to 0.3 in 0.10.20; curtain keys were removed in 0.10.18). The plain-language explanation of how the AI works and what to turn for which effect is in [hf-ai-tuning-guide.md](hf-ai-tuning-guide.md); this file is the complete key list with the code defaults. Edit while the game is closed; `"enabled": false` turns hf_ai off. Older release packs retain their original DLLs.
+The checked-in [player preset](../ai/config/hf_ai.json) and compiled defaults use the same values (hf_ai 1.2.0, with optional high-TWR engine limiting). The plain-language explanation of how the AI works and what to turn for which effect is in [hf-ai-tuning-guide.md](hf-ai-tuning-guide.md); this file is the complete key list with the code defaults. Edit while the game is closed; `"enabled": false` turns hf_ai off. Older release packs retain their original DLLs.
 
 ## Missing keys and how to revert to vanilla
 
-**You do not have to list every key.** Every top-level key, nested block and key inside a block may be omitted; hf_ai supplies the code default shown below. Since v0.10.11, the shipped `hf_ai.json` has been trimmed repeatedly; the current v1.0.0 preset lists 38 gameplay settings plus `logging.log_panic` (39 total leaf settings). Internal timing/math parameters use their compiled defaults unless explicitly added. An empty `{}` is also valid. If the file is absent, hf_ai tries to create it with the full defaults; if the JSON is invalid, it logs an error and uses the defaults.
+**You do not have to list every key.** Every top-level key, nested block and key inside a block may be omitted; hf_ai supplies the code default shown below. The current v1.2.0 preset lists 40 gameplay settings plus `logging.log_panic` (41 total leaf settings). Internal timing/math parameters use their compiled defaults unless explicitly added. An empty `{}` is also valid. If the file is absent, hf_ai tries to create it with the full defaults; if the JSON is invalid, it logs an error and uses the defaults.
 
 **Player default does not mean vanilla.** Missing keys use the active player profile; flares, tactics and missile dumping are enabled by default. Use the explicit values below when you want stock behaviour. There is no general `-1` disable convention.
 
@@ -21,6 +21,7 @@ To keep hf_ai loaded but restore stock gameplay and disable its optional data fi
   "enabled": true,
   "logging": { "log_panic": false },
   "plane_group_per_launch": 1,
+  "twr_limit": 0.0,
   "ai_missile_dump_chance": 0.0,
   "ai_flares": { "enabled": false },
   "tactics": { "enabled": false }
@@ -34,6 +35,7 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Feature | Setting that disables or neutralizes it | What remains / important dependency |
 |---|---|---|
 | Entire mod | `"enabled": false` | No hf_ai gameplay hooks are installed. |
+| High-TWR engine limiter | `twr_limit: 0.0` or `twr_deceleration: 0.0` | Does not change maneuver eligibility or individual boost settings. |
 | All flare and panic behaviour | `ai_flares.enabled: false` | Tactics, tactics engine boosts, plane groups and missile dump remain. |
 | All threat-triggered panics, locked and stray | `ai_flares.reaction_probability: 0.0` | No new threat panic, flare burst, roll or panic evasion. |
 | Locked-missile flare bursts only, while keeping locked evasion | **No independent off switch** | `burst_seconds: 0.0` is clamped to `0.05`, not off. Use `reaction_probability: 0.0` to stop all threat panics, or disable the whole flare subsystem. |
@@ -69,6 +71,8 @@ removed; old `log_steering`, `log_hz`, `log_scan` and `log_scan_bodies` keys do 
 |---|---|---|---|
 | `enabled` | `true` | Uses player default `true`. | Master switch. |
 | `twr_cutoff` | `2.0` | Uses player default `2.0`. | Minimum live strategic/Shipworks TWR (`creature +0x160c`, before UI rounding) for tactics, missile evasion, rolls/boosts and stray-missile reactions. Below the cutoff these are suppressed; at or above it their individual switches still apply. Locked-missile flare bursts remain available. Negative/non-finite cutoffs use `0.0`. Independent of carrier plane groups. Restart after editing. |
+| `twr_limit` | `5.0` | Uses player default `5.0`. | Strictly above this live strategic/Shipworks TWR, multiply final AI engine strengths by `twr_deceleration`. `0` disables; negative/non-finite values become `0`. Applies to enemies and AI allies, never the player, independently of `twr_cutoff` and tactics/flare switches. Missing/invalid live TWR leaves thrust unchanged. Restart after editing. |
+| `twr_deceleration` | `0.75` | Uses player default `0.75`. | Final engine-strength multiplier for ships above `twr_limit`, including stock thrust, boosts and rolls. `0` disables, `1` leaves strengths unchanged; clamped to `0..1`, negative/non-finite values disable. Temporary ramming mitigation, not collision avoidance or a velocity cap; braking thrust is reduced too. |
 | `plane_group_per_launch` | `3` | Uses player default `3`. | Clamped to `1..64`; `1` restores stock cadence. Enemy and allied AI, normal `Combat.seria` only. Stock deck/availability checks remain; blocked attempts cancel a partial group. Independent of TWR, tactics and flares. |
 | `plane_group_launch_delay_seconds` | `0.5` | Uses player default `0.5`. | Clamped to `0.05..60` seconds; non-finite values use `0.5`. Stock six-second cooldown returns after the last member. Restart to apply. |
 | `ai_missile_dump_chance` | `0.4` | Uses player default `0.4`. | Chance (`0..1`) that an AI ship (enemy, or ally when `ai_flares.allies` or `tactics.allies` is true) keeps launching Zenith missiles right after a launch instead of waiting for the game's 2 s cooldown. `0` = vanilla. |
