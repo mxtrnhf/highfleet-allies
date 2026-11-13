@@ -1,5 +1,9 @@
 # HighFleet Allies v@PACK_VERSION@
 
+## Fixed
+
+- **Fixed a bug that crashed the game on a repeated Shipworks test FIGHT.** Cause: when a test battle ends, the game destroys the custom enemy fleet but leaves its node in the enemy fleet list with a null fleet pointer; the combat level loader walks that list on the next FIGHT and dereferences the null pointer without a check (access violation `0xc0000005` reading `0x100` at `0x1402c3a04`). The mod now clears the enemy list before each custom FIGHT, drops null-pointer nodes, and guards the loader's list walk against them.
+
 ## Shipworks test allies and enemies
 
 - **Added ability to construct custom enemy formation for shipworks battle.** **ADD ENEMY**, right of ADD in the top row, captures the currently edited ship into an enemy list (red text). With a non-empty enemy list, the existing **FIGHT** button overrides the default enemy generation and fields exactly those ships as enemies—up to **eight**.

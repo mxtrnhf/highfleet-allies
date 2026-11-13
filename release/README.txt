@@ -3,6 +3,12 @@ hf_ally @ALLY_VERSION@ + hf_ai @AI_VERSION@ + bundled QoL — Steam 1.163 only
 Source: https://github.com/mxtrnhf/highfleet-allies
 
 WHAT CHANGED
+- Fixed a bug that crashed the game on a repeated Shipworks test FIGHT:
+  a finished test battle's destroyed enemy fleet left a null-pointer node
+  in the enemy fleet list, and the combat level loader dereferenced it
+  unchecked on the next FIGHT (access violation at 0x1402c3a04). The enemy
+  list is now cleared before each custom FIGHT and null nodes are dropped
+  and guarded.
 - Added ability to construct custom enemy formation for shipworks battle:
   ADD ENEMY, right of ADD, captures the edited ship into an enemy list (red
   text); with a non-empty list, FIGHT overrides the default enemy generation
