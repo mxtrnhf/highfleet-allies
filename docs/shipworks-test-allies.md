@@ -1,4 +1,9 @@
-# Shipworks test allies and enemies (hf_ally v1.2.6)
+# Shipworks test allies and enemies (hf_ally v1.2.7)
+
+**v1.2.7:** the enemy-append trampoline's argument setup mis-encoded the register
+move (`49 89 df` = `MOV R15, RBX`, not `MOV RCX, RBX`), so the callback received a
+garbage fleet and clobbered R15, crashing the test-combat level load. Fixed to
+`48 89 d9` (`MOV RCX, RBX`).
 
 **v1.2.6:** control identifiers must stay within the 15-char inline (SSO)
 string storage — `cstr` reads the identifier bytes in place, so the v1.2.5 names
@@ -96,7 +101,7 @@ Release Windows Clippy with `megalog` completes with the existing 22 warnings
 (none in the new feature files). Changed Rust files pass targeted rustfmt checks;
 full `cargo fmt --check` still reports pre-existing differences in other files.
 The no-default-features local build is
-`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.2.6.dll`.
+`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.2.7.dll`.
 
 Manual pass on Steam 1.163:
 

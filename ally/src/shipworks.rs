@@ -215,11 +215,12 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
         .map_err(|e| e.to_string())?;
 
     // Enemy Escadra is complete in RBX here; append the custom enemy snapshots before the
-    // native LEA that starts linking the fleet lists.
+    // native LEA that starts linking the fleet lists. MOV RCX, RBX moves the escadra into
+    // the callback's first argument slot; RCX is volatile, so preserved_call restores it.
     let mut enemy_append = Trampoline::new();
     enemy_append.preserved_call(
         on_enemy_append as *const (),
-        &[0x49, 0x89, 0xdf], // MOV RDI, RBX
+        &[0x48, 0x89, 0xd9], // MOV RCX, RBX
         &[],
         ReturnType::None,
     );
