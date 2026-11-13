@@ -14,7 +14,7 @@ use std::{
     },
 };
 
-use patchy::{PatchSession, ReturnType, Trampoline};
+use patchy::{Condition, PatchSession, ReturnType, Trampoline};
 
 use crate::{
     diag,
@@ -123,6 +123,22 @@ const ESCADRA_VECTOR_LIMIT: usize = 0x8000;
 /// the escadra pointer sits at node+0x8. The pre-combat screen builds PRECOMBAT_B cards from it.
 const ENEMY_LIST: usize = 0x1_43a1_59c0;
 const LINK_NODE_STRIDE: usize = 0x18;
+/// Link_ClearVector: unlinks every node of a link vector (null-safe) and resets end=begin.
+const LINK_CLEAR_VECTOR: usize = 0x1_400c_2400;
+const LINK_CLEAR_VECTOR_BYTES: [u8; 16] = [
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48,
+];
+/// Combat level loader (SomethingWithLevelSerias) walks the enemy fleet list and dereferences
+/// each node's escadra without a null check: `MOV RAX,[R14+8]; MOV RSI,[RAX+0x100]`. A node whose
+/// escadra was destroyed (e.g. a previous test battle's fleet) crashes here reading 0x100.
+/// The guard skips null-escadra nodes exactly like the loop's own advance at 0x1402c3a63.
+const ENEMY_LOOP_SEAM: usize = 0x1_402c_3a00;
+const ENEMY_LOOP_BYTES: [u8; 11] = [
+    0x49, 0x8b, 0x46, 0x08, // MOV RAX, [R14+0x8]
+    0x48, 0x8b, 0xb0, 0x00, 0x01, 0x00, 0x00, // MOV RSI, [RAX+0x100]
+];
+const ENEMY_LOOP_BODY: usize = 0x1_402c_3a0b; // resumes after the two MOVs
+const ENEMY_LOOP_EXIT: usize = 0x1_402c_3a6c; // loop exit when R14 reaches R12
 /// Ship count of an Escadra, as read by the pre-combat card builder (escadra+0x56c).
 const ESCADRA_SHIP_COUNT: usize = 0x56c;
 /// Sanity bound for list scans in diagnostics/prune.
@@ -205,6 +221,8 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
         (GET_PROFILE, &GET_PROFILE_BYTES[..]),
         (LEVEL_ENTRY, &LEVEL_BYTES[..]),
         (COPY_STRING, &COPY_STRING_BYTES[..]),
+        (LINK_CLEAR_VECTOR, &LINK_CLEAR_VECTOR_BYTES[..]),
+        (ENEMY_LOOP_SEAM, &ENEMY_LOOP_BYTES[..]),
     ] {
         if std::slice::from_raw_parts(address as *const u8, expected.len()) != expected {
             return Err(format!(
@@ -253,6 +271,27 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
     enemy_append.absolute_jump(ENEMY_APPEND_SEAM + ENEMY_APPEND_BYTES.len());
     session
         .detour_trampoline(ENEMY_APPEND_SEAM, ENEMY_APPEND_BYTES.len(), enemy_append)
+        .map_err(|e| e.to_string())?;
+
+    // Guard the Combat level loader's enemy-list walk against null escadra nodes (a previous
+    // test battle's destroyed fleet leaves one behind): skip the node like the loop's own
+    // advance instead of dereferencing [0+0x100].
+    let mut enemy_loop = Trampoline::new();
+    let loop_head = enemy_loop.new_label();
+    let skip_node = enemy_loop.new_label();
+    enemy_loop.bind(loop_head).map_err(|e| e.to_string())?;
+    enemy_loop.bytes(&ENEMY_LOOP_BYTES[..4]); // MOV RAX, [R14+0x8]
+    enemy_loop.bytes(&[0x48, 0x85, 0xc0]); // TEST RAX, RAX
+    enemy_loop.jump_if(Condition::Equal, skip_node);
+    enemy_loop.bytes(&ENEMY_LOOP_BYTES[4..]); // MOV RSI, [RAX+0x100]
+    enemy_loop.absolute_jump(ENEMY_LOOP_BODY);
+    enemy_loop.bind(skip_node).map_err(|e| e.to_string())?;
+    enemy_loop.bytes(&[0x49, 0x83, 0xc6, 0x18]); // ADD R14, 0x18
+    enemy_loop.bytes(&[0x4d, 0x3b, 0xf4]); // CMP R14, R12
+    enemy_loop.jump_if(Condition::NotEqual, loop_head);
+    enemy_loop.absolute_jump(ENEMY_LOOP_EXIT);
+    session
+        .detour_trampoline(ENEMY_LOOP_SEAM, ENEMY_LOOP_BYTES.len(), enemy_loop)
         .map_err(|e| e.to_string())?;
 
     let mut level = Trampoline::new();
@@ -860,24 +899,42 @@ unsafe fn prune_enemy_escadra() {
         && lbytes / LINK_NODE_STRIDE <= LIST_ENTRY_LIMIT
         && diag::readable_span(lbegin, lbytes)
     {
+        // Compact the list, dropping the stored test escadra and any null-escadra nodes left
+        // behind by a destroyed fleet (the level loader dereferences node+8 without a check).
+        let mut kept = lbegin;
         let mut node = lbegin;
+        let mut dropped_stored = false;
+        let mut dropped_null = 0usize;
         while node < lend {
-            if read::<usize>(node + 8) == escadra {
-                let mut source = node + LINK_NODE_STRIDE;
-                while source < lend {
+            let fleet = read::<usize>(node + 8);
+            if fleet == escadra {
+                dropped_stored = true;
+            } else if fleet == 0 {
+                dropped_null += 1;
+            } else {
+                if kept != node {
                     for offset in 0..LINK_NODE_STRIDE {
-                        write::<u8>(
-                            source - LINK_NODE_STRIDE + offset,
-                            read::<u8>(source + offset),
-                        );
+                        write::<u8>(kept + offset, read::<u8>(node + offset));
                     }
-                    source += LINK_NODE_STRIDE;
                 }
-                write::<usize>(ENEMY_LIST + 8, lend - LINK_NODE_STRIDE);
-                log::info!("hf_ally: pruned previous test enemy escadra {escadra:#x} from the enemy fleet list");
-                return;
+                kept += LINK_NODE_STRIDE;
             }
             node += LINK_NODE_STRIDE;
+        }
+        if kept != lend {
+            write::<usize>(ENEMY_LIST + 8, kept);
+        }
+        if dropped_stored {
+            log::info!(
+                "hf_ally: pruned previous test enemy escadra {escadra:#x} from the enemy fleet list"
+            );
+            return;
+        }
+        if dropped_null > 0 {
+            log::info!(
+                "hf_ally: dropped {dropped_null} null-escadra nodes from the enemy fleet list"
+            );
+            return;
         }
     }
     log::info!(
@@ -913,6 +970,15 @@ unsafe extern "C" fn on_enemy_fleet(
         .try_lock()
         .map(|state| !state.enemy_entries.is_empty())
         .unwrap_or(false);
+    if custom {
+        // The native FIGHT handler clears the enemy list right after this seam and links the
+        // new escadra, but a node left by a destroyed previous fleet can still crash the level
+        // loader; clear the list here as well so only the fresh escadra is ever linked.
+        let clear: unsafe extern "C" fn(usize) = std::mem::transmute(LINK_CLEAR_VECTOR);
+        // SAFETY: byte-checked native Link_ClearVector on the enemy list global; it unlinks
+        // each node (null-safe) and resets end=begin on the game thread.
+        clear(ENEMY_LIST);
+    }
     if !custom {
         // SAFETY: original arguments, original callee, game thread.
         return create(names, side, role, position, name, morale);

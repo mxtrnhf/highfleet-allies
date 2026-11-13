@@ -24,7 +24,7 @@ Release pack **v1.2.4** contains **hf_ally v1.2.4**, **hf_ai v1.0.0** and the bu
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).
 2. Download the pack from [Releases](../../releases) and extract the zip directly into the game folder (the one with `Highfleet.exe`); it contains `Modloader/mods`, `Modloader/config` and `Media`.
-3. **QoL mod.** The mods need logdot's [highfleet-qol](https://github.com/logdot/highfleet-qol) for its **flare crash fix** (a 1.163 crash when a proximity-fused missile meets a flare; `hf_ai` drops far more flares than the stock game). **His stock release (v1.3.0) works fine with our mods**: if you already run it, keep it. The pack also ships our build, `Modloader/mods/highfleet_qol.dll`, built from the [`qol/`](qol) folder: logdot's current `main` plus our manual elevation. It adds only features **that are not in his latest release yet**: refuel rate and speed curve (merged into his `main`, no release since) and elevation (our [pull request #20](https://github.com/logdot/highfleet-qol/pull/20), still a draft). It replaces his DLL if you copy it over; once he cuts a release with these, use his release and drop ours. Keep `enable_flare_crash_fix` on (the default). `hf_ai` logs a warning at start-up if QoL is missing or set up wrongly. Use only **one** `hf_ally` DLL in `Modloader/mods`.
+3. **QoL mod.** The mods need logdot's [highfleet-qol](https://github.com/logdot/highfleet-qol) for its **flare crash fix** (a 1.163 crash when a proximity-fused missile meets a flare; `hf_ai` drops far more flares than the stock game). **His stock release (v1.3.1) works fine with our mods**: if you already run it, keep it. The pack also ships our build, `Modloader/mods/highfleet_qol.dll`, built from the [`qol/`](qol) folder: logdot's current `main` plus our manual elevation. It adds only features **that are not in his latest release yet**: refuel rate and speed curve (merged into his `main`, no release since) and elevation (our [pull request #20](https://github.com/logdot/highfleet-qol/pull/20), still a draft). It replaces his DLL if you copy it over; once he cuts a release with these, use his release and drop ours. Keep `enable_flare_crash_fix` on (the default). `hf_ai` logs a warning at start-up if QoL is missing or set up wrongly. Use only **one** `hf_ally` DLL in `Modloader/mods`.
 4. Settings are JSON files in `Modloader/config/` (`ally.json`, `hf_ai.json`), written with the checked-in player defaults on first run. `"enabled": false` turns a mod off.
 
 ## Settings
@@ -40,7 +40,7 @@ Every setting is already in the config files of the pack, so there is nothing to
 and **TAB** cycles deployed friendly ships. Your old ship becomes an AI ally.
 Enabled by `ship_switching` (default true); [details and keybinding caveats](docs/ship-switching.md).
 
-**Shipworks test allies and enemies (v1.3.0):** **ADD**, beside TEST in the top row,
+**Shipworks test allies and enemies (v1.3.1):** **ADD**, beside TEST in the top row,
 captures the edited ship into an ally list. The existing **FIGHT** button includes those
 ships as allies. **ADD ENEMY**, right of ADD, captures the edited ship into an enemy list
 (red text) that overrides the default enemy generation in the test combat. Loading/

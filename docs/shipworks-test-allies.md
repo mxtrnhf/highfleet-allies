@@ -1,4 +1,4 @@
-# Shipworks test allies and enemies (hf_ally v1.3.0)
+# Shipworks test allies and enemies (hf_ally v1.3.1)
 
 **v1.2.9:** v1.2.8's prune only scanned the profile escadra vector and never matched in
 game, so cleared enemies still leaked into later battles. The prune now scans both the
@@ -117,7 +117,7 @@ Release Windows Clippy with `megalog` completes with the existing 22 warnings
 (none in the new feature files). Changed Rust files pass targeted rustfmt checks;
 full `cargo fmt --check` still reports pre-existing differences in other files.
 The no-default-features local build is
-`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.3.0.dll`.
+`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.3.1.dll`.
 
 Manual pass on Steam 1.163:
 

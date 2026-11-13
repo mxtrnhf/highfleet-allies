@@ -1,6 +1,6 @@
 [package]
 name = "hf-ally"
-version = "1.3.0"
+version = "1.3.1"
 edition = "2021"
 description = "AI wingman ship, pre-combat ally/plane controls, enemy wave sizing and intercept fixes for HighFleet 1.163."
 
