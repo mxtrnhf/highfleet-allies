@@ -1,4 +1,4 @@
-# Shipworks test allies (hf_ally v1.2.2)
+# Shipworks test allies (hf_ally v1.2.4)
 
 **v1.2.2:** CLEAR sits immediately right of ADD and empties the roster without
 leaving Shipworks or changing the edited ship. It also removes the roster's
@@ -76,7 +76,7 @@ Release Windows Clippy with `megalog` completes with the existing 22 warnings
 (none in the new feature files). Changed Rust files pass targeted rustfmt checks;
 full `cargo fmt --check` still reports pre-existing differences in other files.
 The no-default-features local build is
-`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.2.2.dll`.
+`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.2.4.dll`.
 
 Manual pass on Steam 1.163:
 

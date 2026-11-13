@@ -64,7 +64,7 @@ jobs:
       - name: Package only the GitHub-built DLLs with tracked player presets
         env:
           PACK_VERSION: ${{ inputs.version }}
-        run: python3 tools/package_release.py --version "$PACK_VERSION" --validation "Gunpod loadout selection cross-build validated on 2026-11-11; in-game pass by the maintainer pending." --output release-artifacts
+        run: python3 tools/package_release.py --version "$PACK_VERSION" --validation "Shipworks ADD/FIGHT confirmed working in game by the maintainer; CLEAR still needs in-game verification." --output release-artifacts
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

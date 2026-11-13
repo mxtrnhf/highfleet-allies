@@ -15,11 +15,11 @@ Experimental native-engine acceleration is developed separately in
 release pack and does not replace hf_ally, hf_ai or QoL. Native architecture and
 proof boundaries: [DLL architecture](docs/native-engine-dll-architecture.md).
 
-> **PACK v1.0.3 — IMPROVED DEBUG OVERLAY**
+> **PACK v1.2.4 — SHIPWORKS TEST ALLIES**
 > **From v0.15.0 or any later development build:** replace both `Modloader/config/ally.json` and `Modloader/config/hf_ai.json` with the v1.0.0 presets. In `ally.json`, `enabled` is the only master switch; `auto_retreat` and `enemy_all_at_once` are retired; `spawn_ally`, `ally_toggle`, `ally_reticles`, `max_enemy_ships`, `plane_bombers`, `marker_seam`, `marker_delay_ms` and the retired logging keys are ignored. In `hf_ai.json`, the retired curtain keys (`curtain_*` / `launch_flares_*`) and early-fire keys (`aim_fire_*`) do nothing, and `dive_dwell_s` defaults to `0.3`. Ally radio lines follow the game language (`Media/Snd/RADIO` in Russian, `Media/Snd/RADIO_ENG` in English); custom voice paths and custom audio are planned for a future version.
 > **From v0.14.13 or older:** replace both configs; the v1.0.0 presets include the earlier grouped/HEX/logging cleanups.
 
-Release pack **v1.0.3** contains **hf_ally v1.0.3**, **hf_ai v1.0.0** and the bundled QoL build ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). The improved debug overlay was confirmed working in game on 2026-11-09.
+Release pack **v1.2.4** contains **hf_ally v1.2.4**, **hf_ai v1.0.0** and the bundled QoL build ([ally changelog](ally/CHANGELOG.md), [ai changelog](ai/CHANGELOG.md)). Shipworks ADD/FIGHT was confirmed working in game by the maintainer; CLEAR still needs in-game verification.
 
 ## Install (players)
 1. Install the [Modloader](https://github.com/logdot/Highfleet-Modloader/releases) (rename the original `bass.dll` as its README says).
@@ -40,7 +40,7 @@ Every setting is already in the config files of the pack, so there is nothing to
 and **TAB** cycles deployed friendly ships. Your old ship becomes an AI ally.
 Enabled by `ship_switching` (default true); [details and keybinding caveats](docs/ship-switching.md).
 
-**Shipworks test allies (development v1.2.2):** **ADD**, beside TEST in the top row,
+**Shipworks test allies (v1.2.4):** **ADD**, beside TEST in the top row,
 captures the edited ship into a list. The existing **FIGHT** button includes those
 ships as allies. Loading/switching/RESET preserve the list; leaving Shipworks clears
 it; **CLEAR**, beside ADD, empties it without leaving Shipworks. Up to eight allies;

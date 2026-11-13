@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.2.4 (Shipworks test allies release):** ADD captures the edited ship into a friendly test roster; CLEAR empties it without leaving Shipworks. The existing FIGHT button brings the added ships into combat as allies. Loading, switching, RESET and test returns preserve the roster; leaving Shipworks clears it. Up to eight allies, with native Shipworks button styling and PLAYER-marker list text. ADD/FIGHT confirmed working in game by the maintainer; CLEAR still needs in-game verification.
+
 * **v1.2.3:** development maintenance build. Default gameplay unchanged; in-game verification pending.
 
 * **v1.2.2 (Shipworks CLEAR button):** add CLEAR immediately right of ADD in the top row, using the same native Shipworks font/style. CLEAR empties the ally list, removes its temporary snapshots and dismisses capture/full-list status without touching the edited ship or leaving Shipworks. ADD and CLEAR debounce independently; new ships can be added immediately after clearing. No config changes or regression tests. The v1.2.1 ADD/FIGHT feature was confirmed working in game by the maintainer; CLEAR needs in-game verification.

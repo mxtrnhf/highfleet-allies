@@ -17,7 +17,7 @@ TARGET = "x86_64-pc-windows-msvc"
 GUIDES = (
     "ally-config.md", "debug-overlay.md", "shell-launch-speed.md", "hf-ai-config-reference.md", "hf-ai-tuning-guide.md",
     "qol-guide.md", "player-defaults.md", "retired-diagnostics.md", "retired-settings.md",
-    "ship-bombers.md", "ship-switching.md",
+    "ship-bombers.md", "ship-switching.md", "shipworks-test-allies.md",
 )
 
 

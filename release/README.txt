@@ -3,25 +3,16 @@ hf_ally @ALLY_VERSION@ + hf_ai @AI_VERSION@ + bundled QoL — Steam 1.163 only
 Source: https://github.com/mxtrnhf/highfleet-allies
 
 WHAT CHANGED
-- Fixed: gunpod plane loadouts could not be picked on the carrier plane
-  buttons. A loadout that carries no parts of its own — a gunpod, like the
-  20 mm or 100 mm cannon pods added for planes by QoL/ammo mods — was
-  mistaken for the plain "guns only" choice and never offered. All of a
-  craft's loadouts are now selectable, gunpods first (vanilla: the 37 mm
-  default); gun choices cost no stock, and a launched gunpod plane strafes
-  its target until its rounds run out, then flies home.
-
-DEBUG OVERLAY SETTINGS
-Modloader/config/ally.json -> debug_overlay:
-- enable (false): show the overlay.
-- circles ([250, 500, 1000]): ring radii in game units; [] hides them.
-- ai_waypoint (true): show AI destinations and distances.
-- prediction_marker (false): show estimated aim markers for supported cannon ammo.
-- pointer_length (300): native aim-line length and bearing-marker distance in
-  game units; 0 hides both.
-Keep top-level enabled: true; restart after editing. ally_reticle_scale controls
-ally target boxes separately. hf_ai adds its AI state to ship labels.
-AP, guided shells and rockets have no aim prediction.
+- Shipworks test allies: ADD, beside TEST in the top row, captures the edited
+  ship, including unsaved changes, into the ship list.
+- CLEAR, beside ADD, empties the list without leaving Shipworks or changing
+  the edited ship.
+- The existing FIGHT button brings the listed ships into test combat as
+  friendly AI allies. Add up to eight allies.
+- Loading/switching designs, RESET, RETRY and returning from test combat
+  preserve the list. Leaving Shipworks clears it.
+- Buttons use native Shipworks styling; ship names use the PLAYER-marker font.
+- ADD/FIGHT confirmed in game. CLEAR still needs in-game verification.
 
 INSTALL
 1. Back up Saves. Read Allies_Manual.pdf.
@@ -39,7 +30,7 @@ CONTENTS
 - Allies_Manual.pdf, docs/: player manual and configuration references.
 - Media/Snd/RADIO/radio_stall_01.wav: custom Russian voice line.
 - manifest.json: source commit, component versions, validation and file metadata.
-- Built without diagnostic features.
+- Built without optional Cargo features.
 
 CREDITS
 Built on logdot's Highfleet-Modloader, patchy-rs, highfleet-rs and highfleet-qol.

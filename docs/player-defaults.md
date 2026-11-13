@@ -16,10 +16,11 @@ The v1.0.0 preset supersedes the v0.14.15-era values: `ally.json` drops
 `dive_dwell_s: 0.3` default. See the
 [ally changelog](../ally/CHANGELOG.md) and [ai changelog](../ai/CHANGELOG.md).
 
-The release pack copies these files unchanged. Compiled defaults use the same
-values: a missing file is generated with this profile, and missing keys or whole
-blocks in a partial config inherit it. Explicit values in an existing config
-continue to override the defaults. Invalid JSON logs an error and uses the profile.
+The release pack copies the tracked presets unchanged. Explicit preset values
+override the compiled missing-key defaults, just as custom settings do. A missing
+file is generated from the compiled defaults, and missing keys or whole blocks in
+a partial config inherit those defaults. Invalid JSON logs an error and falls
+back to the compiled defaults.
 The presets are not vanilla settings; use the feature-off tables in the config
 guides to disable specific behavior.
 
