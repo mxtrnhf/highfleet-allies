@@ -27,6 +27,7 @@ use crate::{
 const ROSTER_LIMIT: usize = 8;
 const ADD_NAME: &[u8] = b"SW_ALLY_ADD\0";
 const CLEAR_NAME: &[u8] = b"SW_ALLY_CLEAR\0";
+const CRASH_NAME: &[u8] = b"SW_ALLY_CRASH\0";
 const ROW_NAMES: [&[u8]; ROSTER_LIMIT] = [
     b"SW_ALLY_1\0",
     b"SW_ALLY_2\0",
@@ -87,6 +88,8 @@ static CONTROLS_VISIBLE: AtomicBool = AtomicBool::new(false);
 static TEST_ALLIES: AtomicU32 = AtomicU32::new(0);
 static ADD_GUI: AtomicUsize = AtomicUsize::new(0);
 static CLEAR_GUI: AtomicUsize = AtomicUsize::new(0);
+static CRASH_GUI: AtomicUsize = AtomicUsize::new(0);
+static CRASH_BUTTON: AtomicBool = AtomicBool::new(false);
 static ROW_GUIS: [AtomicUsize; ROSTER_LIMIT] = [const { AtomicUsize::new(0) }; ROSTER_LIMIT];
 static STATUS_GUI: AtomicUsize = AtomicUsize::new(0);
 
@@ -99,7 +102,7 @@ pub(crate) fn test_allies() -> u32 {
 ///
 /// # Safety
 /// Serialized initialization of the verified Steam 1.163 image, before callbacks run.
-pub(crate) unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
+pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> Result<(), String> {
     design::verify()?;
     for (address, expected) in [
         (FLEET_SEAM, &FLEET_BYTES[..]),
@@ -134,6 +137,7 @@ pub(crate) unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
     session
         .detour_trampoline(LEVEL_ENTRY, LEVEL_BYTES.len(), level)
         .map_err(|e| e.to_string())?;
+    CRASH_BUTTON.store(crash_button, Ordering::Relaxed);
     READY.store(true, Ordering::Relaxed);
     Ok(())
 }
@@ -216,6 +220,20 @@ pub(crate) unsafe fn tick() {
         },
         true,
     );
+    if CRASH_BUTTON.load(Ordering::Relaxed) {
+        show_control(
+            CRASH_NAME,
+            &CRASH_GUI,
+            &scan.elements,
+            template,
+            c"CRASH",
+            ControlGeometry {
+                position: [x + 2.0 * (width + BUTTON_GAP), y],
+                dimensions: [width, height],
+            },
+            true,
+        );
+    }
     let left = x - width * 0.5;
     for (index, entry) in state.entries.iter().enumerate() {
         let position = [left, y + height * 0.5 + 24.0 + index as f32 * ROW_HEIGHT];
@@ -392,6 +410,7 @@ unsafe fn hide_member(gui: usize, listed: &[usize]) {
 unsafe fn hide_controls(listed: &[usize]) {
     hide_member(ADD_GUI.load(Ordering::Relaxed), listed);
     hide_member(CLEAR_GUI.load(Ordering::Relaxed), listed);
+    hide_member(CRASH_GUI.load(Ordering::Relaxed), listed);
     hide_member(STATUS_GUI.load(Ordering::Relaxed), listed);
     for gui in &ROW_GUIS {
         hide_member(gui.load(Ordering::Relaxed), listed);
@@ -400,12 +419,9 @@ unsafe fn hide_controls(listed: &[usize]) {
 
 /// Called from the existing native click dispatcher, on the game thread.
 pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
-    let clear = match name {
-        "SW_ALLY_ADD" => false,
-        "SW_ALLY_CLEAR" => true,
-        _ => return false,
-    };
-    if !READY.load(Ordering::Relaxed) {
+    if !matches!(name, "SW_ALLY_ADD" | "SW_ALLY_CLEAR" | "SW_ALLY_CRASH")
+        || !READY.load(Ordering::Relaxed)
+    {
         return false;
     }
     if button as u32 != 1 {
@@ -414,10 +430,26 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     if read::<u8>(EDITOR_MODE) == 0 || !CONTROLS_VISIBLE.load(Ordering::Relaxed) {
         return true;
     }
+    if name == "SW_ALLY_CRASH" {
+        if CRASH_BUTTON.load(Ordering::Relaxed) {
+            log::error!("hf_ally: deliberate Shipworks fail-fast requested");
+            // SAFETY: Windows accepts null records and generates STATUS_FAIL_FAST_EXCEPTION.
+            // Fail-fast terminates without deliberate invalid memory access, save writes or
+            // running native teardown on partially modified state. It bypasses exception handlers;
+            // this is not a test of our ordinary access-violation/minidump handler.
+            windows_sys::Win32::System::Diagnostics::Debug::RaiseFailFastException(
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+            );
+        }
+        return true;
+    }
     let Ok(mut state) = SESSION.try_lock() else {
         return true;
     };
     let now = now_ms();
+    let clear = name == "SW_ALLY_CLEAR";
     let last_click_ms = if clear {
         &mut state.last_clear_ms
     } else {

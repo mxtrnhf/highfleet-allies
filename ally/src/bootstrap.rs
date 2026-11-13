@@ -104,7 +104,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     lifecycle_log::install_hooks(&mut session, lifecycle, config.logging.log_creatures)?;
     // The pre-combat ALLY and plane-loadout buttons are part of the mod; install them whenever it is enabled.
     precombat::install(&mut session, config.logging.gui_inspect)?;
-    shipworks::install(&mut session)?;
+    shipworks::install(&mut session, config.crash_button)?;
     ally_ammo::install_refund(&mut session, config.ally_ai_ammo)?;
     battle::install_prize_guard(&mut session, config.spare_prizes)?;
     let guard_missiles = config.ally_bombers || !config.ally_zenith_autofire;

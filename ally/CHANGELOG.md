@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.2.3:** development maintenance build. Default gameplay unchanged; in-game verification pending.
+
 * **v1.2.2 (Shipworks CLEAR button):** add CLEAR immediately right of ADD in the top row, using the same native Shipworks font/style. CLEAR empties the ally list, removes its temporary snapshots and dismisses capture/full-list status without touching the edited ship or leaving Shipworks. ADD and CLEAR debounce independently; new ships can be added immediately after clearing. No config changes or regression tests. The v1.2.1 ADD/FIGHT feature was confirmed working in game by the maintainer; CLEAR needs in-game verification.
 
 * **v1.2.1 (fix Shipworks ADD capture):** mirror the native design-save bridge search, including bridge parts nested under a frame. Use the bridge's master link for the serialized design root rather than the Creature's master link; these are different native relationships. Retain bounded child traversal and native Link ownership. Failed ADD operations now log the failing capture stage or filesystem error instead of only a generic warning. Cross-build and targeted formatting checks passed; in-game retest pending. No config changes or regression tests.

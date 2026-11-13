@@ -14,6 +14,8 @@ pub(crate) struct Config {
     /// Master switch. When true, every gameplay feature is installed, including the wingman.
     /// When false, no gameplay hooks are installed; the crash reporter still loads.
     pub(crate) enabled: bool,
+    /// Opt-in Shipworks diagnostic termination control. Hidden by default; never saves game state.
+    pub(crate) crash_button: bool,
     /// Governed dive, native-aimed whole-payload release and pull-out for bomb-carrying allies.
     pub(crate) ally_bombers: bool,
     /// Game seconds the player's ship must have been in the battle before the ally arrives.
@@ -90,6 +92,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: true,
+            crash_button: false,
             ally_bombers: true,
             ally_delay_seconds: 1.5,
             flagship_leaves: "handover".to_string(),

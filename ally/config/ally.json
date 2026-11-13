@@ -1,5 +1,6 @@
 {
   "enabled": true,
+  "crash_button": false,
   "ally_bombers": true,
   "ally_delay_seconds": 1.5,
   "flagship_leaves": "handover",
