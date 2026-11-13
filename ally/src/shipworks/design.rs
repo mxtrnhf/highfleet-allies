@@ -264,12 +264,14 @@ pub(super) unsafe fn snapshot(serial: u64) -> Result<Entry, String> {
     Ok(Entry { name, path })
 }
 
-/// Deserialize one fresh volume, then transfer ownership to the already-live FIGHT player fleet.
+/// Deserialize one fresh volume, then transfer ownership to the already-live FIGHT fleet.
+/// `side` is written to the ship's `+0xad4`: positive for the player fleet, negative for the
+/// enemy fleet.
 ///
 /// # Safety
-/// Only the verified FIGHT seam supplies `fleet`, on the game thread. The volume's native
+/// Only the verified FIGHT seams supply `fleet`, on the game thread. The volume's native
 /// constructor/deserializer/init/load and deleting destructor retain allocator/Link ownership.
-pub(super) unsafe fn append(fleet: usize, path: &CStr) -> bool {
+pub(super) unsafe fn append(fleet: usize, path: &CStr, side: f32) -> bool {
     if !diag::readable_span(fleet, 0x618) {
         return false;
     }
@@ -308,7 +310,7 @@ pub(super) unsafe fn append(fleet: usize, path: &CStr) -> bool {
         return false;
     }
     write(ship + INITIAL_MORALE, 10.0f32);
-    write(ship + OFF_SIDE, 1.0f32);
+    write(ship + OFF_SIDE, side);
     let fleet_vtable: usize = read(fleet);
     let add: unsafe extern "C" fn(usize, usize, usize, usize) =
         std::mem::transmute(read::<usize>(fleet_vtable + 0x50));

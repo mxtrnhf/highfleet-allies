@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.2.5 (Shipworks test enemies):** ADD ENEMY sits immediately right of ADD in the top row and captures the edited ship into an ENEMY SHIPS list, shown below the ally list in a red-dish text colour. With a non-empty enemy list, the FIGHT button overrides the default generated enemy fleet: the enemy Escadra is created empty and the listed ships join it as enemies (side `-1`), so the test combat fields exactly those ships. CLEAR empties both lists; leaving Shipworks clears both. Up to eight enemies. No config changes or regression tests. Windows cross-build validated; in-game validation pending. See `docs/shipworks-test-allies.md`.
+
 * **v1.2.4 (Shipworks test allies release):** ADD captures the edited ship into a friendly test roster; CLEAR empties it without leaving Shipworks. The existing FIGHT button brings the added ships into combat as allies. Loading, switching, RESET and test returns preserve the roster; leaving Shipworks clears it. Up to eight allies, with native Shipworks button styling and PLAYER-marker list text. ADD/FIGHT confirmed working in game by the maintainer; CLEAR still needs in-game verification.
 
 * **v1.2.3:** development maintenance build. Default gameplay unchanged; in-game verification pending.

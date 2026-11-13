@@ -1,4 +1,12 @@
-# Shipworks test allies (hf_ally v1.2.4)
+# Shipworks test allies and enemies (hf_ally v1.2.5)
+
+**v1.2.5:** **ADD ENEMY** sits immediately right of ADD (CLEAR moves one slot
+right) and captures the edited ship into an **ENEMY SHIPS** list rendered below
+the ally list in a red-dish text colour (`0xffff5050` ARGB). With a non-empty
+enemy list, **FIGHT** overrides the default enemy generation: the enemy Escadra
+is created from a single unresolvable design name (no default ships), then each
+listed snapshot is appended to it with ship side `-1`. CLEAR and leaving
+Shipworks empty both lists and remove all snapshots. Up to eight enemies.
 
 **v1.2.2:** CLEAR sits immediately right of ADD and empties the roster without
 leaving Shipworks or changing the edited ship. It also removes the roster's
@@ -27,10 +35,11 @@ buttons and combat ship switching still apply.
   reinforcement delay. Campaign settings and card choices are unchanged.
 - Loading, switching designs, RESET, returning from test combat, and RETRY do not
   clear the list. Returning from the Shipworks landing test also preserves it.
-- CLEAR or leaving Shipworks clears the list. There is no persistent roster,
-  per-ship remove button or additional configuration.
-- ADD and CLEAR copy TEST's native backgrounds, dimensions and font. List text uses
-  `flash_large_shadow`, the font used for the mod's PLAYER marker.
+- CLEAR or leaving Shipworks clears both the ally and the enemy list. There is no
+  persistent roster, per-ship remove button or additional configuration.
+- ADD, ADD ENEMY and CLEAR copy TEST's native backgrounds, dimensions and font. Ally
+  list text uses `flash_large_shadow`, the font used for the mod's PLAYER marker; the
+  enemy list uses the same font in red-dish `0xffff5050`.
 - A full roster or failed capture is reported below the list. A failed capture
   leaves existing entries intact.
 
@@ -55,6 +64,10 @@ Read-only verification against the live Ghidra program
 | `0x14013d807..0x14013d8f8` | FIGHT allocates Node `0x128`, loads its test volume (`0x140225930`), calls virtual `+0x80` with zero, assigns recursive random IDs (`0x140280840`), calls virtual `+0x88`, resolves the ship (`0x14021b070`), recalculates stats (`0x14007fcf0`), checks thrust (`0x140073450`), sets morale `+0x1a20 = 10` and side `+0xad4 = 1`. Added snapshots follow the same sequence. |
 | `0x14013dc9d..0x14013dcbf` | Creates/initializes the friendly test Escadra and attaches the current player's volume using its native virtual `+0x50`. |
 | `0x14013dcc2` | Hook immediately after that attachment, before fleet traversal. RDI is the friendly Escadra. Replay the complete seven-byte `MOV RSI,[RDI+0x100]`; no flags are consumed before the following native CMP. |
+| `0x14013df2e` | `Fleet_BuildShopOffer` fills the local enemy ship-name vector from the SMALL/MID/LARGE/CARRIER checkboxes; `0x14013df3c` pushes the player design name when that vector is empty. |
+| `0x14013df7e` | `CALL Fleet_CreateEscadraFromShips` builds the enemy Escadra (role in R8D, side/price float in XMM1 = `-1.0` at `0x1403524ec`, position in R9, name and morale on the stack). Replaced by a hook that forwards the original arguments; with a custom enemy roster it swaps the names vector for one unresolvable inline name, so `renderShipPhoto__` (`0x1401c2e80`, returns 0 on a library miss) adds no default ship and the Escadra's native tail still runs. |
+| `0x14013df8e` | After the enemy Escadra's init call (`0x1400f9460`), RBX is the enemy Escadra. Hook appends each custom enemy snapshot via the Escadra virtual `+0x50` with ship side `-1.0`, then replays the seven-byte `LEA RCX,[0x143a159c0]` that starts linking the fleet lists. |
+| `0x1401c7060` | `Fleet_CreateEscadraFromShips` entry (byte-checked): allocates the 0x618 Escadra, copies the name, adds one resolved ship per 0x20 name element, then runs the role/profile/proximity tail. |
 | `0x14025afd0` | SetLevelSeriaToLoad(path, flags). Entry hook preserves arguments, replays two complete home-space stores, and pads entry RSP by eight before the preserved callback. `Combat.seria`, test `City_generated.seria`, and return `Editor.seria` belong to the same session; another level ends it. |
 | `0x1401351b7..0x1401353d3` | LANDING test sets the editor-test flag `0x147fc6fb6` and requests **City_generated.seria**, not a hypothetical Landing.seria. |
 
@@ -70,13 +83,14 @@ and GUI geometry `+0x218/+0x21c` remain locally documented RE contracts.
 
 Windows cross-build succeeds. The maintainer confirmed v1.2.1 working in game.
 **The new CLEAR button needs in-game verification**; compilation alone does not
-validate its placement or behavior. No regression tests were added.
+validate its placement or behavior. **The v1.2.5 ADD ENEMY button and enemy-fleet
+override need in-game verification.** No regression tests were added.
 
 Release Windows Clippy with `megalog` completes with the existing 22 warnings
 (none in the new feature files). Changed Rust files pass targeted rustfmt checks;
 full `cargo fmt --check` still reports pre-existing differences in other files.
 The no-default-features local build is
-`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.2.4.dll`.
+`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.2.5.dll`.
 
 Manual pass on Steam 1.163:
 
@@ -94,4 +108,9 @@ Manual pass on Steam 1.163:
     `max_allies` and deployment delay are restored.
 9. ADD several ships, then CLEAR. Check that names/status disappear, snapshots are
    removed and the edited ship is unchanged. ADD another design immediately and
-   FIGHT; only the new entry should join. Also CLEAR an empty/full/error roster.
+   FIGHT; only the new entry should join.
+10. ADD ENEMY one or more designs (check the red list text), then FIGHT. The test
+    combat's enemy side must be exactly the listed ships — no default SMALL/MID/LARGE/
+    CARRIER generation — and the player ship plus any ADD allies stay friendly.
+11. ADD ENEMY, then CLEAR; check both lists and all snapshots are gone. Leave
+    Shipworks with an enemy list pending; re-enter and check the list is empty. Also CLEAR an empty/full/error roster.

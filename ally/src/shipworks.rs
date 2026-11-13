@@ -25,7 +25,10 @@ use crate::{
 
 /// Nine native player cards: the editor ship plus eight allies.
 const ROSTER_LIMIT: usize = 8;
+/// Enemy test roster mirrors the ally limit; both lists render in the same column.
+const ENEMY_LIMIT: usize = 8;
 const ADD_NAME: &[u8] = b"SW_ALLY_ADD\0";
+const ENEMY_ADD_NAME: &[u8] = b"SW_ALLY_ENEMY_ADD\0";
 const CLEAR_NAME: &[u8] = b"SW_ALLY_CLEAR\0";
 const CRASH_NAME: &[u8] = b"SW_ALLY_CRASH\0";
 const ROW_NAMES: [&[u8]; ROSTER_LIMIT] = [
@@ -38,16 +41,64 @@ const ROW_NAMES: [&[u8]; ROSTER_LIMIT] = [
     b"SW_ALLY_7\0",
     b"SW_ALLY_8\0",
 ];
+const ENEMY_ROW_NAMES: [&[u8]; ENEMY_LIMIT] = [
+    b"SW_ALLY_ENEMY_1\0",
+    b"SW_ALLY_ENEMY_2\0",
+    b"SW_ALLY_ENEMY_3\0",
+    b"SW_ALLY_ENEMY_4\0",
+    b"SW_ALLY_ENEMY_5\0",
+    b"SW_ALLY_ENEMY_6\0",
+    b"SW_ALLY_ENEMY_7\0",
+    b"SW_ALLY_ENEMY_8\0",
+];
 const STATUS_NAME: &[u8] = b"SW_ALLY_STATUS\0";
+const ENEMY_STATUS_NAME: &[u8] = b"SW_ALLY_ENEMY_STATUS\0";
 const BUTTON_GAP: f32 = 12.0;
 const ROW_HEIGHT: f32 = 24.0;
 const LIST_WIDTH: f32 = 480.0;
 const CLICK_DEBOUNCE_MS: u64 = 120;
+/// ARGB; red-dish hue marks the enemy list against the ally list's native colour.
+const ENEMY_TEXT_COLOR: u32 = 0xffff_5050;
+const BUTTON_STYLE: ControlStyle = ControlStyle {
+    button: true,
+    color: None,
+};
+const ROW_STYLE: ControlStyle = ControlStyle {
+    button: false,
+    color: None,
+};
+const ENEMY_ROW_STYLE: ControlStyle = ControlStyle {
+    button: false,
+    color: Some(ENEMY_TEXT_COLOR),
+};
+/// Creature side (+0xad4): positive is the player side, negative is the enemy side.
+const SIDE_ALLY: f32 = 1.0;
+const SIDE_ENEMY: f32 = -1.0;
 const EDITOR_MODE: usize = 0x1_403e_f36a;
 const TEST_FIGHT_FLAG: usize = 0x1_47fc_6fb6;
 /// FIGHT: first ship is already attached to RDI; replay MOV RSI,[RDI+0x100] after adding ours.
 const FLEET_SEAM: usize = 0x1_4013_dcc2;
 const FLEET_BYTES: [u8; 7] = [0x48, 0x8b, 0xb7, 0x00, 0x01, 0x00, 0x00];
+/// FIGHT: CALL Fleet_CreateEscadraFromShips building the enemy Escadra from generated names.
+const ENEMY_FLEET_SEAM: usize = 0x1_4013_df7e;
+const ENEMY_FLEET_BYTES: [u8; 5] = [0xe8, 0xdd, 0x90, 0x08, 0x00];
+const CREATE_ESCADRA: usize = 0x1_401c_7060;
+const CREATE_ESCADRA_BYTES: [u8; 16] = [
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57,
+];
+/// FIGHT: after the enemy Escadra's init call; RBX is the enemy Escadra, replay the LEA.
+const ENEMY_APPEND_SEAM: usize = 0x1_4013_df8e;
+const ENEMY_APPEND_BYTES: [u8; 7] = [0x48, 0x8d, 0x0d, 0x2b, 0x7a, 0x8d, 0x03];
+/// preserved_call pushes 7 registers and subs 0x88, so at the callback setup the seam's
+/// original stack args [S+0x20]/[S+0x28] sit at [RSP+0xE0]/[RSP+0xE8]; the callback reads its
+/// own 5th/6th args from [RSP+0x20]/[RSP+0x28]. Writing there only displaces the saved XMM0,
+/// which is dead after the replaced CALL.
+const ENEMY_FLEET_SETUP: [u8; 26] = [
+    0x48, 0x8b, 0x84, 0x24, 0xe0, 0x00, 0x00, 0x00, // MOV RAX, [RSP+0xE0]
+    0x48, 0x89, 0x44, 0x24, 0x20, // MOV [RSP+0x20], RAX
+    0x48, 0x8b, 0x84, 0x24, 0xe8, 0x00, 0x00, 0x00, // MOV RAX, [RSP+0xE8]
+    0x48, 0x89, 0x44, 0x24, 0x28, // MOV [RSP+0x28], RAX
+];
 const LEVEL_ENTRY: usize = 0x1_4025_afd0;
 const LEVEL_BYTES: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18];
 const COPY_STRING: usize = 0x1_4000_56e0;
@@ -66,20 +117,33 @@ struct ControlGeometry {
     dimensions: [f32; 2],
 }
 
+#[derive(Clone, Copy)]
+struct ControlStyle {
+    button: bool,
+    /// Overrides the template text colour (the enemy list's red-dish hue).
+    color: Option<u32>,
+}
+
 struct Session {
     entries: Vec<Entry>,
+    enemy_entries: Vec<Entry>,
     status: Option<CString>,
+    enemy_status: Option<CString>,
     serial: u64,
     last_add_ms: Option<u64>,
+    last_enemy_add_ms: Option<u64>,
     last_clear_ms: Option<u64>,
     saved_mask: Option<u32>,
 }
 
 static SESSION: Mutex<Session> = Mutex::new(Session {
     entries: Vec::new(),
+    enemy_entries: Vec::new(),
     status: None,
+    enemy_status: None,
     serial: 0,
     last_add_ms: None,
+    last_enemy_add_ms: None,
     last_clear_ms: None,
     saved_mask: None,
 });
@@ -87,11 +151,14 @@ static READY: AtomicBool = AtomicBool::new(false);
 static CONTROLS_VISIBLE: AtomicBool = AtomicBool::new(false);
 static TEST_ALLIES: AtomicU32 = AtomicU32::new(0);
 static ADD_GUI: AtomicUsize = AtomicUsize::new(0);
+static ENEMY_ADD_GUI: AtomicUsize = AtomicUsize::new(0);
 static CLEAR_GUI: AtomicUsize = AtomicUsize::new(0);
 static CRASH_GUI: AtomicUsize = AtomicUsize::new(0);
 static CRASH_BUTTON: AtomicBool = AtomicBool::new(false);
 static ROW_GUIS: [AtomicUsize; ROSTER_LIMIT] = [const { AtomicUsize::new(0) }; ROSTER_LIMIT];
+static ENEMY_ROW_GUIS: [AtomicUsize; ENEMY_LIMIT] = [const { AtomicUsize::new(0) }; ENEMY_LIMIT];
 static STATUS_GUI: AtomicUsize = AtomicUsize::new(0);
+static ENEMY_STATUS_GUI: AtomicUsize = AtomicUsize::new(0);
 
 /// Only Shipworks fights override campaign ally capacity and deployment delay.
 pub(crate) fn test_allies() -> u32 {
@@ -106,6 +173,9 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
     design::verify()?;
     for (address, expected) in [
         (FLEET_SEAM, &FLEET_BYTES[..]),
+        (ENEMY_FLEET_SEAM, &ENEMY_FLEET_BYTES[..]),
+        (CREATE_ESCADRA, &CREATE_ESCADRA_BYTES[..]),
+        (ENEMY_APPEND_SEAM, &ENEMY_APPEND_BYTES[..]),
         (LEVEL_ENTRY, &LEVEL_BYTES[..]),
         (COPY_STRING, &COPY_STRING_BYTES[..]),
     ] {
@@ -126,6 +196,35 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
     fleet.absolute_jump(FLEET_SEAM + FLEET_BYTES.len());
     session
         .detour_trampoline(FLEET_SEAM, FLEET_BYTES.len(), fleet)
+        .map_err(|e| e.to_string())?;
+
+    // Enemy Escadra creation: replace the CALL, forward the original arguments (the two
+    // stack args are copied into the callback's slots by ENEMY_FLEET_SETUP), keep RAX.
+    let mut enemy_fleet = Trampoline::new();
+    enemy_fleet.preserved_call(
+        on_enemy_fleet as *const (),
+        &ENEMY_FLEET_SETUP,
+        &[],
+        ReturnType::Rax,
+    );
+    enemy_fleet.absolute_jump(ENEMY_FLEET_SEAM + ENEMY_FLEET_BYTES.len());
+    session
+        .detour_trampoline(ENEMY_FLEET_SEAM, ENEMY_FLEET_BYTES.len(), enemy_fleet)
+        .map_err(|e| e.to_string())?;
+
+    // Enemy Escadra is complete in RBX here; append the custom enemy snapshots before the
+    // native LEA that starts linking the fleet lists.
+    let mut enemy_append = Trampoline::new();
+    enemy_append.preserved_call(
+        on_enemy_append as *const (),
+        &[0x49, 0x89, 0xdf], // MOV RDI, RBX
+        &[],
+        ReturnType::None,
+    );
+    enemy_append.bytes(&ENEMY_APPEND_BYTES);
+    enemy_append.absolute_jump(ENEMY_APPEND_SEAM + ENEMY_APPEND_BYTES.len());
+    session
+        .detour_trampoline(ENEMY_APPEND_SEAM, ENEMY_APPEND_BYTES.len(), enemy_append)
         .map_err(|e| e.to_string())?;
 
     let mut level = Trampoline::new();
@@ -206,7 +305,19 @@ pub(crate) unsafe fn tick() {
             position: [x, y],
             dimensions: [width, height],
         },
-        true,
+        BUTTON_STYLE,
+    );
+    show_control(
+        ENEMY_ADD_NAME,
+        &ENEMY_ADD_GUI,
+        &scan.elements,
+        template,
+        c"ADD ENEMY",
+        ControlGeometry {
+            position: [x + width + BUTTON_GAP, y],
+            dimensions: [width, height],
+        },
+        BUTTON_STYLE,
     );
     show_control(
         CLEAR_NAME,
@@ -215,10 +326,10 @@ pub(crate) unsafe fn tick() {
         template,
         c"CLEAR",
         ControlGeometry {
-            position: [x + width + BUTTON_GAP, y],
+            position: [x + 2.0 * (width + BUTTON_GAP), y],
             dimensions: [width, height],
         },
-        true,
+        BUTTON_STYLE,
     );
     if CRASH_BUTTON.load(Ordering::Relaxed) {
         show_control(
@@ -228,15 +339,16 @@ pub(crate) unsafe fn tick() {
             template,
             c"CRASH",
             ControlGeometry {
-                position: [x + 2.0 * (width + BUTTON_GAP), y],
+                position: [x + 3.0 * (width + BUTTON_GAP), y],
                 dimensions: [width, height],
             },
-            true,
+            BUTTON_STYLE,
         );
     }
     let left = x - width * 0.5;
+    let list_top = y + height * 0.5 + 24.0;
     for (index, entry) in state.entries.iter().enumerate() {
-        let position = [left, y + height * 0.5 + 24.0 + index as f32 * ROW_HEIGHT];
+        let position = [left, list_top + index as f32 * ROW_HEIGHT];
         show_control(
             ROW_NAMES[index],
             &ROW_GUIS[index],
@@ -247,17 +359,15 @@ pub(crate) unsafe fn tick() {
                 position,
                 dimensions: [LIST_WIDTH, ROW_HEIGHT],
             },
-            false,
+            ROW_STYLE,
         );
     }
     for gui in &ROW_GUIS[state.entries.len()..] {
         hide_member(gui.load(Ordering::Relaxed), &scan.elements);
     }
+    let mut next_row = state.entries.len();
     if let Some(status) = &state.status {
-        let position = [
-            left,
-            y + height * 0.5 + 24.0 + state.entries.len() as f32 * ROW_HEIGHT,
-        ];
+        let position = [left, list_top + next_row as f32 * ROW_HEIGHT];
         show_control(
             STATUS_NAME,
             &STATUS_GUI,
@@ -268,10 +378,47 @@ pub(crate) unsafe fn tick() {
                 position,
                 dimensions: [LIST_WIDTH, ROW_HEIGHT],
             },
-            false,
+            ROW_STYLE,
         );
+        next_row += 1;
     } else {
         hide_member(STATUS_GUI.load(Ordering::Relaxed), &scan.elements);
+    }
+    for (index, entry) in state.enemy_entries.iter().enumerate() {
+        let position = [left, list_top + (next_row + index) as f32 * ROW_HEIGHT];
+        show_control(
+            ENEMY_ROW_NAMES[index],
+            &ENEMY_ROW_GUIS[index],
+            &scan.elements,
+            template,
+            &entry.name,
+            ControlGeometry {
+                position,
+                dimensions: [LIST_WIDTH, ROW_HEIGHT],
+            },
+            ENEMY_ROW_STYLE,
+        );
+    }
+    for gui in &ENEMY_ROW_GUIS[state.enemy_entries.len()..] {
+        hide_member(gui.load(Ordering::Relaxed), &scan.elements);
+    }
+    next_row += state.enemy_entries.len();
+    if let Some(status) = &state.enemy_status {
+        let position = [left, list_top + next_row as f32 * ROW_HEIGHT];
+        show_control(
+            ENEMY_STATUS_NAME,
+            &ENEMY_STATUS_GUI,
+            &scan.elements,
+            template,
+            status,
+            ControlGeometry {
+                position,
+                dimensions: [LIST_WIDTH, ROW_HEIGHT],
+            },
+            ENEMY_ROW_STYLE,
+        );
+    } else {
+        hide_member(ENEMY_STATUS_GUI.load(Ordering::Relaxed), &scan.elements);
     }
     CONTROLS_VISIBLE.store(true, Ordering::Relaxed);
 }
@@ -285,9 +432,9 @@ unsafe fn show_control(
     template: usize,
     text: &CStr,
     geometry: ControlGeometry,
-    button: bool,
+    style: ControlStyle,
 ) {
-    let create = || create_control(name, template, text, geometry, button);
+    let create = || create_control(name, template, text, geometry, style);
     let Some((gui, created)) = precombat::get_or_make_with(name, kept, listed, true, create) else {
         return;
     };
@@ -302,6 +449,9 @@ unsafe fn show_control(
             text.as_ptr(),
             text.to_bytes().len(),
         );
+        if let Some(color) = style.color {
+            write(gui + offset_of!(Gui, text_color), color);
+        }
         if !CONTROLS_VISIBLE.load(Ordering::Relaxed) {
             precombat::load_gui(gui);
         }
@@ -313,7 +463,7 @@ unsafe fn create_control(
     template: usize,
     text: &CStr,
     geometry: ControlGeometry,
-    button: bool,
+    style: ControlStyle,
 ) -> *mut u8 {
     let empty = c"";
     let backgrounds = [
@@ -322,13 +472,13 @@ unsafe fn create_control(
         offset_of!(Gui, backname_use),
     ]
     .map(|offset| {
-        if button {
+        if style.button {
             native_string(template + offset)
         } else {
             Some(empty.into())
         }
     });
-    let font = if button {
+    let font = if style.button {
         native_string(template + offset_of!(Gui, font))
     } else {
         Some(c"flash_large_shadow".into())
@@ -359,7 +509,7 @@ unsafe fn create_control(
         focus.as_ptr().cast(),
         pressed.as_ptr().cast(),
         font.as_ptr().cast(),
-        if button {
+        if style.button {
             read(template + offset_of!(Gui, font_scale))
         } else {
             1.0
@@ -373,17 +523,19 @@ unsafe fn create_control(
         gui + offset_of!(Body, layer),
         read::<i32>(template + offset_of!(Body, layer)),
     );
-    write(gui + offset_of!(Body, focusable), u8::from(button));
-    write(gui + offset_of!(Gui, clickable), u8::from(button));
+    write(gui + offset_of!(Body, focusable), u8::from(style.button));
+    write(gui + offset_of!(Gui, clickable), u8::from(style.button));
     write(gui + offset_of!(Gui, checkable), 0u8);
     write(gui + offset_of!(Gui, textable), 0u8);
     write(
         gui + offset_of!(Gui, text_color),
-        read::<u32>(template + offset_of!(Gui, text_color)),
+        style
+            .color
+            .unwrap_or_else(|| read::<u32>(template + offset_of!(Gui, text_color))),
     );
     write(
         gui + offset_of!(Gui, align),
-        if button {
+        if style.button {
             read::<i32>(template + offset_of!(Gui, align))
         } else {
             0
@@ -409,18 +561,25 @@ unsafe fn hide_member(gui: usize, listed: &[usize]) {
 
 unsafe fn hide_controls(listed: &[usize]) {
     hide_member(ADD_GUI.load(Ordering::Relaxed), listed);
+    hide_member(ENEMY_ADD_GUI.load(Ordering::Relaxed), listed);
     hide_member(CLEAR_GUI.load(Ordering::Relaxed), listed);
     hide_member(CRASH_GUI.load(Ordering::Relaxed), listed);
     hide_member(STATUS_GUI.load(Ordering::Relaxed), listed);
+    hide_member(ENEMY_STATUS_GUI.load(Ordering::Relaxed), listed);
     for gui in &ROW_GUIS {
+        hide_member(gui.load(Ordering::Relaxed), listed);
+    }
+    for gui in &ENEMY_ROW_GUIS {
         hide_member(gui.load(Ordering::Relaxed), listed);
     }
 }
 
 /// Called from the existing native click dispatcher, on the game thread.
 pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
-    if !matches!(name, "SW_ALLY_ADD" | "SW_ALLY_CLEAR" | "SW_ALLY_CRASH")
-        || !READY.load(Ordering::Relaxed)
+    if !matches!(
+        name,
+        "SW_ALLY_ADD" | "SW_ALLY_ENEMY_ADD" | "SW_ALLY_CLEAR" | "SW_ALLY_CRASH"
+    ) || !READY.load(Ordering::Relaxed)
     {
         return false;
     }
@@ -450,8 +609,11 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     };
     let now = now_ms();
     let clear = name == "SW_ALLY_CLEAR";
+    let enemy_add = name == "SW_ALLY_ENEMY_ADD";
     let last_click_ms = if clear {
         &mut state.last_clear_ms
+    } else if enemy_add {
+        &mut state.last_enemy_add_ms
     } else {
         &mut state.last_add_ms
     };
@@ -460,27 +622,59 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     }
     *last_click_ms = Some(now);
     if clear {
-        let count = state.entries.len();
+        let allies = state.entries.len();
+        let enemies = state.enemy_entries.len();
         clear_roster(&mut state);
         sound::button("Shipworks CLEAR");
-        log::info!("hf_ally: Shipworks CLEAR removed {count} allies");
+        log::info!("hf_ally: Shipworks CLEAR removed {allies} allies and {enemies} enemies");
         return true;
     }
-    if state.entries.len() == ROSTER_LIMIT {
-        state.status = Some(c"SHIP LIST FULL (8 ALLIES)".into());
+    let limit = if enemy_add { ENEMY_LIMIT } else { ROSTER_LIMIT };
+    let len = if enemy_add {
+        state.enemy_entries.len()
+    } else {
+        state.entries.len()
+    };
+    if len == limit {
+        if enemy_add {
+            state.enemy_status = Some(c"ENEMY LIST FULL (8 ENEMIES)".into());
+        } else {
+            state.status = Some(c"SHIP LIST FULL (8 ALLIES)".into());
+        }
         return true;
     }
     state.serial = state.serial.wrapping_add(1);
-    match design::snapshot(state.serial) {
+    let serial = state.serial;
+    match design::snapshot(serial) {
         Ok(entry) => {
-            log::info!("hf_ally: Shipworks ADD {}", entry.name.to_string_lossy());
-            state.entries.push(entry);
-            state.status = None;
-            sound::button("Shipworks ADD");
+            log::info!(
+                "hf_ally: Shipworks {} {}",
+                if enemy_add { "ADD ENEMY" } else { "ADD" },
+                entry.name.to_string_lossy()
+            );
+            if enemy_add {
+                state.enemy_entries.push(entry);
+                state.enemy_status = None;
+            } else {
+                state.entries.push(entry);
+                state.status = None;
+            }
+            sound::button(if enemy_add {
+                "Shipworks ADD ENEMY"
+            } else {
+                "Shipworks ADD"
+            });
         }
         Err(error) => {
-            state.status = Some(c"UNABLE TO ADD THIS SHIP".into());
-            log::warn!("hf_ally: Shipworks ADD failed: {error}; roster unchanged");
+            if enemy_add {
+                state.enemy_status = Some(c"UNABLE TO ADD THIS SHIP".into());
+            } else {
+                state.status = Some(c"UNABLE TO ADD THIS SHIP".into());
+            }
+            log::warn!(
+                "hf_ally: Shipworks {} failed: {error}; roster unchanged",
+                if enemy_add { "ADD ENEMY" } else { "ADD" }
+            );
         }
     }
     true
@@ -493,7 +687,7 @@ unsafe extern "C" fn on_fleet(fleet: usize) {
     };
     let mut added = 0;
     for entry in &state.entries {
-        if design::append(fleet, &entry.path) {
+        if design::append(fleet, &entry.path, SIDE_ALLY) {
             added += 1;
         } else {
             log::warn!(
@@ -509,6 +703,85 @@ unsafe extern "C" fn on_fleet(fleet: usize) {
     }
     TEST_ALLIES.store(added, Ordering::Relaxed);
     log::info!("hf_ally: Shipworks FIGHT added {added} allies");
+}
+
+type CreateEscadra = unsafe extern "C" fn(usize, f32, u32, usize, usize, u32) -> usize;
+
+/// Replaces the FIGHT call that builds the enemy Escadra from generated ship names.
+/// With a custom enemy roster, the Escadra is created from a single unresolvable name, so
+/// the default generation adds no ships; the roster's snapshots are appended at
+/// ENEMY_APPEND_SEAM. Without one, the original call runs unchanged.
+///
+/// # Safety
+/// Runs on the game thread inside the byte-checked FIGHT seam; arguments are the original
+/// Fleet_CreateEscadraFromShips slots (names vector, side/price, role, position, name,
+/// morale) forwarded by ENEMY_FLEET_SETUP.
+unsafe extern "C" fn on_enemy_fleet(
+    names: usize,
+    side: f32,
+    role: u32,
+    position: usize,
+    name: usize,
+    morale: u32,
+) -> usize {
+    let _hook = diag::scope("Shipworks test enemy fleet");
+    let create: CreateEscadra = std::mem::transmute(CREATE_ESCADRA);
+    let custom = SESSION
+        .try_lock()
+        .map(|state| !state.enemy_entries.is_empty())
+        .unwrap_or(false);
+    if !custom {
+        // SAFETY: original arguments, original callee, game thread.
+        return create(names, side, role, position, name, morale);
+    }
+    // One 0x20-byte inline (SSO) EscadraName that no library design resolves to; the native
+    // renderShipPhoto__ lookup returns null for it and the ship is skipped.
+    let bogus_name = b"HF_NO_SUCH_DESIGN\0";
+    let mut element = [0u8; 0x20];
+    element[..bogus_name.len()].copy_from_slice(bogus_name);
+    element[0x10..0x18].copy_from_slice(&((bogus_name.len() - 1) as u64).to_le_bytes());
+    element[0x18..0x20].copy_from_slice(&15u64.to_le_bytes());
+    let mut vector = [
+        element.as_ptr() as usize,
+        element.as_ptr() as usize + 0x20,
+        element.as_ptr() as usize + 0x20,
+    ];
+    // SAFETY: vector outlives the synchronous native call; the escadra and every game-side
+    // allocation remain natively owned.
+    let escadra = create(
+        vector.as_mut_ptr() as usize,
+        SIDE_ENEMY,
+        role,
+        position,
+        name,
+        morale,
+    );
+    log::info!("hf_ally: Shipworks FIGHT overrides default enemy generation");
+    escadra
+}
+
+/// Appends the custom enemy snapshots to the freshly created enemy Escadra (RDI = RBX).
+///
+/// # Safety
+/// Runs on the game thread at the byte-checked ENEMY_APPEND_SEAM, after the Escadra's native
+/// init, before the fleet lists are linked.
+unsafe extern "C" fn on_enemy_append(escadra: usize) {
+    let _hook = diag::scope("Shipworks test enemies");
+    let Ok(state) = SESSION.try_lock() else {
+        return;
+    };
+    let mut added = 0;
+    for entry in &state.enemy_entries {
+        if design::append(escadra, &entry.path, SIDE_ENEMY) {
+            added += 1;
+        } else {
+            log::warn!(
+                "hf_ally: failed to load test enemy {}",
+                entry.name.to_string_lossy()
+            );
+        }
+    }
+    log::info!("hf_ally: Shipworks FIGHT added {added} enemies");
 }
 
 unsafe extern "C" fn on_level(path: usize) {
@@ -543,10 +816,10 @@ unsafe extern "C" fn on_level(path: usize) {
     state.last_clear_ms = None;
 }
 
-/// Drop only this roster's snapshots and status; keep the editor ship and capture serial intact.
+/// Drop both rosters' snapshots and statuses; keep the editor ship and capture serial intact.
 /// Called for both explicit CLEAR and leaving Shipworks.
 fn clear_roster(state: &mut Session) {
-    for entry in state.entries.drain(..) {
+    for entry in state.entries.drain(..).chain(state.enemy_entries.drain(..)) {
         if let Ok(path) = entry.path.to_str() {
             if let Err(error) = std::fs::remove_file(path) {
                 log::warn!("hf_ally: cannot remove test snapshot {path}: {error}");
@@ -554,5 +827,7 @@ fn clear_roster(state: &mut Session) {
         }
     }
     state.status = None;
+    state.enemy_status = None;
     state.last_add_ms = None;
+    state.last_enemy_add_ms = None;
 }
