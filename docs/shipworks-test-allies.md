@@ -1,4 +1,10 @@
-# Shipworks test allies and enemies (hf_ally v1.2.5)
+# Shipworks test allies and enemies (hf_ally v1.2.6)
+
+**v1.2.6:** control identifiers must stay within the 15-char inline (SSO)
+string storage — `cstr` reads the identifier bytes in place, so the v1.2.5 names
+(`SW_ALLY_ENEMY_ADD`, 17 chars) heap-allocated and never matched, leaving the
+button recreated every frame and its clicks inert. Enemy controls are now
+`SW_ENEMY_ADD` / `SW_ENEMY_1..8` / `SW_ENEMY_STAT`.
 
 **v1.2.5:** **ADD ENEMY** sits immediately right of ADD (CLEAR moves one slot
 right) and captures the edited ship into an **ENEMY SHIPS** list rendered below
@@ -90,7 +96,7 @@ Release Windows Clippy with `megalog` completes with the existing 22 warnings
 (none in the new feature files). Changed Rust files pass targeted rustfmt checks;
 full `cargo fmt --check` still reports pre-existing differences in other files.
 The no-default-features local build is
-`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.2.5.dll`.
+`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.2.6.dll`.
 
 Manual pass on Steam 1.163:
 

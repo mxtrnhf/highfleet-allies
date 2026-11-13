@@ -40,7 +40,7 @@ Every setting is already in the config files of the pack, so there is nothing to
 and **TAB** cycles deployed friendly ships. Your old ship becomes an AI ally.
 Enabled by `ship_switching` (default true); [details and keybinding caveats](docs/ship-switching.md).
 
-**Shipworks test allies and enemies (v1.2.5):** **ADD**, beside TEST in the top row,
+**Shipworks test allies and enemies (v1.2.6):** **ADD**, beside TEST in the top row,
 captures the edited ship into an ally list. The existing **FIGHT** button includes those
 ships as allies. **ADD ENEMY**, right of ADD, captures the edited ship into an enemy list
 (red text) that overrides the default enemy generation in the test combat. Loading/

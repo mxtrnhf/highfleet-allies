@@ -27,8 +27,10 @@ use crate::{
 const ROSTER_LIMIT: usize = 8;
 /// Enemy test roster mirrors the ally limit; both lists render in the same column.
 const ENEMY_LIMIT: usize = 8;
+/// GUI identifiers must stay within the 15-char inline (SSO) string storage: `cstr` reads the
+/// identifier bytes in place, so a longer heap-allocated name would never compare equal.
 const ADD_NAME: &[u8] = b"SW_ALLY_ADD\0";
-const ENEMY_ADD_NAME: &[u8] = b"SW_ALLY_ENEMY_ADD\0";
+const ENEMY_ADD_NAME: &[u8] = b"SW_ENEMY_ADD\0";
 const CLEAR_NAME: &[u8] = b"SW_ALLY_CLEAR\0";
 const CRASH_NAME: &[u8] = b"SW_ALLY_CRASH\0";
 const ROW_NAMES: [&[u8]; ROSTER_LIMIT] = [
@@ -42,17 +44,17 @@ const ROW_NAMES: [&[u8]; ROSTER_LIMIT] = [
     b"SW_ALLY_8\0",
 ];
 const ENEMY_ROW_NAMES: [&[u8]; ENEMY_LIMIT] = [
-    b"SW_ALLY_ENEMY_1\0",
-    b"SW_ALLY_ENEMY_2\0",
-    b"SW_ALLY_ENEMY_3\0",
-    b"SW_ALLY_ENEMY_4\0",
-    b"SW_ALLY_ENEMY_5\0",
-    b"SW_ALLY_ENEMY_6\0",
-    b"SW_ALLY_ENEMY_7\0",
-    b"SW_ALLY_ENEMY_8\0",
+    b"SW_ENEMY_1\0",
+    b"SW_ENEMY_2\0",
+    b"SW_ENEMY_3\0",
+    b"SW_ENEMY_4\0",
+    b"SW_ENEMY_5\0",
+    b"SW_ENEMY_6\0",
+    b"SW_ENEMY_7\0",
+    b"SW_ENEMY_8\0",
 ];
 const STATUS_NAME: &[u8] = b"SW_ALLY_STATUS\0";
-const ENEMY_STATUS_NAME: &[u8] = b"SW_ALLY_ENEMY_STATUS\0";
+const ENEMY_STATUS_NAME: &[u8] = b"SW_ENEMY_STAT\0";
 const BUTTON_GAP: f32 = 12.0;
 const ROW_HEIGHT: f32 = 24.0;
 const LIST_WIDTH: f32 = 480.0;
@@ -552,8 +554,10 @@ unsafe fn write<T>(address: usize, value: T) {
 
 unsafe fn hide_member(gui: usize, listed: &[usize]) {
     if listed.contains(&gui)
-        && native_string(gui + offset_of!(Gui, identifier))
-            .is_some_and(|name| name.to_bytes().starts_with(b"SW_ALLY_"))
+        && native_string(gui + offset_of!(Gui, identifier)).is_some_and(|name| {
+            let bytes = name.to_bytes();
+            bytes.starts_with(b"SW_ALLY_") || bytes.starts_with(b"SW_ENEMY_")
+        })
     {
         precombat::set_gui_active(gui, false);
     }
@@ -578,7 +582,7 @@ unsafe fn hide_controls(listed: &[usize]) {
 pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     if !matches!(
         name,
-        "SW_ALLY_ADD" | "SW_ALLY_ENEMY_ADD" | "SW_ALLY_CLEAR" | "SW_ALLY_CRASH"
+        "SW_ALLY_ADD" | "SW_ENEMY_ADD" | "SW_ALLY_CLEAR" | "SW_ALLY_CRASH"
     ) || !READY.load(Ordering::Relaxed)
     {
         return false;
@@ -609,7 +613,7 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     };
     let now = now_ms();
     let clear = name == "SW_ALLY_CLEAR";
-    let enemy_add = name == "SW_ALLY_ENEMY_ADD";
+    let enemy_add = name == "SW_ENEMY_ADD";
     let last_click_ms = if clear {
         &mut state.last_clear_ms
     } else if enemy_add {
