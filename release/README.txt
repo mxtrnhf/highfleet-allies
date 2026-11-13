@@ -3,6 +3,19 @@ hf_ally @ALLY_VERSION@ + hf_ai @AI_VERSION@ + bundled QoL — Steam 1.163 only
 Source: https://github.com/mxtrnhf/highfleet-allies
 
 WHAT CHANGED
+- twr_limit and twr_deceleration tame ships with high Shipworks TWR, like
+  Lightning, and put a bit of brakes on them. In theory this should reduce
+  the collisions caused by their new exceptional piloting skills.
+- Defaults: twr_cutoff: 2, twr_limit: 5, twr_deceleration: 0.75.
+  Above TWR 5, final AI engine strength (including boosts) is multiplied by
+  0.75. Player control is unaffected. To disable, set twr_limit or
+  twr_deceleration to 0.
+- Temporary mitigation, not a direct speed cap; braking is reduced too.
+  In-game collision validation is pending.
+- No AI tick skipping. Remove obsolete ally_tick_skip / ai_tick_skip keys
+  from experimental configs; they have no effect.
+
+RETAINED FROM PREVIOUS PACKS
 - Fixed a bug that crashed the game on a repeated Shipworks test FIGHT:
   a finished test battle's destroyed enemy fleet left a null-pointer node
   in the enemy fleet list, and the combat level loader dereferenced it

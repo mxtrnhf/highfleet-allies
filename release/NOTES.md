@@ -1,18 +1,25 @@
 # HighFleet Allies v@PACK_VERSION@
 
-## Fixed
+## High-TWR AI ships
 
-- **Fixed a bug that crashed the game on a repeated Shipworks test FIGHT.** Cause: when a test battle ends, the game destroys the custom enemy fleet but leaves its node in the enemy fleet list with a null fleet pointer; the combat level loader walks that list on the next FIGHT and dereferences the null pointer without a check (access violation `0xc0000005` reading `0x100` at `0x1402c3a04`). The mod now clears the enemy list before each custom FIGHT, drops null-pointer nodes, and guards the loader's list walk against them.
+- **`twr_limit` and `twr_deceleration` tame ships with high Shipworks TWR,
+  like Lightning, and put a bit of brakes on them.** In theory this should
+  reduce the collisions they started to experience thanks to their new
+  exceptional piloting skills.
+- Defaults: `twr_cutoff: 2`, `twr_limit: 5`, `twr_deceleration: 0.75`.
+  AI ships strictly above TWR 5 use 75% final engine strength, boosts included.
+  Player control is unaffected.
+- **To disable:** set `twr_limit` or `twr_deceleration` to `0`.
+- This is a temporary mitigation, not collision avoidance or a direct speed
+  cap; braking thrust is also reduced. In-game collision validation is pending.
+- No AI tick skipping is included. Remove the obsolete `ally_tick_skip`
+  (or `ai_tick_skip`) key from old experimental configs; it has no effect.
 
-## Shipworks test allies and enemies
+## Components
 
-- **Added ability to construct custom enemy formation for shipworks battle.** **ADD ENEMY**, right of ADD in the top row, captures the currently edited ship into an enemy list (red text). With a non-empty enemy list, the existing **FIGHT** button overrides the default enemy generation and fields exactly those ships as enemies—up to **eight**.
-- **ADD**, beside TEST in the top row, captures the currently edited ship—including unsaved changes—into the ally list. **FIGHT** brings the listed ships into test combat as friendly AI allies. Add up to **eight allies**.
-- **CLEAR**, beside ADD, empties both lists without leaving Shipworks or changing the edited ship. Loading or switching designs, RESET, RETRY, and returning from test combat preserve the lists. Leaving Shipworks clears them.
-- A custom FIGHT's enemy fleet is pruned again afterwards, so cleared enemies never leak into later battles.
-- Buttons match the native Shipworks font/style; ship names use the mod's PLAYER-marker font.
-
-ADD ENEMY/FIGHT/CLEAR confirmed working in game by the maintainer.
+- hf_ai **v@AI_VERSION@**, hf_ally **v@ALLY_VERSION@** and bundled QoL.
+- Includes the earlier Shipworks custom enemy formation and repeated-FIGHT
+  crash fix. No ally gameplay changes in this pack.
 
 ## Install
 
