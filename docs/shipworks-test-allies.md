@@ -1,4 +1,11 @@
-# Shipworks test allies and enemies (hf_ally v1.2.8)
+# Shipworks test allies and enemies (hf_ally v1.2.9)
+
+**v1.2.9:** v1.2.8's prune only scanned the profile escadra vector and never matched in
+game, so cleared enemies still leaked into later battles. The prune now scans both the
+profile vector (`profile+0x1f8..0x200`, 8-byte cells) and the enemy-side fleet list
+(`0x143a159c0`, 0x18-byte link nodes, escadra at node+0x8), and logs where the stale test
+escadra was found. `enemy state` log lines at FIGHT entry/build/append, CLEAR and
+Shipworks exit dump the stored escadra plus both containers with per-escadra ship counts.
 
 **v1.2.8:** a custom FIGHT's enemy Escadra is registered in the profile's escadra
 vector (`profile+0x1f8..0x200`), and the Combat level loader re-links every profile
@@ -110,7 +117,7 @@ Release Windows Clippy with `megalog` completes with the existing 22 warnings
 (none in the new feature files). Changed Rust files pass targeted rustfmt checks;
 full `cargo fmt --check` still reports pre-existing differences in other files.
 The no-default-features local build is
-`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.2.8.dll`.
+`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.2.9.dll`.
 
 Manual pass on Steam 1.163:
 
