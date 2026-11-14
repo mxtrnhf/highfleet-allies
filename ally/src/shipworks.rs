@@ -7,7 +7,7 @@ mod design;
 use std::{
     ffi::{CStr, CString},
     fmt::Write as _,
-    mem::offset_of,
+    mem::{offset_of, size_of},
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
         Mutex,
@@ -19,7 +19,7 @@ use patchy::{Condition, PatchSession, ReturnType, Trampoline};
 use crate::{
     diag,
     native::{read, OFF_ACTIVE},
-    native_layout::{Body, Gui},
+    native_layout::{Body, Gui, Link},
     precombat, sound,
     time::now_ms,
 };
@@ -123,6 +123,16 @@ const ESCADRA_VECTOR_LIMIT: usize = 0x8000;
 /// the escadra pointer sits at node+0x8. The pre-combat screen builds PRECOMBAT_B cards from it.
 const ENEMY_LIST: usize = 0x1_43a1_59c0;
 const LINK_NODE_STRIDE: usize = 0x18;
+const _: () = assert!(LINK_NODE_STRIDE == size_of::<Link>());
+const LINK_TARGET: usize = offset_of!(Link, target);
+const LINK_COPY: usize = 0x1_4019_4b80;
+const LINK_COPY_BYTES: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20];
+/// Verified by design::verify; unregisters a Link at its actual storage address.
+const LINK_UNLINK: usize = 0x1_4019_4d20;
+/// Combat loader, immediately before it copies the enemy list into pre-combat.
+/// The earlier enemy-loop guard does not protect that copy's subsequent consumers.
+const PRECOMBAT_ENEMIES_SEAM: usize = 0x1_402c_3a98;
+const PRECOMBAT_ENEMIES_BYTES: [u8; 7] = [0x48, 0x8d, 0x15, 0x21, 0x1f, 0x75, 0x03];
 /// Link_ClearVector: unlinks every node of a link vector (null-safe) and resets end=begin.
 const LINK_CLEAR_VECTOR: usize = 0x1_400c_2400;
 const LINK_CLEAR_VECTOR_BYTES: [u8; 16] = [
@@ -223,6 +233,8 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
         (COPY_STRING, &COPY_STRING_BYTES[..]),
         (LINK_CLEAR_VECTOR, &LINK_CLEAR_VECTOR_BYTES[..]),
         (ENEMY_LOOP_SEAM, &ENEMY_LOOP_BYTES[..]),
+        (PRECOMBAT_ENEMIES_SEAM, &PRECOMBAT_ENEMIES_BYTES[..]),
+        (LINK_COPY, &LINK_COPY_BYTES[..]),
     ] {
         if std::slice::from_raw_parts(address as *const u8, expected.len()) != expected {
             return Err(format!(
@@ -292,6 +304,25 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
     enemy_loop.absolute_jump(ENEMY_LOOP_EXIT);
     session
         .detour_trampoline(ENEMY_LOOP_SEAM, ENEMY_LOOP_BYTES.len(), enemy_loop)
+        .map_err(|e| e.to_string())?;
+
+    let mut precombat_enemies = Trampoline::new();
+    precombat_enemies.preserved_call(
+        on_precombat_enemies as *const (),
+        &[],
+        &[],
+        ReturnType::None,
+    );
+    // Replay the RIP-relative LEA as MOV RDX, imm64 at the relocated address.
+    precombat_enemies.bytes(&[0x48, 0xba]);
+    precombat_enemies.bytes(&ENEMY_LIST.to_le_bytes());
+    precombat_enemies.absolute_jump(PRECOMBAT_ENEMIES_SEAM + PRECOMBAT_ENEMIES_BYTES.len());
+    session
+        .detour_trampoline(
+            PRECOMBAT_ENEMIES_SEAM,
+            PRECOMBAT_ENEMIES_BYTES.len(),
+            precombat_enemies,
+        )
         .map_err(|e| e.to_string())?;
 
     let mut level = Trampoline::new();
@@ -781,6 +812,75 @@ unsafe extern "C" fn on_fleet(fleet: usize) {
 
 type CreateEscadra = unsafe extern "C" fn(usize, f32, u32, usize, usize, u32) -> usize;
 
+/// Remove dead fleet links before native pre-combat copies them into its own vectors.
+/// This is needed even when neither custom Shipworks roster has ever been used.
+unsafe extern "C" fn on_precombat_enemies() {
+    let _hook = diag::scope("Shipworks precombat enemy cleanup");
+    if read::<u8>(TEST_FIGHT_FLAG) == 0 {
+        return;
+    }
+    retain_enemy_fleets(0);
+}
+
+/// Keep live enemy fleets except `excluded`, preserving order and native Link registrations.
+///
+/// # Safety
+/// Game-thread fleet lifecycle callbacks only; ENEMY_LIST is the native-owned Link vector.
+/// Node destruction invalidates its Links. A non-null target here remains game-owned and
+/// live for this synchronous operation; page checks only validate container bounds.
+unsafe fn retain_enemy_fleets(excluded: usize) {
+    let Some(begin) = diag::rd::<usize>(ENEMY_LIST) else {
+        return;
+    };
+    let Some(end) = diag::rd::<usize>(ENEMY_LIST + 8) else {
+        return;
+    };
+    if begin == 0 || end < begin {
+        return;
+    }
+    let bytes = end - begin;
+    if !bytes.is_multiple_of(LINK_NODE_STRIDE) || bytes / LINK_NODE_STRIDE > LIST_ENTRY_LIMIT {
+        return;
+    }
+    if !diag::readable_span(begin, bytes) {
+        return;
+    }
+    let unlink: unsafe extern "C" fn(usize) = std::mem::transmute(LINK_UNLINK);
+    let copy: unsafe extern "C" fn(usize, usize) -> usize = std::mem::transmute(LINK_COPY);
+    let mut kept = begin;
+    let mut source = begin;
+    while source < end {
+        let fleet = read::<usize>(source + LINK_TARGET);
+        if fleet != 0 && fleet != excluded {
+            if kept != source {
+                // SAFETY: distinct, initialized native Link slots in the validated vector.
+                // Unregister the old destination before constructing the copy there. The
+                // source remains registered until overwritten or destroyed in the tail.
+                unlink(kept);
+                copy(kept, source);
+            }
+            kept += LINK_NODE_STRIDE;
+        }
+        source += LINK_NODE_STRIDE;
+    }
+    if kept == end {
+        return;
+    }
+    let mut tail = kept;
+    while tail < end {
+        // SAFETY: every tail slot is still initialized; release its native registration
+        // before shortening the vector. No owning Rust Link copies or byte moves.
+        unlink(tail);
+        tail += LINK_NODE_STRIDE;
+    }
+    write::<usize>(ENEMY_LIST + 8, kept);
+    log::info!(
+        "hf_ally: removed {} dead/excluded enemy fleet links; {} live fleets remain",
+        (end - kept) / LINK_NODE_STRIDE,
+        (kept - begin) / LINK_NODE_STRIDE,
+    );
+}
+
 /// One-line bounded dump of where enemy escadras currently live: the stored test escadra, the
 /// profile's escadra vector (8-byte cells) and the enemy-side fleet list (0x18-byte nodes).
 /// Pointer values are only compared, never dereferenced beyond page-checked scalar reads.
@@ -883,63 +983,12 @@ unsafe fn prune_enemy_escadra() {
                 }
                 write::<usize>(profile + PROFILE_ESCADRAS + 8, pend - 8);
                 log::info!("hf_ally: pruned previous test enemy escadra {escadra:#x} from the profile escadra vector");
-                return;
+                break;
             }
             cell += 8;
         }
     }
-    let (lbegin, lend) = (
-        diag::rd::<usize>(ENEMY_LIST).unwrap_or(0),
-        diag::rd::<usize>(ENEMY_LIST + 8).unwrap_or(0),
-    );
-    let lbytes = lend.wrapping_sub(lbegin);
-    if lbegin != 0
-        && lend >= lbegin
-        && lbytes.is_multiple_of(LINK_NODE_STRIDE)
-        && lbytes / LINK_NODE_STRIDE <= LIST_ENTRY_LIMIT
-        && diag::readable_span(lbegin, lbytes)
-    {
-        // Compact the list, dropping the stored test escadra and any null-escadra nodes left
-        // behind by a destroyed fleet (the level loader dereferences node+8 without a check).
-        let mut kept = lbegin;
-        let mut node = lbegin;
-        let mut dropped_stored = false;
-        let mut dropped_null = 0usize;
-        while node < lend {
-            let fleet = read::<usize>(node + 8);
-            if fleet == escadra {
-                dropped_stored = true;
-            } else if fleet == 0 {
-                dropped_null += 1;
-            } else {
-                if kept != node {
-                    for offset in 0..LINK_NODE_STRIDE {
-                        write::<u8>(kept + offset, read::<u8>(node + offset));
-                    }
-                }
-                kept += LINK_NODE_STRIDE;
-            }
-            node += LINK_NODE_STRIDE;
-        }
-        if kept != lend {
-            write::<usize>(ENEMY_LIST + 8, kept);
-        }
-        if dropped_stored {
-            log::info!(
-                "hf_ally: pruned previous test enemy escadra {escadra:#x} from the enemy fleet list"
-            );
-            return;
-        }
-        if dropped_null > 0 {
-            log::info!(
-                "hf_ally: dropped {dropped_null} null-escadra nodes from the enemy fleet list"
-            );
-            return;
-        }
-    }
-    log::info!(
-        "hf_ally: previous test enemy escadra {escadra:#x} not found in profile vector or enemy list"
-    );
+    retain_enemy_fleets(escadra);
 }
 
 /// Replaces the FIGHT call that builds the enemy Escadra from generated ship names.

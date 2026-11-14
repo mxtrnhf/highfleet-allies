@@ -1,4 +1,13 @@
-# Shipworks test allies and enemies (hf_ally v1.3.1)
+# Shipworks test allies and enemies (hf_ally v1.3.2)
+
+**v1.3.2:** a second **new** FIGHT could crash even without ever using ADD,
+ADD ENEMY or CLEAR. v1.3.1 skipped a null enemy-fleet Link in the initial Combat
+loader loop, but that Link was subsequently copied into pre-combat and dereferenced
+at `0x1402d9806`. The mod now removes dead enemy Links immediately before the
+loader's pre-combat copy, for every Shipworks test fight, preserving live fleets
+and their order. Compaction uses native Link unregister/copy operations so moved
+Links remain registered at their actual addresses; no raw owning-Link moves.
+Campaign fights are unchanged.
 
 **v1.2.9:** v1.2.8's prune only scanned the profile escadra vector and never matched in
 game, so cleared enemies still leaked into later battles. The prune now scans both the
@@ -96,6 +105,9 @@ Read-only verification against the live Ghidra program
 | `0x1401c7060` | `Fleet_CreateEscadraFromShips` entry (byte-checked): allocates the 0x618 Escadra, copies the name, adds one resolved ship per 0x20 name element, then runs the role/profile/proximity tail. |
 | `0x14025afd0` | SetLevelSeriaToLoad(path, flags). Entry hook preserves arguments, replays two complete home-space stores, and pads entry RSP by eight before the preserved callback. `Combat.seria`, test `City_generated.seria`, and return `Editor.seria` belong to the same session; another level ends it. |
 | `0x140292a90` | `Get_Profile_()` (byte-checked). Its escadra vector (`profile+0x1f8` begin, `+0x200` end) is read by the Combat level loader (`0x1402c3e49..0x1402c3f61`), which re-links each profile escadra into `0x143a158e0`/`0x143a159c0`. The mod erases its previous test enemy Escadra pointer from this vector before each FIGHT / on CLEAR / on session end. |
+| `0x1402c3a98` | Byte-checked `LEA RDX,[0x143a159c0]`, before `VectorLink_CopyConstruct` at `0x1402c3aa6` and `buildSquadPrecombatScreen` at `0x1402c3ab1`. New cleanup seam removes null enemy Links before the copy. Replays the RIP-relative LEA as `MOV RDX,imm64`; preserves other volatile registers and does not depend on incoming flags. Verified read-only in live Ghidra, 2026-11-14. |
+| `0x1402d9802..0x1402d9806` | `Precombat_SplitFleetIntoReserveLists` reads `[R13+8]` then `[RAX+0x100]` without a null check. The 2026-11-14 23:37:56 log crashes here on the second FIGHT; RAX is zero and the copied vector spans two Link slots. The earlier `0x1402c3a00` guard alone cannot protect this consumer. |
+| `0x140194b80` / `0x140194d20` | Native Link copy construction registers the destination address with its Node; destruction unregisters that address. Retention unregisters each overwritten destination, copy-constructs live Links in order, destroys the discarded tail, then shortens end. Source Links remain initialized until overwritten or destroyed. Both call entries are byte-checked. |
 | `0x1401351b7..0x1401353d3` | LANDING test sets the editor-test flag `0x147fc6fb6` and requests **City_generated.seria**, not a hypothetical Landing.seria. |
 
 New native function entries and both hook sites are byte-checked at install.
@@ -108,6 +120,13 @@ and GUI geometry `+0x218/+0x21c` remain locally documented RE contracts.
 
 ## Validation
 
+v1.3.2 (2026-11-14): locked release Windows cross-build passed; default and
+legacy-`megalog` Windows release Clippy passed with the same 22 existing warnings,
+none in `shipworks.rs`. Targeted rustfmt and `git diff --check` passed. Full
+`cargo fmt --check` still reports pre-existing differences in other modules.
+No regression tests were added; **the second-new-sortie fix requires in-game
+retesting**. HEE and live configurations were not changed.
+
 Windows cross-build succeeds. The maintainer confirmed v1.2.1 working in game.
 **The new CLEAR button needs in-game verification**; compilation alone does not
 validate its placement or behavior. **The v1.2.5 ADD ENEMY button and enemy-fleet
@@ -117,7 +136,7 @@ Release Windows Clippy with `megalog` completes with the existing 22 warnings
 (none in the new feature files). Changed Rust files pass targeted rustfmt checks;
 full `cargo fmt --check` still reports pre-existing differences in other files.
 The no-default-features local build is
-`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.3.1.dll`.
+`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.3.2.dll`.
 
 Manual pass on Steam 1.163:
 
@@ -140,4 +159,10 @@ Manual pass on Steam 1.163:
     combat's enemy side must be exactly the listed ships — no default SMALL/MID/LARGE/
     CARRIER generation — and the player ship plus any ADD allies stay friendly.
 11. ADD ENEMY, then CLEAR; check both lists and all snapshots are gone. Leave
-    Shipworks with an enemy list pending; re-enter and check the list is empty. Also CLEAR an empty/full/error roster.
+     Shipworks with an enemy list pending; re-enter and check the list is empty. Also CLEAR an empty/full/error roster.
+12. Without touching ADD, ADD ENEMY or CLEAR, finish a test battle, decline RETRY,
+    return to Shipworks and start a **new** TEST/FIGHT. Repeat at least three times;
+    each fight must show fresh enemy cards and start normally. Repeat with HEE
+    shipworks edits enabled, then with custom ally/enemy rosters and after CLEAR.
+    Check `removed ... dead/excluded enemy fleet links` diagnostics when dead Links
+    are present. v1.3.2 has not yet been validated in game.
