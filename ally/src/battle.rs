@@ -37,6 +37,7 @@ use crate::native::{
 use crate::native_layout::Creature;
 use crate::plane_loadouts;
 use crate::precombat;
+use crate::second_player;
 use crate::ship_switch;
 use crate::sound;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
@@ -570,8 +571,10 @@ unsafe fn fuel_retreat(allies: &[usize]) {
 unsafe fn retreat_logic(ships: &[usize]) {
     // an ally the manager promoted to the player's ship (mode 1, AI flag off) is the flagship now, not an ally
     if let Ok(mut v) = ALLIES.lock() {
+        let coop_p2 = second_player::raw();
         v.retain(|p| {
-            let promoted = ships.contains(p)
+            let promoted = *p != coop_p2
+                && ships.contains(p)
                 && read::<i32>(*p + OFF_MODE_D70) == 1
                 && read::<u8>(*p + OFF_AI_FLAG) == 0;
             if promoted {
@@ -954,6 +957,7 @@ unsafe extern "C" fn on_battle_tick() {
         let Ok(mut allies) = ALLIES.lock() else {
             return;
         };
+        let coop_p2 = second_player::raw();
         allies.retain(|p| {
             let dead =
                 matches!(read::<i32>(*p + OFF_STATE), 6 | 7) || read::<i32>(*p + OFF_ACTIVE) == 0;
@@ -967,7 +971,7 @@ unsafe extern "C" fn on_battle_tick() {
                 diag::flush_log();
                 return false;
             }
-            ships.contains(p)
+            ships.contains(p) || (*p == coop_p2 && coop_p2 != 0)
         });
         allies.len() as u32
     };

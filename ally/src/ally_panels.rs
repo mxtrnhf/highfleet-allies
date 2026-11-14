@@ -174,13 +174,21 @@ unsafe fn living_allies() -> [usize; MAX_PANELS] {
     let roster = crate::native::roster();
     let Some(allies) = crate::battle::allies() else { return slots };
     let mut used = 0;
+    // A second human player's ship (profile slot 1), when there is one, takes the first small
+    // panel; the allies follow. Without a second player `ship()` is None and nothing changes.
+    if let Some(second) = crate::second_player::ship() {
+        slots[0] = second;
+        used = 1;
+    }
     for &ally in allies.iter() {
         if used == MAX_PANELS {
             break;
         }
         // side > 0 keeps this to the player's own ships; mode 1 is the ship the player flies.
         // State 2 is the AI strike/retreat state; its ship is leaving and must not keep a panel.
-        if !roster.contains(&ally)
+        // `slots.contains` keeps the second player's ship from taking a second panel.
+        if slots.contains(&ally)
+            || !roster.contains(&ally)
             || !crate::native::live_ship(ally)
             || rd::<f32>(ally + crate::native::OFF_SIDE) <= 0.0
             || rd::<i32>(ally + crate::native::OFF_MODE_D70) == 1
@@ -639,7 +647,9 @@ unsafe extern "C" fn composite_allies() {
         set_z(sprite, layer_z(3), -1);
         (sprite as *mut u32).byte_add(SPRITE_BLEND).write_unaligned(BLEND_PANEL);
         render(sprite, ALLY_X, y, 0.0, ALLY_SCALE, ALLY_SCALE);
-        displayed[slot] = ally;
+        if !crate::second_player::is_player_flown(ally) {
+            displayed[slot] = ally;
+        }
     }
 }
 

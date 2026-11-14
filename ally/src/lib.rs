@@ -36,6 +36,9 @@ mod native;
 mod native_layout;
 mod plane_loadouts;
 mod precombat;
+// Shows the ship a second human player flies (profile slot 1) in the first small panel.
+// Self-contained: it only reads the game's player table; it knows nothing about the mod that fills it.
+mod second_player;
 mod ship_switch;
 mod shipworks;
 mod sound;
