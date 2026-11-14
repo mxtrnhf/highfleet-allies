@@ -3,28 +3,25 @@ hf_ally @ALLY_VERSION@ + hf_ai @AI_VERSION@ + bundled QoL — Steam 1.163 only
 Source: https://github.com/mxtrnhf/highfleet-allies
 
 WHAT CHANGED
-- twr_limit and twr_deceleration tame ships with high Shipworks TWR, like
-  Lightning, and put a bit of brakes on them. In theory this should reduce
-  the collisions caused by their new exceptional piloting skills.
-- Defaults: twr_cutoff: 2, twr_limit: 5, twr_deceleration: 0.75.
-  Above TWR 5, only hf_ai aim/dive boosts, panic boosts and boosted barrel
-  rolls are multiplied by 0.75: boost 2 becomes 1.5. Normal engine strength,
-  vanilla avoidance, boost settings of 1 and player control are unaffected.
-  To disable, set twr_limit or
-  twr_deceleration to 0.
-- Replaces withdrawn v1.3.2, which incorrectly reduced all engine strength.
-- Temporary mitigation, not a direct speed cap; stock braking is unchanged.
-  In-game collision validation is pending.
-- No AI tick skipping. Remove obsolete ally_tick_skip / ai_tick_skip keys
-  from experimental configs; they have no effect.
+- Fixed second-new-battle crashes in Shipworks, even without touching ADD,
+  ADD ENEMY or CLEAR. Destroyed enemy fleets left null Links; the loader and
+  pre-combat roster builder dereferenced null + 0x100. Dead Links are guarded
+  and removed before use.
+- Fixed enemy escadras accumulating every previous test battle's opponents.
+  Our enemy-append hook incorrectly relocated a RIP-relative LEA, making the
+  native clear use the wrong address. An absolute MOV restores correct clearing.
+- Link compaction now unregisters/copy-constructs native Links instead of moving
+  their bytes. These fixes belong to hf_ally, not HEE.
+- Repeated fresh FIGHTs, custom rosters and CLEAR confirmed in game, 2026-11-15.
+- See NOTES.md for the crash-site details and other retained protections.
+- AI behavior and configuration defaults are unchanged.
 
 RETAINED FROM PREVIOUS PACKS
-- Fixed a bug that crashed the game on a repeated Shipworks test FIGHT:
-  a finished test battle's destroyed enemy fleet left a null-pointer node
-  in the enemy fleet list, and the combat level loader dereferenced it
-  unchecked on the next FIGHT (access violation at 0x1402c3a04). The enemy
-  list is now cleared before each custom FIGHT and null nodes are dropped
-  and guarded.
+- Bundled QoL: missing missile/flare target fix, defensive null-fleet/vector
+  guards, and the separate aircraft target-choice out-of-bounds fix.
+  The fleet guards do not establish that every merge crash is fixed.
+- Optional hf_ai high-TWR boost limiter: twr_limit 5, twr_deceleration 0.75.
+  Set either to 0 to disable. Normal thrust and player control are unaffected.
 - Added ability to construct custom enemy formation for shipworks battle:
   ADD ENEMY, right of ADD, captures the edited ship into an enemy list (red
   text); with a non-empty list, FIGHT overrides the default enemy generation

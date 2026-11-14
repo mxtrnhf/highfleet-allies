@@ -135,7 +135,12 @@ rustfmt and diff checks passed. Default/megalog Windows release Clippy passed
 with the same 22 existing warnings. Audited the other Shipworks replays: fleet
 and level instructions have no RIP-relative operands; the pre-combat cleanup
 already uses an absolute address, and the enemy-loop MOVs are register-relative.
-No new tests or dependency changes. **Accumulation fix still needs in-game retest.**
+No new tests or dependency changes. **Confirmed working in game by the maintainer.**
+The 2026-11-15 00:09:55 debug session records eight FIGHT starts, including repeated
+ordinary fights, two custom-roster fights and CLEAR. The prior enemy list remains
+at one entry before replacement instead of accumulating; after CLEAR it is empty.
+The original second-sortie access violation does not recur. A separate exception
+after TITLE_EXIT is outside this gameplay validation.
 
 v1.3.2 (2026-11-14): locked release Windows cross-build passed; default and
 legacy-`megalog` Windows release Clippy passed with the same 22 existing warnings,
@@ -182,4 +187,4 @@ Manual pass on Steam 1.163:
     each fight must show fresh enemy cards and start normally. Repeat with HEE
     shipworks edits enabled, then with custom ally/enemy rosters and after CLEAR.
     Check `removed ... dead/excluded enemy fleet links` diagnostics when dead Links
-    are present. v1.3.3's accumulation fix has not yet been validated in game.
+    are present. v1.3.3's accumulation fix was confirmed in game on 2026-11-15.

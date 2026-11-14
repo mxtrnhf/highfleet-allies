@@ -64,7 +64,7 @@ jobs:
       - name: Package only the GitHub-built DLLs with tracked player presets
         env:
           PACK_VERSION: ${{ inputs.version }}
-        run: python3 tools/package_release.py --version "$PACK_VERSION" --validation "Shipworks ADD/ADD ENEMY/FIGHT/CLEAR previously confirmed working in game by the maintainer. High-TWR hf_ai boost-only limiter cross-built; in-game collision validation pending." --output release-artifacts
+        run: python3 tools/package_release.py --version "$PACK_VERSION" --validation "Steam 1.163, 2026-11-15, hf_ally v1.3.3 confirmed in game by maintainer. Debug logs verify repeated fresh Shipworks FIGHTs without enemy-fleet accumulation or the second-sortie null crash, including custom rosters and CLEAR. AI high-TWR collision mitigation remains separately unvalidated." --output release-artifacts
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
