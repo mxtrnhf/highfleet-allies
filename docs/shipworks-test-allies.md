@@ -1,4 +1,14 @@
-# Shipworks test allies and enemies (hf_ally v1.3.2)
+# Shipworks test allies and enemies (hf_ally v1.3.3)
+
+**v1.3.3 — underlying accumulation bug:** the enemy-append hook copied the
+RIP-relative `LEA RCX,[0x143a159c0]` bytes into its trampoline without relocation.
+The following native clear therefore received the wrong vector address, leaving
+old enemy fleets in the actual list. This also affected fights with untouched
+custom rosters. Replay now uses `MOV RCX,imm64` with the original global address.
+In `Highfleet_2026-11-14_23-55-13.log`, the retained enemy list grows from one to
+six fleets, while custom enemies added remain zero. v1.3.2's null cleanup
+prevented the reported crash but did not prevent live fleet accumulation.
+HEE's ship-name pool generation is unchanged.
 
 **v1.3.2:** a second **new** FIGHT could crash even without ever using ADD,
 ADD ENEMY or CLEAR. v1.3.1 skipped a null enemy-fleet Link in the initial Combat
@@ -101,7 +111,7 @@ Read-only verification against the live Ghidra program
 | `0x14013dcc2` | Hook immediately after that attachment, before fleet traversal. RDI is the friendly Escadra. Replay the complete seven-byte `MOV RSI,[RDI+0x100]`; no flags are consumed before the following native CMP. |
 | `0x14013df2e` | `Fleet_BuildShopOffer` fills the local enemy ship-name vector from the SMALL/MID/LARGE/CARRIER checkboxes; `0x14013df3c` pushes the player design name when that vector is empty. |
 | `0x14013df7e` | `CALL Fleet_CreateEscadraFromShips` builds the enemy Escadra (role in R8D, side/price float in XMM1 = `-1.0` at `0x1403524ec`, position in R9, name and morale on the stack). Replaced by a hook that forwards the original arguments; with a custom enemy roster it swaps the names vector for one unresolvable inline name, so `renderShipPhoto__` (`0x1401c2e80`, returns 0 on a library miss) adds no default ship and the Escadra's native tail still runs. |
-| `0x14013df8e` | After the enemy Escadra's init call (`0x1400f9460`), RBX is the enemy Escadra. Hook appends each custom enemy snapshot via the Escadra virtual `+0x50` with ship side `-1.0`, then replays the seven-byte `LEA RCX,[0x143a159c0]` that starts linking the fleet lists. |
+| `0x14013df8e` | After the enemy Escadra's init call (`0x1400f9460`), RBX is the enemy Escadra. Hook appends each custom enemy snapshot via the Escadra virtual `+0x50` with ship side `-1.0`, then replays the seven-byte RIP-relative `LEA RCX,[0x143a159c0]` as `MOV RCX,imm64`. The next instruction (`0x14013df95`) calls `Link_ClearVector`; copying the original LEA bytes verbatim changes its target after relocation and fails to clear the real enemy list. |
 | `0x1401c7060` | `Fleet_CreateEscadraFromShips` entry (byte-checked): allocates the 0x618 Escadra, copies the name, adds one resolved ship per 0x20 name element, then runs the role/profile/proximity tail. |
 | `0x14025afd0` | SetLevelSeriaToLoad(path, flags). Entry hook preserves arguments, replays two complete home-space stores, and pads entry RSP by eight before the preserved callback. `Combat.seria`, test `City_generated.seria`, and return `Editor.seria` belong to the same session; another level ends it. |
 | `0x140292a90` | `Get_Profile_()` (byte-checked). Its escadra vector (`profile+0x1f8` begin, `+0x200` end) is read by the Combat level loader (`0x1402c3e49..0x1402c3f61`), which re-links each profile escadra into `0x143a158e0`/`0x143a159c0`. The mod erases its previous test enemy Escadra pointer from this vector before each FIGHT / on CLEAR / on session end. |
@@ -120,6 +130,13 @@ and GUI geometry `+0x218/+0x21c` remain locally documented RE contracts.
 
 ## Validation
 
+v1.3.3 (2026-11-15): locked no-default-features Windows release build, targeted
+rustfmt and diff checks passed. Default/megalog Windows release Clippy passed
+with the same 22 existing warnings. Audited the other Shipworks replays: fleet
+and level instructions have no RIP-relative operands; the pre-combat cleanup
+already uses an absolute address, and the enemy-loop MOVs are register-relative.
+No new tests or dependency changes. **Accumulation fix still needs in-game retest.**
+
 v1.3.2 (2026-11-14): locked release Windows cross-build passed; default and
 legacy-`megalog` Windows release Clippy passed with the same 22 existing warnings,
 none in `shipworks.rs`. Targeted rustfmt and `git diff --check` passed. Full
@@ -136,7 +153,7 @@ Release Windows Clippy with `megalog` completes with the existing 22 warnings
 (none in the new feature files). Changed Rust files pass targeted rustfmt checks;
 full `cargo fmt --check` still reports pre-existing differences in other files.
 The no-default-features local build is
-`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.3.2.dll`.
+`ally/target/x86_64-pc-windows-msvc/release/hf_ally_v1.3.3.dll`.
 
 Manual pass on Steam 1.163:
 
@@ -165,4 +182,4 @@ Manual pass on Steam 1.163:
     each fight must show fresh enemy cards and start normally. Repeat with HEE
     shipworks edits enabled, then with custom ally/enemy rosters and after CLEAR.
     Check `removed ... dead/excluded enemy fleet links` diagnostics when dead Links
-    are present. v1.3.2 has not yet been validated in game.
+    are present. v1.3.3's accumulation fix has not yet been validated in game.

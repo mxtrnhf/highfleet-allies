@@ -279,7 +279,10 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
         &[],
         ReturnType::None,
     );
-    enemy_append.bytes(&ENEMY_APPEND_BYTES);
+    // LEA RCX,[RIP+disp32] cannot be copied verbatim into a relocated trampoline:
+    // it must still address ENEMY_LIST for the following native Link_ClearVector call.
+    enemy_append.bytes(&[0x48, 0xb9]); // MOV RCX, imm64
+    enemy_append.bytes(&ENEMY_LIST.to_le_bytes());
     enemy_append.absolute_jump(ENEMY_APPEND_SEAM + ENEMY_APPEND_BYTES.len());
     session
         .detour_trampoline(ENEMY_APPEND_SEAM, ENEMY_APPEND_BYTES.len(), enemy_append)
