@@ -36,8 +36,12 @@ const GRAVITY_U: f32 = 9.82;
 const GTFO_WEIGHT: f32 = 10.0;
 /// Gentle cruise boost scale (`1 + (2 - 1) * 0.25 = 1.25x`) while retreating so engines do not burn out.
 const RETREAT_CRUISE_BOOST_SCALE: f32 = 0.25;
-/// Penalty (game units) added to a candidate exit border when an obstacle blocks that direction.
-const RETREAT_BLOCK_PENALTY: f32 = 400.0;
+/// Penalty (game units) added to a candidate exit border when a hostile ship blocks that exit corridor.
+const RETREAT_BLOCK_PENALTY: f32 = 1000.0;
+/// Gravity-climb bias (game units) added to the top border (`ymin`), favoring horizontal side exits when comparable.
+const RETREAT_CLIMB_BIAS: f32 = 250.0;
+/// Hysteresis bonus (game units) for the previously chosen retreat border so allies commit instead of oscillating.
+const RETREAT_COMMIT_BONUS: f32 = 300.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -233,6 +237,8 @@ pub struct ShipState {
     /// Window number for which `aim_chance` was already rolled, and whether the roll succeeded.
     pub aim_rolled_window: u32,
     pub aim_dodging: bool,
+    /// Committed GTFO border direction while retreating, for hysteresis.
+    pub retreat_dir: Option<(f32, f32)>,
 }
 
 impl ShipState {
@@ -250,6 +256,7 @@ impl ShipState {
             aim_clock: AimClock::default(),
             aim_rolled_window: 0,
             aim_dodging: false,
+            retreat_dir: None,
         }
     }
 }
@@ -388,26 +395,43 @@ fn apply_keep_out(dir: &mut (f32, f32), ship: (f32, f32), obs: &Obstacle) {
     }
 }
 
-/// Picks the nearest valid arena border (`xmin`, `xmax`, or `ymin`) for a retreating ally,
-/// penalizing borders that have a nearby ship blocking the exit path.
-pub fn retreat_border_dir(ship: (f32, f32), bounds: &Bounds, obstacles: &[Obstacle]) -> (f32, f32) {
+/// Picks the nearest clear arena border (`xmin`, `xmax`, or `ymin`) for a retreating ally,
+/// penalizing borders with hostile ships in the exit corridor and biasing slightly against
+/// climbing straight up against gravity when a side border is comparable.
+pub fn retreat_border_dir(
+    ship: (f32, f32),
+    bounds: &Bounds,
+    hostiles: &[((f32, f32), f32)],
+    prev_dir: Option<(f32, f32)>,
+) -> (f32, f32) {
     let candidates = [
         ((ship.0 - bounds.xmin).max(0.0), (-1.0_f32, 0.0_f32)),
         ((bounds.xmax - ship.0).max(0.0), (1.0_f32, 0.0_f32)),
-        ((ship.1 - bounds.ymin).max(0.0), (0.0_f32, -1.0_f32)),
+        ((ship.1 - bounds.ymin).max(0.0) + RETREAT_CLIMB_BIAS, (0.0_f32, -1.0_f32)),
     ];
     let mut best = candidates[0].1;
     let mut best_score = f32::INFINITY;
     for (dist, dir) in candidates {
         let mut penalty = 0.0;
-        for obs in obstacles {
-            let to = (obs.pos.0 - ship.0, obs.pos.1 - ship.1);
+        for &(pos, radius) in hostiles {
+            let to = (pos.0 - ship.0, pos.1 - ship.1);
             let d = to.0.hypot(to.1);
-            if d > EPS && (to.0 * dir.0 + to.1 * dir.1) / d > 0.35 {
-                penalty += RETREAT_BLOCK_PENALTY;
+            if d <= EPS {
+                continue;
+            }
+            let proj = to.0 * dir.0 + to.1 * dir.1;
+            let perp = (to.0 * (-dir.1) + to.1 * dir.0).abs();
+            if proj > 0.0 && proj < dist + 200.0 && (perp < 450.0 + radius || proj / d > 0.5) {
+                let prox = (1.0 - proj / 2500.0).clamp(0.3, 1.0);
+                penalty += RETREAT_BLOCK_PENALTY * prox;
             }
         }
-        let score = dist + penalty;
+        let commit_bonus = if prev_dir.is_some_and(|p| p.0 * dir.0 + p.1 * dir.1 > 0.9) {
+            RETREAT_COMMIT_BONUS
+        } else {
+            0.0
+        };
+        let score = dist + penalty - commit_bonus;
         if score < best_score {
             best_score = score;
             best = dir;
@@ -707,6 +731,8 @@ pub struct StepInput<'a> {
     pub target_radius: f32,
     /// Allied ship ordered to retreat (`side > 0`, `order_role == 2`, `driver_state == 2`).
     pub retreating: bool,
+    /// Hostile ship positions and radii used to pick an unblocked retreat border.
+    pub retreat_hostiles: &'a [((f32, f32), f32)],
     /// Additional nearby ships (allied or hostile) to keep out of during any tactical sidestep.
     pub nearby_obstacles: &'a [Obstacle],
 }
@@ -771,10 +797,12 @@ pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepIn
     let obstacles = &obs_buf[..obs_count];
 
     if inp.retreating {
-        let dir = retreat_border_dir(inp.ship, bounds, obstacles);
+        let dir = retreat_border_dir(inp.ship, bounds, inp.retreat_hostiles, st.retreat_dir);
+        st.retreat_dir = Some(dir);
         let waypoint = compose_retreat(inp.ship, stock_vec, dir, GTFO_WEIGHT, p, obstacles);
         return Step { state: State::Retreat, waypoint, boost_scale: RETREAT_CRUISE_BOOST_SCALE };
     }
+    st.retreat_dir = None;
 
     let mut skipped = false;
     if let (true, Some(aim)) = (p.aim_enabled, inp.aim) {

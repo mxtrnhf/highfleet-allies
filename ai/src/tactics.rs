@@ -469,6 +469,19 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
         entry.st.ship_vel,
         ship_twr,
     );
+    let mut hostile_buf = [((0.0_f32, 0.0_f32), 0.0_f32); 8];
+    let mut hostile_len = 0usize;
+    if retreating {
+        for other in live_ships {
+            if other.creature != ctx.creature && other.side.signum() != ctx.side.signum() {
+                if hostile_len >= hostile_buf.len() {
+                    break;
+                }
+                hostile_buf[hostile_len] = (other.pos, other.radius);
+                hostile_len += 1;
+            }
+        }
+    }
     let step = tm::step(
         p,
         &mut entry.st,
@@ -484,6 +497,7 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
             target: dive_target.map(|(pos, _)| pos),
             target_radius,
             retreating,
+            retreat_hostiles: &hostile_buf[..hostile_len],
             nearby_obstacles: &nearby_buf[..nearby_len],
         },
         &mut entry.rng,

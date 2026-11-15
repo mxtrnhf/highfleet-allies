@@ -1,5 +1,15 @@
 # hf_ai changelog
 
+## v1.2.8 — enemy-aware & side-border-friendly ally retreat
+
+- Feed all hostile `live_ships` (not just `< 280u` keep-out obstacles) into
+  `retreat_border_dir()` with a `1000u` corridor block penalty, so allies
+  immediately steer around distant enemies toward a clear left/right/top edge.
+- Add `RETREAT_CLIMB_BIAS = 250u` to `ymin` so horizontal side borders (`xmin`,
+  `xmax`) are chosen instead of always climbing against gravity to `ymin`.
+- Add `retreat_dir` hysteresis (`300u` commit bonus) on `ShipState` so retreating
+  allies commit to their chosen border instead of oscillating.
+
 ## v1.2.7 — efficient GTFO ally retreat steering
 
 - Detect AI-controlled retreating allies (`side > 0`, `order_role == 2`,
