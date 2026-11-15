@@ -1025,21 +1025,25 @@ unsafe fn engine_commands(creature: usize, command: *mut f32) {
     }
     if boost > 1.0 {
         if let Some(dir) = flight {
-            if let Some(changed) = write_escape(command, dir, boost) {
-                limit_boost_strength(creature, command);
-                if trace_engine {
-                    trace(
-                        runtime,
-                        now,
-                        creature,
-                        "ESCAPE",
-                        format_args!(
-                            "boost={boost} dir={:.3},{:.3} strength0={:.2}->{:.2} strength1={:.2}->{:.2}",
-                            dir.0, dir.1, changed[0].0, changed[0].1, changed[1].0, changed[1].1
-                        ),
-                    );
+            let allow_angle_override = native_command_direction(command)
+                .is_some_and(|native_dir| native_dir.0 * dir.0 + native_dir.1 * dir.1 >= ESCAPE_OPPOSE_MIN);
+            if allow_angle_override {
+                if let Some(changed) = write_escape(command, dir, boost) {
+                    limit_boost_strength(creature, command);
+                    if trace_engine {
+                        trace(
+                            runtime,
+                            now,
+                            creature,
+                            "ESCAPE",
+                            format_args!(
+                                "boost={boost} dir={:.3},{:.3} strength0={:.2}->{:.2} strength1={:.2}->{:.2}",
+                                dir.0, dir.1, changed[0].0, changed[0].1, changed[1].0, changed[1].1
+                            ),
+                        );
+                    }
+                    return;
                 }
-                return;
             }
         }
         let mut changed = [(0.0f32, 0.0f32); 2];
@@ -1067,18 +1071,49 @@ unsafe fn engine_commands(creature: usize, command: *mut f32) {
     }
 }
 
-/// The tactics' aim/dive boost. A dodge publishes the direction it steers along: both engine banks are then
-/// pointed there and floored at the boost (a real run, not just a stronger command inside the stock velocity
-/// controller). Without a direction the command strengths are raised only.
+/// Minimum dot product between native thrust vector and tactical escape to allow full angle override (`cos(45 deg)`).
+const ESCAPE_ALIGN_MIN: f32 = 0.707_106_77;
+/// Below this dot product, native avoidance/gravity hold actively opposes tactical escape; yield completely.
+const ESCAPE_OPPOSE_MIN: f32 = 0.0;
+
+/// Net translational thrust direction already computed by `AiShipTick` on the stack (`0x66` + `0x67`),
+/// cancelling opposite attitude-hold torques so native obstacle avoidance and gravity hold remain visible.
+unsafe fn native_command_direction(command: *const f32) -> Option<(f32, f32)> {
+    let s1 = command.byte_add(COMMAND_STRENGTH).read_unaligned();
+    let s2 = command.byte_add(COMMAND_NEXT_STRENGTH).read_unaligned();
+    let a1 = command.byte_add(COMMAND_ANGLE).read_unaligned();
+    let a2 = command.byte_add(COMMAND_NEXT_ANGLE).read_unaligned();
+    if !(s1.is_finite() && s2.is_finite() && a1.is_finite() && a2.is_finite()) {
+        return None;
+    }
+    let w1 = s1.max(0.0);
+    let w2 = s2.max(0.0);
+    let (fx, fy) = if w1 + w2 > 1.0e-3 {
+        (w1 * a1.sin() + w2 * a2.sin(), -w1 * a1.cos() - w2 * a2.cos())
+    } else {
+        (a1.sin() + a2.sin(), -a1.cos() - a2.cos())
+    };
+    crate::tactics_math::normalized(fx, fy)
+}
+
+/// The tactics' aim/dive boost. A dodge publishes the direction it steers along, but we only overwrite
+/// engine angles (`write_escape`) when the native controller's thrust vector agrees with it; otherwise we
+/// scale strength along the native vector (preserving obstacle avoidance and gravity hold) or yield when opposed.
 unsafe fn apply_dodge_boost(creature: usize, command: *mut f32, now: f64) {
     let (boost, escape) = crate::tactics::dodge_boost_for(creature, now);
     if boost <= 1.0 {
         return;
     }
     if let Some(dir) = escape {
-        if write_escape(command, dir, boost).is_some() {
-            limit_boost_strength(creature, command);
-            return;
+        if let Some(native_dir) = native_command_direction(command) {
+            let agreement = native_dir.0 * dir.0 + native_dir.1 * dir.1;
+            if agreement < ESCAPE_OPPOSE_MIN {
+                return;
+            }
+            if agreement >= ESCAPE_ALIGN_MIN && write_escape(command, dir, boost).is_some() {
+                limit_boost_strength(creature, command);
+                return;
+            }
         }
     }
     for offset in [COMMAND_STRENGTH, COMMAND_NEXT_STRENGTH] {

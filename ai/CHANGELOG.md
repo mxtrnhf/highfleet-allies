@@ -1,5 +1,18 @@
 # hf_ai changelog
 
+## v1.2.2 — cooperative engine boost (preserve native avoidance)
+
+- Gate `write_escape` engine-angle overrides in `ai_flares.rs` on directional
+  agreement with the native `AiShipTick` command vector (`0x66`/`0x67`), so
+  `hf_ai` no longer overwrites native obstacle avoidance, velocity damping, or
+  gravity compensation when they diverge from the tactical escape direction.
+- Tactics dodge boost now: full angle-override dashes only when native thrust
+  aligns within 45 degrees (`dot >= 0.707`), scales thrust strength along the
+  native vector when partially divergent (`0.0 <= dot < 0.707`), and yields
+  completely when native avoidance actively opposes the dash (`dot < 0.0`).
+- Panic flight boost falls back to strength-only scaling along the native
+  vector when native avoidance opposes the escape direction.
+
 ## v1.2.1 — limit hf_ai boosts only
 
 - Correct v1.2.0's overly broad limiter: normal engine strength and vanilla
