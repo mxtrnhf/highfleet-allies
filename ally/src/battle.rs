@@ -76,6 +76,9 @@ const DEPLOY_K: usize = 0x1_4035_b974;
 const DEPLOY_AGGR: usize = 0x1_4035_24d8;
 const ALLY_SLOT: usize = 1;
 const RETREAT_POINT: usize = 0x1_47fc_7638;
+/// Arena extents `[xmax, ymax, xmin, ymin]` (f32 each), used by stock AI and deploy.
+const BOUNDS_ADDRESS: usize = 0x1_403c_2bc0;
+const OFF_RADIUS: usize = offset_of!(Creature, bounding_radius);
 
 type DeployFn =
     unsafe extern "C" fn(usize, usize, *mut u64, u64, f32, f32, f32, f32, u32, i32) -> u8;
@@ -567,6 +570,59 @@ unsafe fn fuel_retreat(allies: &[usize]) {
     }
 }
 
+/// Reads and validates `[xmax, ymin, xmin]` from the arena bounds global.
+unsafe fn read_arena_bounds() -> Option<(f32, f32, f32)> {
+    let [xmax, ymax, xmin, ymin] = read::<[f32; 4]>(BOUNDS_ADDRESS);
+    if ![xmax, ymax, xmin, ymin]
+        .iter()
+        .all(|v| v.is_finite() && v.abs() <= 20_000.0)
+    {
+        return None;
+    }
+    if xmin >= xmax || xmax - xmin < 600.0 || ymin >= ymax || ymin > 0.0 {
+        return None;
+    }
+    Some((xmin, xmax, ymin))
+}
+
+/// Extracts any AI-controlled retreating ally (`mode_d70 == 2, state == 2`) that reaches any
+/// arena border (`xmin`, `xmax`, or `ymin`), without consuming the player's `RETREAT_POINT`.
+unsafe fn border_extract_retreating_allies(allies: &[usize]) {
+    let Some((xmin, xmax, ymin)) = read_arena_bounds() else {
+        return;
+    };
+    let extract: ExtractFn = std::mem::transmute(EXTRACT);
+    for &ally in allies {
+        if !live_ship(ally) {
+            continue;
+        }
+        if read::<i32>(ally + OFF_MODE_D70) != ORDER_BOMBING
+            || read::<i32>(ally + OFF_STATE) != 2
+            || read::<u8>(ally + OFF_AI_FLAG) == 0
+        {
+            continue;
+        }
+        let x = read::<f32>(ally + OFF_POS_X);
+        let y = read::<f32>(ally + OFF_POS_Y);
+        let radius = read::<f32>(ally + OFF_RADIUS);
+        if !(x.is_finite() && y.is_finite()) {
+            continue;
+        }
+        let margin = if radius.is_finite() && radius > 0.0 {
+            (radius * 1.5).clamp(60.0, 250.0)
+        } else {
+            90.0
+        };
+        if x <= xmin + margin || x >= xmax - margin || y <= ymin + margin {
+            log::info!(
+                "ALLY border retreat: extracting c={ally:#x} at ({x:.0}, {y:.0}) (bounds x=[{xmin:.0}..{xmax:.0}] y_top={ymin:.0}, margin={margin:.0})"
+            );
+            extract(ally, 0);
+            SUM_FLAGS.fetch_or(F_EXTRACTED, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Retreat key and automatic retreat; runs every battle frame.
 unsafe fn retreat_logic(ships: &[usize]) {
     // an ally the manager promoted to the player's ship (mode 1, AI flag off) is the flagship now, not an ally
@@ -591,6 +647,7 @@ unsafe fn retreat_logic(ships: &[usize]) {
         .map(|v| v.iter().copied().filter(|p| ships.contains(p)).collect())
         .unwrap_or_default();
     fuel_retreat(&allies);
+    border_extract_retreating_allies(&allies);
     let key = RETREAT_KEY.load(Ordering::Relaxed);
     if key != 0 {
         let down = GetAsyncKeyState(key as i32) as u16 & 0x8000 != 0;
