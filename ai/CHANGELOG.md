@@ -1,5 +1,18 @@
 # hf_ai changelog
 
+## v1.2.3 — hull-radius clearance, TWR authority scaling, and keep-out barrier
+
+- Measure dive-cone range as surface-to-surface hull gap (`dist - r_self - r_target`)
+  using `Creature::bounding_radius` (`+0x1850`) instead of zero-radius centers.
+- Compute kinematic stopping distance from smoothed closing speed and ship TWR;
+  yield to stock `AiShipTick` when already inside the braking envelope.
+- Scale `dive_level_weight`, tactic blend weight, and boost strength continuously
+  with TWR authority between `twr_cutoff` and `4.0` so marginal-TWR ships (e.g.
+  Wasp) do not get slammed into low-lift dashes.
+- Add a half-space keep-out barrier in `compose()` and outward `dive_side`
+  selection so fast interceptors break around wide hulls rather than diving
+  across or into them.
+
 ## v1.2.2 — cooperative engine boost (preserve native avoidance)
 
 - Gate `write_escape` engine-angle overrides in `ai_flares.rs` on directional

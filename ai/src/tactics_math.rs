@@ -17,6 +17,16 @@ pub const CLOCK_JUMP: f64 = 5.0;
 pub const STALE_AFTER: f64 = 2.0;
 /// Tolerance of the final constraint check.
 const EPS: f32 = 1.0e-3;
+/// Ship TWR at or above which tactical maneuvers get full authority (1.0).
+const TWR_FULL_AUTHORITY: f32 = 4.0;
+/// Minimum surface-to-surface hull clearance (game units) before keep-out repulsion engages.
+const MIN_HULL_CLEARANCE: f32 = 140.0;
+/// Reaction-time margin (seconds) added to kinematic stopping distance.
+const STOP_REACT_S: f32 = 0.35;
+/// Safety multiplier on kinematic stopping distance for the keep-out envelope.
+const STOP_SAFETY_MUL: f32 = 1.25;
+/// Gravity constant used by `AiShipTick` (game units/s^2).
+const GRAVITY_U: f32 = 9.82;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -199,9 +209,12 @@ pub struct ShipState {
     /// A dodge in progress: (until, side) with side +1 = towards +x.
     pub dive: Option<(f64, f32)>,
     pub dive_cooldown_until: f64,
-    /// Last target position and time, and its smoothed sideways velocity (u/s).
+    /// Last ship position and time, and its smoothed velocity (u/s).
+    pub prev_ship: Option<(f64, (f32, f32))>,
+    pub ship_vel: (f32, f32),
+    /// Last target position and time, and its smoothed velocity (u/s).
     pub prev_target: Option<(f64, (f32, f32))>,
-    pub target_vx: f32,
+    pub target_vel: (f32, f32),
     /// Per-ship awareness window clock.
     pub aim_clock: AimClock,
     /// Window number for which `aim_chance` was already rolled, and whether the roll succeeded.
@@ -217,8 +230,10 @@ impl ShipState {
             declined: false,
             dive: None,
             dive_cooldown_until: 0.0,
+            prev_ship: None,
+            ship_vel: (0.0, 0.0),
             prev_target: None,
-            target_vx: 0.0,
+            target_vel: (0.0, 0.0),
             aim_clock: AimClock::default(),
             aim_rolled_window: 0,
             aim_dodging: false,
@@ -285,10 +300,78 @@ fn satisfies(d: (f32, f32), l: &Limits) -> bool {
         && l.min_y.map_or(true, |m| d.1 >= m - EPS)
 }
 
-/// `ship + WAYPOINT_LEN * normalize(stock_unit + w * tactic)`, with the safety limits applied to the FINAL direction (the
-/// normalization of a partly opposing sum can be more downward or outward than either input). `None` when the two
-/// nearly cancel, when a limit cannot be met (corner conflicts) or on any non-finite value: the caller leaves stock.
-pub fn compose(ship: (f32, f32), stock_vec: (f32, f32), tactic: (f32, f32), w: f32, bounds: &Bounds, p: &TacticsParams) -> Option<(f32, f32)> {
+/// Nearby ship obstacle used by the half-space keep-out barrier.
+#[derive(Clone, Copy, Debug)]
+pub struct Obstacle {
+    pub pos: (f32, f32),
+    pub radius: f32,
+    pub safe_gap: f32,
+}
+
+/// Continuous maneuver authority in `0..=1` based on ship TWR relative to `twr_cutoff` and `TWR_FULL_AUTHORITY`.
+pub fn authority_scale(ship_twr: Option<f32>, twr_cutoff: f32) -> f32 {
+    if twr_cutoff <= 0.0 {
+        return 1.0;
+    }
+    let Some(twr) = ship_twr.filter(|t| t.is_finite() && *t > 0.0) else {
+        return 1.0;
+    };
+    let span = (TWR_FULL_AUTHORITY - twr_cutoff).max(0.5);
+    ((twr - twr_cutoff) / span).clamp(0.0, 1.0)
+}
+
+/// Kinematic braking distance plus reaction margin for `v_close` (u/s) at `ship_twr`.
+pub fn stopping_distance(v_close: f32, ship_twr: Option<f32>) -> f32 {
+    if !v_close.is_finite() || v_close <= 0.0 {
+        return 0.0;
+    }
+    let twr = ship_twr.filter(|t| t.is_finite()).unwrap_or(3.0).max(1.5);
+    let a_brake = (twr - 1.0).max(0.5) * GRAVITY_U;
+    (v_close * v_close) / (2.0 * a_brake) + v_close * STOP_REACT_S
+}
+
+/// Projects unit direction `dir` onto the outward half-space `dot(dir, n_out) >= k_out` when inside `obs.safe_gap`.
+fn apply_keep_out(dir: &mut (f32, f32), ship: (f32, f32), obs: &Obstacle) {
+    let out = (ship.0 - obs.pos.0, ship.1 - obs.pos.1);
+    let dist = out.0.hypot(out.1);
+    if !dist.is_finite() || dist < EPS || !obs.safe_gap.is_finite() || obs.safe_gap <= 0.0 {
+        return;
+    }
+    let d_gap = (dist - obs.radius.max(0.0)).max(0.0);
+    if d_gap >= obs.safe_gap {
+        return;
+    }
+    let n_out = (out.0 / dist, out.1 / dist);
+    let k_out = ((obs.safe_gap - d_gap) / obs.safe_gap).clamp(0.0, 0.75);
+    let proj = dir.0 * n_out.0 + dir.1 * n_out.1;
+    if proj >= k_out {
+        return;
+    }
+    let pushed = (dir.0 + (k_out - proj) * n_out.0, dir.1 + (k_out - proj) * n_out.1);
+    if let Some(norm) = normalized(pushed.0, pushed.1) {
+        *dir = norm;
+        return;
+    }
+    // Exact head-on cancellation: slide along a perpendicular tangent plus the outward normal.
+    let side = if dir.0 * (-n_out.1) + dir.1 * n_out.0 >= 0.0 { 1.0 } else { -1.0 };
+    let tangent_weight = (1.0 - k_out * k_out).max(0.0).sqrt() * side;
+    if let Some(norm) = normalized(-n_out.1 * tangent_weight + n_out.0 * k_out, n_out.0 * tangent_weight + n_out.1 * k_out) {
+        *dir = norm;
+    }
+}
+
+/// `ship + WAYPOINT_LEN * normalize(stock_unit + w * tactic)`, with keep-out barriers and safety limits applied to
+/// the FINAL direction (the normalization of a partly opposing sum can be more downward or outward than either input).
+/// `None` when the two nearly cancel, when a limit cannot be met (corner conflicts) or on any non-finite value.
+pub fn compose(
+    ship: (f32, f32),
+    stock_vec: (f32, f32),
+    tactic: (f32, f32),
+    w: f32,
+    bounds: &Bounds,
+    p: &TacticsParams,
+    obstacles: &[Obstacle],
+) -> Option<(f32, f32)> {
     if !(ship.0.is_finite() && ship.1.is_finite() && tactic.0.is_finite() && tactic.1.is_finite() && w.is_finite()) {
         return None;
     }
@@ -299,6 +382,9 @@ pub fn compose(ship: (f32, f32), stock_vec: (f32, f32), tactic: (f32, f32), w: f
         return None;
     }
     let mut dir = (sum.0 / len, sum.1 / len);
+    for obs in obstacles {
+        apply_keep_out(&mut dir, ship, obs);
+    }
     let l = limits(ship, stock, bounds, p);
     if let Some(m) = l.max_y {
         cap_upper(&mut dir, 1, m);
@@ -320,10 +406,12 @@ pub fn compose(ship: (f32, f32), stock_vec: (f32, f32), tactic: (f32, f32), w: f
     (out.0.is_finite() && out.1.is_finite()).then_some(out)
 }
 
-/// Is the target within the cone straight below / above, within range? `widen` > 1 loosens it (hysteresis while already aligned).
-pub fn in_dive_cone(to: (f32, f32), p: &TacticsParams, widen: f32) -> bool {
+/// Is the target within the cone straight below / above, within surface-gap range?
+/// `widen` > 1 loosens it (hysteresis while already aligned).
+pub fn in_dive_cone(to: (f32, f32), hull_radius_sum: f32, p: &TacticsParams, widen: f32) -> bool {
     let d = (to.0 * to.0 + to.1 * to.1).sqrt();
-    if !(d.is_finite() && d > 1.0 && d <= p.dive_range * widen) {
+    let d_gap = (d - hull_radius_sum.max(0.0)).max(0.0);
+    if !(d.is_finite() && d > 1.0 && d_gap <= p.dive_range * widen) {
         return false;
     }
     let cone = (p.dive_cone_deg * widen).clamp(1.0, 89.0).to_radians();
@@ -331,32 +419,59 @@ pub fn in_dive_cone(to: (f32, f32), p: &TacticsParams, widen: f32) -> bool {
     ((below && p.dive_under) || (!below && p.dive_over)) && to.0.abs() / d <= cone.sin()
 }
 
-/// Smooths the target's sideways velocity from successive positions (a gap outside 20..500 ms restarts it).
-pub fn track_target(st: &mut ShipState, now: f64, target: (f32, f32)) {
-    if let Some((t0, p0)) = st.prev_target {
+fn update_smoothed_vel(prev: &mut Option<(f64, (f32, f32))>, vel: &mut (f32, f32), now: f64, pos: (f32, f32)) {
+    if let Some((t0, p0)) = *prev {
         let dt = now - t0;
         if dt > 0.02 && dt < 0.5 {
-            let inst = (target.0 - p0.0) / dt as f32;
-            if inst.is_finite() {
-                st.target_vx = if st.target_vx == 0.0 { inst } else { 0.8 * st.target_vx + 0.2 * inst };
+            let ix = (pos.0 - p0.0) / dt as f32;
+            let iy = (pos.1 - p0.1) / dt as f32;
+            if ix.is_finite() && iy.is_finite() {
+                if vel.0 == 0.0 && vel.1 == 0.0 {
+                    *vel = (ix, iy);
+                } else {
+                    *vel = (0.8 * vel.0 + 0.2 * ix, 0.8 * vel.1 + 0.2 * iy);
+                }
             }
         } else if dt >= 0.5 || dt < 0.0 {
-            st.target_vx = 0.0;
+            *vel = (0.0, 0.0);
         } else {
             return; // too soon: keep the older sample as the reference
         }
     }
-    st.prev_target = Some((now, target));
+    *prev = Some((now, pos));
 }
 
-/// Side of the sidestep: away from a near arena wall; else AGAINST the target's sideways motion (it has to reverse
-/// its momentum to follow: "wrong-foot"); else random.
-pub fn dive_side(ship_x: f32, bounds: &Bounds, p: &TacticsParams, rng: &mut Rng, target_vx: f32) -> f32 {
+/// Smooths the target's velocity from successive positions (a gap outside 20..500 ms restarts it).
+pub fn track_target(st: &mut ShipState, now: f64, target: (f32, f32)) {
+    update_smoothed_vel(&mut st.prev_target, &mut st.target_vel, now, target);
+}
+
+/// Smooths own ship velocity from successive positions.
+pub fn track_ship(st: &mut ShipState, now: f64, ship: (f32, f32)) {
+    update_smoothed_vel(&mut st.prev_ship, &mut st.ship_vel, now, ship);
+}
+
+/// Side of the sidestep: away from a near arena wall; else outward from a close/wide hull;
+/// else AGAINST the target's sideways motion ("wrong-foot"); else random.
+pub fn dive_side(
+    ship_x: f32,
+    to_x: f32,
+    hull_radius_sum: f32,
+    d_gap: f32,
+    safe_gap: f32,
+    bounds: &Bounds,
+    p: &TacticsParams,
+    rng: &mut Rng,
+    target_vx: f32,
+) -> f32 {
     let wall = 2.0 * p.edge_margin;
     if bounds.xmax - ship_x < wall && ship_x - bounds.xmin >= wall {
         -1.0
     } else if ship_x - bounds.xmin < wall && bounds.xmax - ship_x >= wall {
         1.0
+    } else if d_gap < safe_gap + 200.0 && to_x.abs() > 0.25 * hull_radius_sum.max(0.0) {
+        // Break outward away from the obstacle's bulk rather than crossing in front of it.
+        -to_x.signum()
     } else if p.dive_wrongfoot_speed > 0.0 && target_vx.is_finite() && target_vx.abs() >= p.dive_wrongfoot_speed {
         -target_vx.signum()
     } else if rng.unit() < 0.5 {
@@ -375,7 +490,18 @@ enum Dive {
     Active(f32),
 }
 
-fn dive_update(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, now: f64, ship: (f32, f32), to: (f32, f32), rng: &mut Rng) -> Dive {
+fn dive_update(
+    p: &TacticsParams,
+    st: &mut ShipState,
+    bounds: &Bounds,
+    now: f64,
+    ship: (f32, f32),
+    to: (f32, f32),
+    hull_radius_sum: f32,
+    d_gap: f32,
+    safe_gap: f32,
+    rng: &mut Rng,
+) -> Dive {
     if let Some((until, side)) = st.dive {
         if now < until {
             return Dive::Active(side);
@@ -386,7 +512,7 @@ fn dive_update(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, now: f64,
         st.declined = false;
     }
     let widen = if st.aligned_since.is_some() { 1.15 } else { 1.0 };
-    if !in_dive_cone(to, p, widen) {
+    if !in_dive_cone(to, hull_radius_sum, p, widen) {
         st.aligned_since = None;
         st.declined = false;
         return Dive::Idle;
@@ -406,7 +532,7 @@ fn dive_update(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, now: f64,
         return Dive::Idle;
     }
     if rng.unit() < p.dive_chance {
-        let side = dive_side(ship.0, bounds, p, rng, st.target_vx);
+        let side = dive_side(ship.0, to.0, hull_radius_sum, d_gap, safe_gap, bounds, p, rng, st.target_vel.0);
         st.dive = Some((now + f64::from(rng.range(p.dive_min_s, p.dive_max_s)), side));
         Dive::Active(side)
     } else {
@@ -482,29 +608,64 @@ pub struct StepInput {
     pub now: f64,
     pub aim: Option<AimInput>,
     pub ship: (f32, f32),
+    pub ship_radius: f32,
+    pub ship_twr: Option<f32>,
+    pub twr_cutoff: f32,
     pub wanted: (f32, f32),
     pub target: Option<(f32, f32)>,
+    pub target_radius: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct Step {
     pub state: State,
     pub waypoint: Option<(f32, f32)>,
+    /// Authority scale in `0.0..=1.0` applied to requested boost (`1 + (boost - 1) * boost_scale`).
+    pub boost_scale: f32,
 }
 
 /// One decision for a ship that passed the gates. Updates the side timer and the state.
 pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepInput, rng: &mut Rng) -> Step {
     st.last_seen = inp.now;
+    track_ship(st, inp.now, inp.ship);
     if let Some(target) = inp.target {
         track_target(st, inp.now, target);
     } else {
         st.prev_target = None;
-        st.target_vx = 0.0;
+        st.target_vel = (0.0, 0.0);
         st.dive = None;
         st.aligned_since = None;
         st.declined = false;
     }
     let stock_vec = (inp.wanted.0 - inp.ship.0, inp.wanted.1 - inp.ship.1);
+    let authority = authority_scale(inp.ship_twr, inp.twr_cutoff);
+
+    let mut target_obs_buf = [Obstacle { pos: (0.0, 0.0), radius: 0.0, safe_gap: 0.0 }; 1];
+    let mut target_obs_count = 0usize;
+    let mut target_kinematics = None;
+    if let Some(target) = inp.target {
+        let to = (target.0 - inp.ship.0, target.1 - inp.ship.1);
+        let dist = to.0.hypot(to.1);
+        let hull_sum = inp.ship_radius.max(0.0) + inp.target_radius.max(0.0);
+        let d_gap = (dist - hull_sum).max(0.0);
+        let v_close = if dist > EPS {
+            let rel = (st.ship_vel.0 - st.target_vel.0, st.ship_vel.1 - st.target_vel.1);
+            (rel.0 * (to.0 / dist) + rel.1 * (to.1 / dist)).max(0.0)
+        } else {
+            0.0
+        };
+        let d_stop = stopping_distance(v_close, inp.ship_twr);
+        let safe_gap = MIN_HULL_CLEARANCE.max(STOP_SAFETY_MUL * d_stop);
+        // Emergency yield: already inside the kinematic braking envelope while closing; let native AiShipTick brake.
+        if d_gap < 0.75 * d_stop && v_close > 20.0 {
+            return Step { state: State::Stock, waypoint: None, boost_scale: 0.0 };
+        }
+        target_obs_buf[0] = Obstacle { pos: target, radius: hull_sum, safe_gap };
+        target_obs_count = 1;
+        target_kinematics = Some((to, hull_sum, d_gap, safe_gap));
+    }
+    let obstacles = &target_obs_buf[..target_obs_count];
+
     let mut skipped = false;
     if let (true, Some(aim)) = (p.aim_enabled, inp.aim) {
         if let Some(dir) = aim_dodge_dir(&aim, inp.ship, p, rng) {
@@ -513,24 +674,27 @@ pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepIn
                 st.aim_dodging = rng.unit() < p.aim_chance;
             }
             if st.aim_dodging {
-                let waypoint = compose(inp.ship, stock_vec, dir, p.aim_weight, bounds, p);
-                return Step { state: State::Aim, waypoint };
+                let weight = 2.0 + (p.aim_weight - 2.0).max(0.0) * authority;
+                let waypoint = compose(inp.ship, stock_vec, dir, weight, bounds, p, obstacles);
+                return Step { state: State::Aim, waypoint, boost_scale: authority };
             }
         }
     }
-    if let (true, Some(target)) = (p.dive_enabled, inp.target) {
-        let to = (target.0 - inp.ship.0, target.1 - inp.ship.1);
-        match dive_update(p, st, bounds, inp.now, inp.ship, to, rng) {
+    if let (true, Some((to, hull_sum, d_gap, safe_gap))) = (p.dive_enabled, target_kinematics) {
+        match dive_update(p, st, bounds, inp.now, inp.ship, to, hull_sum, d_gap, safe_gap, rng) {
             Dive::Active(side) => {
-                // sideways, plus a pull onto the target's altitude (smooth: full strength from 150 u of height difference)
-                let level = (to.1 / 150.0).clamp(-1.0, 1.0) * p.dive_level_weight;
+                // Sideways, plus a pull onto the target's altitude scaled by TWR authority.
+                // Inside the safety buffer, never pull vertically toward the obstacle.
+                let raw_level = (to.1 / 150.0).clamp(-1.0, 1.0) * p.dive_level_weight * authority;
+                let level = if d_gap <= safe_gap && raw_level * to.1 > 0.0 { 0.0 } else { raw_level };
                 let dir = normalized(side, level).unwrap_or((side, 0.0));
-                let waypoint = compose(inp.ship, stock_vec, dir, p.dive_weight, bounds, p);
-                return Step { state: State::DiveDodge, waypoint };
+                let weight = 2.0 + (p.dive_weight - 2.0).max(0.0) * authority;
+                let waypoint = compose(inp.ship, stock_vec, dir, weight, bounds, p, obstacles);
+                return Step { state: State::DiveDodge, waypoint, boost_scale: authority };
             }
             Dive::Skip => skipped = true,
             Dive::Idle => {}
         }
     }
-    Step { state: if skipped { State::DiveDeclined } else { State::Stock }, waypoint: None }
+    Step { state: if skipped { State::DiveDeclined } else { State::Stock }, waypoint: None, boost_scale: 0.0 }
 }

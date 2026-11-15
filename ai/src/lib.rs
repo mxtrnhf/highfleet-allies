@@ -158,8 +158,12 @@ fn strategic_twr(creature: usize) -> Option<f32> {
     unsafe { rd::<f32>(creature + 0x160c) }
 }
 
+pub(crate) fn twr_cutoff() -> f32 {
+    f32::from_bits(TWR_CUTOFF.load(Ordering::Relaxed))
+}
+
 fn maneuvers_allowed(creature: usize) -> bool {
-    let cutoff = f32::from_bits(TWR_CUTOFF.load(Ordering::Relaxed));
+    let cutoff = twr_cutoff();
     if cutoff == 0.0 {
         return true;
     }

@@ -393,11 +393,30 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
         // SAFETY: page-checked scalar mode read from the validated target creature.
         (unsafe { rd::<i32>(*creature + OFF_MODE) }) == Some(1)
     });
+    // SAFETY: page-checked scalar bounding-radius reads from validated creatures.
+    let ship_radius = unsafe { rd::<f32>(ctx.creature + native_layout::CREATURE_RADIUS) }
+        .filter(|r| r.is_finite() && *r >= 0.0)
+        .unwrap_or(0.0);
+    let target_radius = dive_target
+        .and_then(|(_, tc)| unsafe { rd::<f32>(tc + native_layout::CREATURE_RADIUS) })
+        .filter(|r| r.is_finite() && *r >= 0.0)
+        .unwrap_or(0.0);
+    let ship_twr = crate::strategic_twr(ctx.creature).filter(|t| t.is_finite() && *t > 0.0);
     let step = tm::step(
         p,
         &mut entry.st,
         &bounds,
-        &StepInput { now, aim, ship: ctx.ship, wanted: ctx.wanted, target: dive_target.map(|(pos, _)| pos) },
+        &StepInput {
+            now,
+            aim,
+            ship: ctx.ship,
+            ship_radius,
+            ship_twr,
+            twr_cutoff: crate::twr_cutoff(),
+            wanted: ctx.wanted,
+            target: dive_target.map(|(pos, _)| pos),
+            target_radius,
+        },
         &mut entry.rng,
     );
     let waypoint = step.waypoint.filter(|(x, y)| x.is_finite() && y.is_finite());
@@ -406,11 +425,12 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
         State::Aim => f32::from_bits(AIM_BOOST.load(Ordering::Relaxed)),
         _ => 1.0,
     };
+    let scaled_factor = 1.0 + (requested_factor - 1.0) * step.boost_scale.clamp(0.0, 1.0);
     // A level dash cannot arrest existing downward momentum: it overwrites the
     // native controller's braking/lift commands. Leave those commands untouched
     // near the tactical floor, and never boost a failed waypoint composition.
     let factor = if waypoint.is_some() && ctx.ship.1 < p.ground_safe_y() {
-        requested_factor
+        scaled_factor
     } else {
         1.0
     };
