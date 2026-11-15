@@ -36,12 +36,10 @@ const GRAVITY_U: f32 = 9.82;
 const GTFO_WEIGHT: f32 = 10.0;
 /// Gentle cruise boost scale (`1 + (2 - 1) * 0.25 = 1.25x`) while retreating so engines do not burn out.
 const RETREAT_CRUISE_BOOST_SCALE: f32 = 0.25;
-/// Penalty (game units) added to a candidate exit border when a hostile ship blocks that exit corridor.
-const RETREAT_BLOCK_PENALTY: f32 = 1000.0;
-/// Gravity-climb bias (game units) added to the top border (`ymin`), favoring horizontal side exits when comparable.
-const RETREAT_CLIMB_BIAS: f32 = 250.0;
+/// Penalty (game units) added to a candidate exit border when a hostile ship blocks that exit lane.
+const RETREAT_BLOCK_PENALTY: f32 = 500.0;
 /// Hysteresis bonus (game units) for the previously chosen retreat border so allies commit instead of oscillating.
-const RETREAT_COMMIT_BONUS: f32 = 300.0;
+const RETREAT_COMMIT_BONUS: f32 = 250.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -396,8 +394,7 @@ fn apply_keep_out(dir: &mut (f32, f32), ship: (f32, f32), obs: &Obstacle) {
 }
 
 /// Picks the nearest clear arena border (`xmin`, `xmax`, or `ymin`) for a retreating ally,
-/// penalizing borders with hostile ships in the exit corridor and biasing slightly against
-/// climbing straight up against gravity when a side border is comparable.
+/// penalizing borders where a hostile ship lies directly in the exit lane.
 pub fn retreat_border_dir(
     ship: (f32, f32),
     bounds: &Bounds,
@@ -407,7 +404,7 @@ pub fn retreat_border_dir(
     let candidates = [
         ((ship.0 - bounds.xmin).max(0.0), (-1.0_f32, 0.0_f32)),
         ((bounds.xmax - ship.0).max(0.0), (1.0_f32, 0.0_f32)),
-        ((ship.1 - bounds.ymin).max(0.0) + RETREAT_CLIMB_BIAS, (0.0_f32, -1.0_f32)),
+        ((ship.1 - bounds.ymin).max(0.0), (0.0_f32, -1.0_f32)),
     ];
     let mut best = candidates[0].1;
     let mut best_score = f32::INFINITY;
@@ -415,14 +412,10 @@ pub fn retreat_border_dir(
         let mut penalty = 0.0;
         for &(pos, radius) in hostiles {
             let to = (pos.0 - ship.0, pos.1 - ship.1);
-            let d = to.0.hypot(to.1);
-            if d <= EPS {
-                continue;
-            }
             let proj = to.0 * dir.0 + to.1 * dir.1;
             let perp = (to.0 * (-dir.1) + to.1 * dir.0).abs();
-            if proj > 0.0 && proj < dist + 200.0 && (perp < 450.0 + radius || proj / d > 0.5) {
-                let prox = (1.0 - proj / 2500.0).clamp(0.3, 1.0);
+            if proj > 0.0 && proj < dist && perp < 220.0 + radius {
+                let prox = (1.0 - proj / 2000.0).clamp(0.3, 1.0);
                 penalty += RETREAT_BLOCK_PENALTY * prox;
             }
         }

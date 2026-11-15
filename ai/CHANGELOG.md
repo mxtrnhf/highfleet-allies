@@ -1,5 +1,13 @@
 # hf_ai changelog
 
+## v1.2.9 — tighten retreat lane-block check so top exits still work
+
+- Remove `RETREAT_CLIMB_BIAS` (`250u`) and replace the wide 120-deg cone
+  (`proj / d > 0.5`) and `1000u` penalty in `retreat_border_dir()` with a
+  strict exit-lane check (`perp < 220u + radius`, `0 < proj < dist`,
+  `500u` penalty). Allies near the top border now exit upward (`ymin`) instead
+  of all swinging sideways.
+
 ## v1.2.8 — enemy-aware & side-border-friendly ally retreat
 
 - Feed all hostile `live_ships` (not just `< 280u` keep-out obstacles) into
