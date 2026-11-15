@@ -20,11 +20,16 @@ const EPS: f32 = 1.0e-3;
 /// Ship TWR at or above which tactical maneuvers get full authority (1.0).
 const TWR_FULL_AUTHORITY: f32 = 4.0;
 /// Minimum surface-to-surface hull clearance (game units) before keep-out repulsion engages.
-const MIN_HULL_CLEARANCE: f32 = 140.0;
-/// Reaction-time margin (seconds) added to kinematic stopping distance.
-const STOP_REACT_S: f32 = 0.35;
-/// Safety multiplier on kinematic stopping distance for the keep-out envelope.
-const STOP_SAFETY_MUL: f32 = 1.25;
+const MIN_HULL_CLEARANCE: f32 = 120.0;
+/// Maximum surface-to-surface safety gap (game units) for keep-out repulsion, so high-speed fights
+/// still allow lateral `DiveDodge`/`Aim` maneuvers outside hull proximity.
+const MAX_HULL_CLEARANCE: f32 = 280.0;
+/// Reaction-time margin (seconds) for keep-out gap scaling with closing speed.
+const STOP_REACT_S: f32 = 0.45;
+/// Maximum time-to-collision (seconds) before emergency yield to stock `AiShipTick` braking.
+const EMERGENCY_TTC_S: f32 = 0.45;
+/// Hard surface-gap floor (game units) below which closing ships always yield to stock `AiShipTick`.
+const EMERGENCY_GAP_U: f32 = 70.0;
 /// Gravity constant used by `AiShipTick` (game units/s^2).
 const GRAVITY_U: f32 = 9.82;
 
@@ -320,14 +325,29 @@ pub fn authority_scale(ship_twr: Option<f32>, twr_cutoff: f32) -> f32 {
     ((twr - twr_cutoff) / span).clamp(0.0, 1.0)
 }
 
-/// Kinematic braking distance plus reaction margin for `v_close` (u/s) at `ship_twr`.
-pub fn stopping_distance(v_close: f32, ship_twr: Option<f32>) -> f32 {
+/// Surface-to-surface safety gap (game units) for keep-out repulsion, scaled by closing speed and TWR
+/// but capped so high-speed dogfights still sidestep instead of suppressing tactics at long range.
+pub fn safe_hull_gap(v_close: f32, ship_twr: Option<f32>) -> f32 {
     if !v_close.is_finite() || v_close <= 0.0 {
-        return 0.0;
+        return MIN_HULL_CLEARANCE;
+    }
+    let twr = ship_twr.filter(|t| t.is_finite()).unwrap_or(3.0).max(1.5);
+    let authority_factor = (3.5 / twr).clamp(0.75, 1.5);
+    (MIN_HULL_CLEARANCE + v_close * STOP_REACT_S * authority_factor).clamp(MIN_HULL_CLEARANCE, MAX_HULL_CLEARANCE)
+}
+
+/// True when the ship is within imminent surface-to-surface collision range and must yield to native braking.
+fn imminent_collision(d_gap: f32, v_close: f32, ship_twr: Option<f32>) -> bool {
+    if v_close <= 20.0 {
+        return false;
+    }
+    if d_gap < EMERGENCY_GAP_U {
+        return true;
     }
     let twr = ship_twr.filter(|t| t.is_finite()).unwrap_or(3.0).max(1.5);
     let a_brake = (twr - 1.0).max(0.5) * GRAVITY_U;
-    (v_close * v_close) / (2.0 * a_brake) + v_close * STOP_REACT_S
+    let ttc = d_gap / v_close;
+    ttc < EMERGENCY_TTC_S && d_gap < (v_close * v_close) / (2.0 * a_brake)
 }
 
 /// Projects unit direction `dir` onto the outward half-space `dot(dir, n_out) >= k_out` when inside `obs.safe_gap`.
@@ -656,10 +676,9 @@ pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepIn
         } else {
             0.0
         };
-        let d_stop = stopping_distance(v_close, inp.ship_twr);
-        let safe_gap = MIN_HULL_CLEARANCE.max(STOP_SAFETY_MUL * d_stop);
-        // Emergency yield: already inside the kinematic braking envelope while closing; let native AiShipTick brake.
-        if d_gap < 0.75 * d_stop && v_close > 20.0 {
+        let safe_gap = safe_hull_gap(v_close, inp.ship_twr);
+        // Emergency yield: imminent hull impact while closing; let native AiShipTick brake.
+        if imminent_collision(d_gap, v_close, inp.ship_twr) {
             return Step { state: State::Stock, waypoint: None, boost_scale: 0.0 };
         }
         obs_buf[0] = Obstacle { pos: target, radius: hull_sum, safe_gap };

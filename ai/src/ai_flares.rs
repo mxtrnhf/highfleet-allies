@@ -1071,10 +1071,11 @@ unsafe fn engine_commands(creature: usize, command: *mut f32) {
     }
 }
 
-/// Minimum dot product between native thrust vector and tactical escape to allow full angle override (`cos(45 deg)`).
-const ESCAPE_ALIGN_MIN: f32 = 0.707_106_77;
-/// Below this dot product, native avoidance/gravity hold actively opposes tactical escape; yield completely.
-const ESCAPE_OPPOSE_MIN: f32 = 0.0;
+/// Minimum dot product between native thrust vector and tactical escape to allow full angle override (`cos(60 deg)`).
+/// Allows for the upward (`-y`) gravity-compensation tilt in `AiShipTick`'s force vector.
+const ESCAPE_ALIGN_MIN: f32 = 0.5;
+/// Below this dot product (`cos(104 deg)`), native avoidance actively opposes tactical escape; yield completely.
+const ESCAPE_OPPOSE_MIN: f32 = -0.25;
 
 /// Net translational thrust direction already computed by `AiShipTick` on the stack (`0x66` + `0x67`),
 /// cancelling opposite attitude-hold torques so native obstacle avoidance and gravity hold remain visible.

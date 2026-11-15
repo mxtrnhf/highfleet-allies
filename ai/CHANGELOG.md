@@ -1,5 +1,19 @@
 # hf_ai changelog
 
+## v1.2.5 — tune keep-out & emergency-yield thresholds for fast dogfights
+
+- Fix over-aggressive emergency yield in `tactics_math.rs`: previously,
+  `d_gap < 0.75 * d_stop` suppressed `DiveDodge` and `Aim` up to ~560u at
+  200 u/s closing speed. Emergency yield now only triggers on imminent
+  collision (`d_gap < 70u` or `TTC < 0.45 s`).
+- Cap keep-out `safe_hull_gap()` to `120..280u` so fast interceptors can still
+  antidive cleanly outside hull proximity.
+- Require `target.side != self.side` in `tactics.rs` so a same-side creature
+  can never trigger dive denial.
+- Relax `ESCAPE_ALIGN_MIN` to `0.5` (60 deg) and `ESCAPE_OPPOSE_MIN` to `-0.25`
+  in `ai_flares.rs` so the native force vector's upward gravity compensation
+  does not prematurely cancel `write_escape` dashes.
+
 ## v1.2.4 — multi-ship keep-out barriers
 
 - Refresh `live_ships` whenever either aim or dive tactics are enabled, and

@@ -299,7 +299,7 @@ fn collect_nearby_obstacles(
         let hull_sum = ship_radius.max(0.0) + other.radius.max(0.0);
         let d_gap = (dist - hull_sum).max(0.0);
         let v_close = (ship_vel.0 * (to.0 / dist) + ship_vel.1 * (to.1 / dist)).max(0.0);
-        let safe_gap = 140.0_f32.max(1.25 * tm::stopping_distance(v_close, ship_twr));
+        let safe_gap = tm::safe_hull_gap(v_close, ship_twr);
         if d_gap >= safe_gap {
             continue;
         }
@@ -429,12 +429,15 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
     } else {
         None
     };
-    // Dive denial is an air-to-air sidestep, not a ground attack. A landed or
-    // taking-off target must not pull the defender onto its altitude. Passing no
-    // dive target also cancels an already-running dive.
+    // Dive denial is an air-to-air sidestep against a hostile target, not a ground attack.
+    // A landed, taking-off, or same-side target must not trigger dive denial.
     let dive_target = target.filter(|(_, creature)| {
-        // SAFETY: page-checked scalar mode read from the validated target creature.
-        (unsafe { rd::<i32>(*creature + OFF_MODE) }) == Some(1)
+        // SAFETY: page-checked scalar mode and side reads from the validated target creature.
+        unsafe {
+            rd::<i32>(*creature + OFF_MODE) == Some(1)
+                && rd::<f32>(*creature + crate::OFF_SIDE)
+                    .is_some_and(|s| s.is_finite() && s != 0.0 && s.signum() != ctx.side.signum())
+        }
     });
     // SAFETY: page-checked scalar bounding-radius reads from validated creatures.
     let ship_radius = unsafe { rd::<f32>(ctx.creature + native_layout::CREATURE_RADIUS) }
