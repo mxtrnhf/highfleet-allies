@@ -3,42 +3,40 @@ hf_ally @ALLY_VERSION@ + hf_ai @AI_VERSION@ + bundled QoL — Steam 1.163 only
 Source: https://github.com/mxtrnhf/highfleet-allies
 
 WHAT CHANGED
-- Fixed second-new-battle crashes in Shipworks, even without touching ADD,
-  ADD ENEMY or CLEAR. Destroyed enemy fleets left null Links; the loader and
-  pre-combat roster builder dereferenced null + 0x100. Dead Links are guarded
-  and removed before use.
-- Fixed enemy escadras accumulating every previous test battle's opponents.
-  Our enemy-append hook incorrectly relocated a RIP-relative LEA, making the
-  native clear use the wrong address. An absolute MOV restores correct clearing.
-- Link compaction now unregisters/copy-constructs native Links instead of moving
-  their bytes. These fixes belong to hf_ally, not HEE.
-- Repeated fresh FIGHTs, custom rosters and CLEAR confirmed in game, 2026-11-15.
-- See NOTES.md for the crash-site details and other retained protections.
-- AI behavior and configuration defaults are unchanged.
+- Cooperative dodge boosts (hf_ai):
+  - Previously, tactical dashes blindly overwrote engine angles and fought
+    native obstacle avoidance/gravity hold. Now angle overrides only apply when
+    native thrust agrees within 60 degrees.
+- Hull-size-aware dive range & keep-out barriers (hf_ai):
+  - Previously, center-based spacing caused ships to misjudge big hulls or
+    yield too early in fast dogfights. Now dive_range and keep-out barriers
+    (120-280u surface-to-surface) use actual hull radii across nearby ships,
+    and emergency yield only fires on imminent impact (<70u or <0.45s TTC).
+- Hostile-only dive denial (hf_ai):
+  - Previously, friendlies passing underneath could trigger dive denial. Now
+    only airborne enemies do.
+- Marginal-TWR lateral dodge floor (hf_ai):
+  - Previously, ships just above twr_cutoff (2.0, e.g. Wasp) stalled during
+    AI DIVE. Now downward level-pull still ramps 0-100% from twr_cutoff to
+    TWR 4.0, while lateral sidesteps keep a 40% floor.
+- Any-border ally retreat & GTFO steering (hf_ally + hf_ai):
+  - Previously, retreating allies only exited at the top, got blocked by the
+    300u edge margin, or got stuck around enemies running combat tactics. Now
+    retreating AI allies pick the nearest unblocked border (left, right, or
+    top), route around nearby hulls, ignore the edge margin, use a gentle
+    1.25x cruise boost, and extract at any border.
+- Second-player co-op compatibility (hf_ally, issue #1).
+- Note: Allies_Manual.pdf is still from an earlier version pending testing.
 
 RETAINED FROM PREVIOUS PACKS
+- Shipworks repeated-FIGHT crash & growing enemy fleet fixes (hf_ally v1.3.3).
 - Bundled QoL: missing missile/flare target fix, defensive null-fleet/vector
   guards, and the separate aircraft target-choice out-of-bounds fix.
-  The fleet guards do not establish that every merge crash is fixed.
 - Optional hf_ai high-TWR boost limiter: twr_limit 5, twr_deceleration 0.75.
-  Set either to 0 to disable. Normal thrust and player control are unaffected.
-- Added ability to construct custom enemy formation for shipworks battle:
-  ADD ENEMY, right of ADD, captures the edited ship into an enemy list (red
-  text); with a non-empty list, FIGHT overrides the default enemy generation
-  and fields exactly those ships as enemies. Up to eight enemies.
-- Shipworks test allies: ADD, beside TEST in the top row, captures the edited
-  ship, including unsaved changes, into the ship list; FIGHT brings them into
-  test combat as friendly AI allies. Add up to eight allies.
-- CLEAR, beside ADD, empties both lists without leaving Shipworks or changing
-  the edited ship. Loading/switching designs, RESET, RETRY and returning from
-  test combat preserve the lists. Leaving Shipworks clears them.
-- A custom FIGHT's enemy fleet is pruned again afterwards, so cleared enemies
-  never leak into later battles.
-- Buttons use native Shipworks styling; ship names use the PLAYER-marker font.
-- ADD ENEMY/FIGHT/CLEAR confirmed in game.
+- Shipworks custom ally/enemy rosters: ADD, ADD ENEMY, CLEAR, FIGHT.
 
 INSTALL
-1. Back up Saves. Read Allies_Manual.pdf.
+1. Back up Saves.
 2. Install logdot's Modloader v4:
    https://github.com/logdot/Highfleet-Modloader
 3. Extract this ZIP into the folder containing Highfleet.exe. Merge Modloader/
