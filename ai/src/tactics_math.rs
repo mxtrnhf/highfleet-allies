@@ -604,7 +604,7 @@ pub fn aim_dodge_dir(aim: &AimInput, ship: (f32, f32), p: &TacticsParams, rng: &
     normalized(-aim.dir.1 * sign, aim.dir.0 * sign)
 }
 
-pub struct StepInput {
+pub struct StepInput<'a> {
     pub now: f64,
     pub aim: Option<AimInput>,
     pub ship: (f32, f32),
@@ -614,6 +614,8 @@ pub struct StepInput {
     pub wanted: (f32, f32),
     pub target: Option<(f32, f32)>,
     pub target_radius: f32,
+    /// Additional nearby ships (allied or hostile) to keep out of during any tactical sidestep.
+    pub nearby_obstacles: &'a [Obstacle],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -625,7 +627,7 @@ pub struct Step {
 }
 
 /// One decision for a ship that passed the gates. Updates the side timer and the state.
-pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepInput, rng: &mut Rng) -> Step {
+pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepInput<'_>, rng: &mut Rng) -> Step {
     st.last_seen = inp.now;
     track_ship(st, inp.now, inp.ship);
     if let Some(target) = inp.target {
@@ -640,8 +642,8 @@ pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepIn
     let stock_vec = (inp.wanted.0 - inp.ship.0, inp.wanted.1 - inp.ship.1);
     let authority = authority_scale(inp.ship_twr, inp.twr_cutoff);
 
-    let mut target_obs_buf = [Obstacle { pos: (0.0, 0.0), radius: 0.0, safe_gap: 0.0 }; 1];
-    let mut target_obs_count = 0usize;
+    let mut obs_buf = [Obstacle { pos: (0.0, 0.0), radius: 0.0, safe_gap: 0.0 }; 4];
+    let mut obs_count = 0usize;
     let mut target_kinematics = None;
     if let Some(target) = inp.target {
         let to = (target.0 - inp.ship.0, target.1 - inp.ship.1);
@@ -660,11 +662,18 @@ pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepIn
         if d_gap < 0.75 * d_stop && v_close > 20.0 {
             return Step { state: State::Stock, waypoint: None, boost_scale: 0.0 };
         }
-        target_obs_buf[0] = Obstacle { pos: target, radius: hull_sum, safe_gap };
-        target_obs_count = 1;
+        obs_buf[0] = Obstacle { pos: target, radius: hull_sum, safe_gap };
+        obs_count = 1;
         target_kinematics = Some((to, hull_sum, d_gap, safe_gap));
     }
-    let obstacles = &target_obs_buf[..target_obs_count];
+    for extra in inp.nearby_obstacles {
+        if obs_count >= obs_buf.len() {
+            break;
+        }
+        obs_buf[obs_count] = *extra;
+        obs_count += 1;
+    }
+    let obstacles = &obs_buf[..obs_count];
 
     let mut skipped = false;
     if let (true, Some(aim)) = (p.aim_enabled, inp.aim) {

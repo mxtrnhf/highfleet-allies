@@ -124,6 +124,7 @@ struct LiveShip {
     creature: usize,
     side: f32,
     pos: (f32, f32),
+    radius: f32,
     aim_dir: Option<(f32, f32)>,
     shooting: bool,
 }
@@ -244,6 +245,9 @@ unsafe fn refresh_live_ships(world: &mut World, now: f64) {
         if !(x.is_finite() && y.is_finite()) {
             continue;
         }
+        let radius = rd::<f32>(creature + native_layout::CREATURE_RADIUS)
+            .filter(|r| r.is_finite() && *r >= 0.0)
+            .unwrap_or(0.0);
         let Some(ai_flag) = rd::<u8>(creature + OFF_AI_FLAG) else {
             continue;
         };
@@ -264,10 +268,49 @@ unsafe fn refresh_live_ships(world: &mut World, now: f64) {
             creature,
             side,
             pos: (x, y),
+            radius,
             aim_dir,
             shooting,
         });
     }
+}
+
+/// Collects up to 3 closest live ships (excluding self and `dive_target`, which is handled with full target velocity)
+/// that lie near enough to matter for the half-space keep-out barrier.
+fn collect_nearby_obstacles(
+    live_ships: &[LiveShip],
+    creature: usize,
+    dive_target: Option<usize>,
+    ship: (f32, f32),
+    ship_radius: f32,
+    ship_vel: (f32, f32),
+    ship_twr: Option<f32>,
+) -> ([tm::Obstacle; 3], usize) {
+    let mut best = [(f32::INFINITY, tm::Obstacle { pos: (0.0, 0.0), radius: 0.0, safe_gap: 0.0 }); 3];
+    for other in live_ships {
+        if other.creature == creature || Some(other.creature) == dive_target {
+            continue;
+        }
+        let to = (other.pos.0 - ship.0, other.pos.1 - ship.1);
+        let dist = to.0.hypot(to.1);
+        if !dist.is_finite() || dist <= 1.0e-3 {
+            continue;
+        }
+        let hull_sum = ship_radius.max(0.0) + other.radius.max(0.0);
+        let d_gap = (dist - hull_sum).max(0.0);
+        let v_close = (ship_vel.0 * (to.0 / dist) + ship_vel.1 * (to.1 / dist)).max(0.0);
+        let safe_gap = 140.0_f32.max(1.25 * tm::stopping_distance(v_close, ship_twr));
+        if d_gap >= safe_gap {
+            continue;
+        }
+        let obs = tm::Obstacle { pos: other.pos, radius: hull_sum, safe_gap };
+        if d_gap < best[2].0 {
+            best[2] = (d_gap, obs);
+            best.sort_by(|a, b| a.0.total_cmp(&b.0));
+        }
+    }
+    let count = best.iter().take_while(|(gap, _)| gap.is_finite()).count();
+    ([best[0].1, best[1].1, best[2].1], count)
 }
 
 /// Picks the closest hostile shooter whose aim ray crosses `ship` within `p.aim_range` and `p.aim_tolerance`.
@@ -357,7 +400,7 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
     }
     let Some(bounds) = world.bounds else { return (None, State::Stock) };
 
-    if p.aim_enabled {
+    if p.aim_enabled || p.dive_enabled {
         unsafe { refresh_live_ships(world, now) };
     }
 
@@ -402,6 +445,15 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
         .filter(|r| r.is_finite() && *r >= 0.0)
         .unwrap_or(0.0);
     let ship_twr = crate::strategic_twr(ctx.creature).filter(|t| t.is_finite() && *t > 0.0);
+    let (nearby_buf, nearby_len) = collect_nearby_obstacles(
+        live_ships,
+        ctx.creature,
+        dive_target.map(|(_, tc)| tc),
+        ctx.ship,
+        ship_radius,
+        entry.st.ship_vel,
+        ship_twr,
+    );
     let step = tm::step(
         p,
         &mut entry.st,
@@ -416,6 +468,7 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
             wanted: ctx.wanted,
             target: dive_target.map(|(pos, _)| pos),
             target_radius,
+            nearby_obstacles: &nearby_buf[..nearby_len],
         },
         &mut entry.rng,
     );

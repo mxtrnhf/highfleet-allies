@@ -1,5 +1,14 @@
 # hf_ai changelog
 
+## v1.2.4 — multi-ship keep-out barriers
+
+- Refresh `live_ships` whenever either aim or dive tactics are enabled, and
+  cache each ship's `Creature::bounding_radius` (`+0x1850`).
+- Pass up to the 3 closest non-target live ships (allied or hostile) inside
+  their kinematic safety gap into `compose()`'s half-space keep-out barrier,
+  so `Aim` and `DiveDodge` sidesteps will not steer a ship into third-party
+  hulls.
+
 ## v1.2.3 — hull-radius clearance, TWR authority scaling, and keep-out barrier
 
 - Measure dive-cone range as surface-to-surface hull gap (`dist - r_self - r_target`)
