@@ -1,5 +1,13 @@
 # hf_ai changelog
 
+## v1.2.6 — restore lateral dodge authority for marginal-TWR ships
+
+- Separate `raw_authority` (`0..=1`, still scaling downward `dive_level_weight`
+  so low-TWR ships keep lift) from `maneuver_authority` (`0.40..=1.0`, with a
+  `4.5` lateral blend-weight floor) so marginal-TWR ships like Wasp still
+  sidestep and boost laterally during `AI DIVE` and `AI AIM` instead of
+  stalling at ~5% authority.
+
 ## v1.2.5 — tune keep-out & emergency-yield thresholds for fast dogfights
 
 - Fix over-aggressive emergency yield in `tactics_math.rs`: previously,

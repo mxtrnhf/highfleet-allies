@@ -660,7 +660,10 @@ pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepIn
         st.declined = false;
     }
     let stock_vec = (inp.wanted.0 - inp.ship.0, inp.wanted.1 - inp.ship.1);
-    let authority = authority_scale(inp.ship_twr, inp.twr_cutoff);
+    let raw_authority = authority_scale(inp.ship_twr, inp.twr_cutoff);
+    // Keep a 40% floor on lateral dodge/boost authority so marginal-TWR ships (e.g. Wasp)
+    // still sidestep, while `raw_authority` continues to gate downward `dive_level_weight`.
+    let maneuver_authority = 0.40 + 0.60 * raw_authority;
 
     let mut obs_buf = [Obstacle { pos: (0.0, 0.0), radius: 0.0, safe_gap: 0.0 }; 4];
     let mut obs_count = 0usize;
@@ -702,23 +705,23 @@ pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepIn
                 st.aim_dodging = rng.unit() < p.aim_chance;
             }
             if st.aim_dodging {
-                let weight = 2.0 + (p.aim_weight - 2.0).max(0.0) * authority;
+                let weight = 4.5 + (p.aim_weight - 4.5).max(0.0) * maneuver_authority;
                 let waypoint = compose(inp.ship, stock_vec, dir, weight, bounds, p, obstacles);
-                return Step { state: State::Aim, waypoint, boost_scale: authority };
+                return Step { state: State::Aim, waypoint, boost_scale: maneuver_authority };
             }
         }
     }
     if let (true, Some((to, hull_sum, d_gap, safe_gap))) = (p.dive_enabled, target_kinematics) {
         match dive_update(p, st, bounds, inp.now, inp.ship, to, hull_sum, d_gap, safe_gap, rng) {
             Dive::Active(side) => {
-                // Sideways, plus a pull onto the target's altitude scaled by TWR authority.
+                // Sideways, plus a pull onto the target's altitude scaled by raw TWR authority.
                 // Inside the safety buffer, never pull vertically toward the obstacle.
-                let raw_level = (to.1 / 150.0).clamp(-1.0, 1.0) * p.dive_level_weight * authority;
+                let raw_level = (to.1 / 150.0).clamp(-1.0, 1.0) * p.dive_level_weight * raw_authority;
                 let level = if d_gap <= safe_gap && raw_level * to.1 > 0.0 { 0.0 } else { raw_level };
                 let dir = normalized(side, level).unwrap_or((side, 0.0));
-                let weight = 2.0 + (p.dive_weight - 2.0).max(0.0) * authority;
+                let weight = 4.5 + (p.dive_weight - 4.5).max(0.0) * maneuver_authority;
                 let waypoint = compose(inp.ship, stock_vec, dir, weight, bounds, p, obstacles);
-                return Step { state: State::DiveDodge, waypoint, boost_scale: authority };
+                return Step { state: State::DiveDodge, waypoint, boost_scale: maneuver_authority };
             }
             Dive::Skip => skipped = true,
             Dive::Idle => {}
