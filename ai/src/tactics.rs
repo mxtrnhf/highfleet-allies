@@ -332,17 +332,29 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
     if !ENABLED.load(Ordering::Relaxed) {
         return (None, State::Stock);
     }
-    if !ctx.now.is_finite() || !live_ship(ctx.creature) || !crate::maneuvers_allowed(ctx.creature) {
+    if !ctx.now.is_finite() || !live_ship(ctx.creature) {
         return (None, State::Stock);
     }
     let Some(p) = PARAMS.get() else { return (None, State::Stock) };
-    // Defensive aim awareness does not require the defender to own a target.
-    if !ctx.side.is_finite() || ctx.side == 0.0 || (ctx.side > 0.0 && !p.allies) {
+    // SAFETY: page-checked reads.
+    let (ai_flag, mode, order_role, driver_state) = unsafe {
+        (
+            rd::<u8>(ctx.creature + OFF_AI_FLAG),
+            rd::<i32>(ctx.creature + OFF_MODE),
+            rd::<i32>(ctx.creature + native_layout::CREATURE_ORDER_ROLE),
+            rd::<i32>(ctx.creature + OFF_STATE),
+        )
+    };
+    if ai_flag.unwrap_or(0) == 0 || mode != Some(1) {
         return (None, State::Stock);
     }
-    // SAFETY: page-checked reads.
-    let (ai_flag, mode) = unsafe { (rd::<u8>(ctx.creature + OFF_AI_FLAG), rd::<i32>(ctx.creature + OFF_MODE)) };
-    if ai_flag.unwrap_or(0) == 0 || mode != Some(1) {
+    let retreating = ctx.side.is_finite() && ctx.side > 0.0 && order_role == Some(2) && driver_state == Some(2);
+    let twr_ok = crate::maneuvers_allowed(ctx.creature);
+    if !retreating && !twr_ok {
+        return (None, State::Stock);
+    }
+    // Defensive aim awareness does not require the defender to own a target.
+    if !ctx.side.is_finite() || ctx.side == 0.0 || (!retreating && ctx.side > 0.0 && !p.allies) {
         return (None, State::Stock);
     }
     if !(ctx.ship.0.is_finite() && ctx.ship.1.is_finite()) {
@@ -400,7 +412,7 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
     }
     let Some(bounds) = world.bounds else { return (None, State::Stock) };
 
-    if p.aim_enabled || p.dive_enabled {
+    if p.aim_enabled || p.dive_enabled || retreating {
         unsafe { refresh_live_ships(world, now) };
     }
 
@@ -471,6 +483,7 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
             wanted: ctx.wanted,
             target: dive_target.map(|(pos, _)| pos),
             target_radius,
+            retreating,
             nearby_obstacles: &nearby_buf[..nearby_len],
         },
         &mut entry.rng,
@@ -479,6 +492,7 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
     let requested_factor = match step.state {
         State::DiveDodge => f32::from_bits(DIVE_BOOST.load(Ordering::Relaxed)),
         State::Aim => f32::from_bits(AIM_BOOST.load(Ordering::Relaxed)),
+        State::Retreat => if twr_ok { 2.0 } else { 1.0 },
         _ => 1.0,
     };
     let scaled_factor = 1.0 + (requested_factor - 1.0) * step.boost_scale.clamp(0.0, 1.0);

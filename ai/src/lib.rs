@@ -193,6 +193,7 @@ unsafe fn apply_steering_overrides(creature: usize) {
         tactics_math::State::DiveDodge => debug_state::TACTICS_DIVE,
         tactics_math::State::DiveDeclined => debug_state::TACTICS_DIVE_SKIP,
         tactics_math::State::Aim => debug_state::TACTICS_AIM,
+        tactics_math::State::Retreat => debug_state::TACTICS_STOCK,
     };
     debug_state::set_tactics(creature, now, tactics_code);
     // The panic stage sees the waypoint the tick will store (the tactic's, if it chose one) and overrides it.

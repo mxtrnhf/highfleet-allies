@@ -32,6 +32,12 @@ const EMERGENCY_TTC_S: f32 = 0.45;
 const EMERGENCY_GAP_U: f32 = 70.0;
 /// Gravity constant used by `AiShipTick` (game units/s^2).
 const GRAVITY_U: f32 = 9.82;
+/// Blend weight for the GTFO retreat vector toward the nearest clear arena border.
+const GTFO_WEIGHT: f32 = 10.0;
+/// Gentle cruise boost scale (`1 + (2 - 1) * 0.25 = 1.25x`) while retreating so engines do not burn out.
+const RETREAT_CRUISE_BOOST_SCALE: f32 = 0.25;
+/// Penalty (game units) added to a candidate exit border when an obstacle blocks that direction.
+const RETREAT_BLOCK_PENALTY: f32 = 400.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -45,6 +51,8 @@ pub enum State {
     DiveDeclined,
     /// "Aim awareness": the player's aim line crosses this ship during an awareness window, it slips off the line.
     Aim,
+    /// Allied GTFO retreat: steer toward the nearest clear arena border while keeping out of nearby hulls.
+    Retreat,
 }
 
 /// Sanitized config values the tactics use.
@@ -380,6 +388,69 @@ fn apply_keep_out(dir: &mut (f32, f32), ship: (f32, f32), obs: &Obstacle) {
     }
 }
 
+/// Picks the nearest valid arena border (`xmin`, `xmax`, or `ymin`) for a retreating ally,
+/// penalizing borders that have a nearby ship blocking the exit path.
+pub fn retreat_border_dir(ship: (f32, f32), bounds: &Bounds, obstacles: &[Obstacle]) -> (f32, f32) {
+    let candidates = [
+        ((ship.0 - bounds.xmin).max(0.0), (-1.0_f32, 0.0_f32)),
+        ((bounds.xmax - ship.0).max(0.0), (1.0_f32, 0.0_f32)),
+        ((ship.1 - bounds.ymin).max(0.0), (0.0_f32, -1.0_f32)),
+    ];
+    let mut best = candidates[0].1;
+    let mut best_score = f32::INFINITY;
+    for (dist, dir) in candidates {
+        let mut penalty = 0.0;
+        for obs in obstacles {
+            let to = (obs.pos.0 - ship.0, obs.pos.1 - ship.1);
+            let d = to.0.hypot(to.1);
+            if d > EPS && (to.0 * dir.0 + to.1 * dir.1) / d > 0.35 {
+                penalty += RETREAT_BLOCK_PENALTY;
+            }
+        }
+        let score = dist + penalty;
+        if score < best_score {
+            best_score = score;
+            best = dir;
+        }
+    }
+    best
+}
+
+/// Composes a retreat waypoint: keeps out of nearby hulls and respects the ground floor,
+/// but omits `edge_margin` so the ally can actually cross the arena border.
+pub fn compose_retreat(
+    ship: (f32, f32),
+    stock_vec: (f32, f32),
+    tactic: (f32, f32),
+    w: f32,
+    p: &TacticsParams,
+    obstacles: &[Obstacle],
+) -> Option<(f32, f32)> {
+    if !(ship.0.is_finite() && ship.1.is_finite() && tactic.0.is_finite() && tactic.1.is_finite() && w.is_finite()) {
+        return None;
+    }
+    let stock = normalized(stock_vec.0, stock_vec.1).unwrap_or((0.0, 0.0));
+    let sum = (stock.0 + w * tactic.0, stock.1 + w * tactic.1);
+    let len = (sum.0 * sum.0 + sum.1 * sum.1).sqrt();
+    if !len.is_finite() || len < MIN_BLEND_LEN {
+        return None;
+    }
+    let mut dir = (sum.0 / len, sum.1 / len);
+    for obs in obstacles {
+        apply_keep_out(&mut dir, ship, obs);
+    }
+    let safe_y = p.ground_safe_y();
+    let max_y = if ship.1 >= safe_y {
+        stock.1.min(0.0)
+    } else {
+        ((safe_y - ship.1) / WAYPOINT_LEN).clamp(0.0, 1.0)
+    };
+    cap_upper(&mut dir, 1, max_y);
+    let dir = normalized(dir.0, dir.1)?;
+    let out = (ship.0 + WAYPOINT_LEN * dir.0, ship.1 + WAYPOINT_LEN * dir.1);
+    (out.0.is_finite() && out.1.is_finite()).then_some(out)
+}
+
 /// `ship + WAYPOINT_LEN * normalize(stock_unit + w * tactic)`, with keep-out barriers and safety limits applied to
 /// the FINAL direction (the normalization of a partly opposing sum can be more downward or outward than either input).
 /// `None` when the two nearly cancel, when a limit cannot be met (corner conflicts) or on any non-finite value.
@@ -634,6 +705,8 @@ pub struct StepInput<'a> {
     pub wanted: (f32, f32),
     pub target: Option<(f32, f32)>,
     pub target_radius: f32,
+    /// Allied ship ordered to retreat (`side > 0`, `order_role == 2`, `driver_state == 2`).
+    pub retreating: bool,
     /// Additional nearby ships (allied or hostile) to keep out of during any tactical sidestep.
     pub nearby_obstacles: &'a [Obstacle],
 }
@@ -696,6 +769,12 @@ pub fn step(p: &TacticsParams, st: &mut ShipState, bounds: &Bounds, inp: &StepIn
         obs_count += 1;
     }
     let obstacles = &obs_buf[..obs_count];
+
+    if inp.retreating {
+        let dir = retreat_border_dir(inp.ship, bounds, obstacles);
+        let waypoint = compose_retreat(inp.ship, stock_vec, dir, GTFO_WEIGHT, p, obstacles);
+        return Step { state: State::Retreat, waypoint, boost_scale: RETREAT_CRUISE_BOOST_SCALE };
+    }
 
     let mut skipped = false;
     if let (true, Some(aim)) = (p.aim_enabled, inp.aim) {

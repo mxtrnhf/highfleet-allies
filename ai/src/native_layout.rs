@@ -27,6 +27,8 @@ pub const CREATURE_SIDE: usize = offset_of!(Creature, side);
 pub const CREATURE_AI_FLAG: usize = offset_of!(Creature, ai_flag);
 /// Native mode integer of a `Creature`.
 pub const CREATURE_MODE: usize = offset_of!(Creature, mode);
+/// Order role of a `Creature` (`2` = bombing / strike-retreat).
+pub const CREATURE_ORDER_ROLE: usize = offset_of!(Creature, order_role);
 /// AI driver state of a `Creature`; 6 and 7 mean dead or gone.
 pub const CREATURE_DRIVER_STATE: usize = offset_of!(Creature, driver_state);
 /// Raw group-0 gun trigger byte.
@@ -76,6 +78,7 @@ const _: () = {
     assert!(CREATURE_SIDE == 0xad4);
     assert!(CREATURE_AI_FLAG == 0xbd4);
     assert!(CREATURE_MODE == 0xb48);
+    assert!(CREATURE_ORDER_ROLE == 0xd70);
     assert!(CREATURE_DRIVER_STATE == 0xbdc);
     assert!(CREATURE_TRIGGER_GUN_GROUP_0 == 0xbbc);
     assert!(offset_of!(Creature, trigger_gun_group_1) == 0xbbd);

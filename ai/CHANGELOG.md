@@ -1,5 +1,17 @@
 # hf_ai changelog
 
+## v1.2.7 — efficient GTFO ally retreat steering
+
+- Detect AI-controlled retreating allies (`side > 0`, `order_role == 2`,
+  `driver_state == 2`) in `tactics::decide()` and steer them with a dedicated
+  `State::Retreat` ("GTFO") vector (`GTFO_WEIGHT = 10.0`) toward the nearest
+  unblocked arena border (`xmin`, `xmax`, or `ymin`).
+- Bypass `edge_margin` clamping for retreating allies while retaining
+  `ground_safe_y` floor protection and `apply_keep_out()` hull barriers so they
+  route around enemies instead of getting stuck.
+- Apply a gentle `1.25x` cruise boost (`boost_scale = 0.25`) when above
+  `twr_cutoff` instead of `2.0x` engine-burning Shift dashes.
+
 ## v1.2.6 — restore lateral dodge authority for marginal-TWR ships
 
 - Separate `raw_authority` (`0..=1`, still scaling downward `dive_level_weight`
