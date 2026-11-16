@@ -1,13 +1,11 @@
-//! Optional suppression of enemy pre-fire gun lines in Steam 1.163.
+//! Optional suppression of pre-fire gun lines in Steam 1.163.
 //!
 //! In BattleHud_DrawCombatMarkers (0x14029c5c0), these two calls draw
-//! group-0 and group-1 gun warnings. RSI is the current creature and XMM8 is
-//! zero. The immediately following native code uses alignment at +0xad4 to
-//! distinguish hostile ships for the warning sound. Preserve that code.
+//! group-0 and group-1 gun warnings for both sides. The immediately following
+//! native code handles the warning sound independently; preserve that code.
 
-use patchy::{Condition, PatchError, PatchSession, Result, Trampoline};
+use patchy::{PatchError, PatchSession, Result};
 
-const DRAW_WORLD_LINE: usize = 0x140248ba0;
 // BattleHud_DrawCombatMarkers calls playSFXSound_ with "alarm_small_09" here.
 const SOUND_CALL: usize = 0x14029e119;
 const SOUND_CALL_ORIGINAL: [u8; 5] = [0xe8, 0xc2, 0x4f, 0x04, 0x00];
@@ -23,20 +21,11 @@ pub unsafe fn prepare(session: &mut PatchSession) -> Result {
         }
     }
     for (address, _) in SITES {
-        let mut trampoline = Trampoline::new();
-        let skip_draw = trampoline.new_label();
-        // COMISS XMM8,[RSI+0xad4]: zero >= alignment means hostile.
-        trampoline.bytes(&[0x44, 0x0f, 0x2f, 0x86, 0xd4, 0x0a, 0x00, 0x00]);
-        trampoline.jump_if(Condition::AboveOrEqual, skip_draw);
-        trampoline.absolute_call(DRAW_WORLD_LINE as *const ());
-        trampoline.bind(skip_draw)?;
-        trampoline.relative_jump(address + 5);
-        // SAFETY: The exact original call is checked above; RSI and XMM8 have
-        // the meanings established by the enclosing 1.163 render loop. The
-        // original argument registers and stack are untouched before the call.
-        unsafe { session.detour_trampoline(address, 5, trampoline)? };
+        // SAFETY: Each verified instruction is a complete five-byte draw call.
+        // Its return value is unused, as in the previous suppression trampoline.
+        unsafe { session.overwrite(address, &[0x90; 5])? };
     }
-    log::info!("Prepared enemy pre-fire laser warning suppression");
+    log::info!("Prepared pre-fire laser warning suppression for both sides");
     Ok(())
 }
 

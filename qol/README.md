@@ -12,9 +12,11 @@ For Steam 1.163, set `"enable_intro": true` in `qol.json` to restore the native
 startup logos. After the first second, a fresh key press or mouse click skips
 them. Remove the standalone hf_intro DLL when enabling this option.
 
-Set `"enemy_laser_warning": false` to hide enemy pre-fire gun warning lines.
+Set `"enemy_laser_warning": false` to hide pre-fire gun warning lines for both
+enemy and friendly ships, including allies. The existing key is retained for
+compatibility.
 Set `"enemy_sound_warning": false` to mute the enemy pre-fire sound warning.
-Both options default to `true` and work independently; friendly lines remain.
+Both options default to `true` and work independently.
 Simple mod with various QOL features.
 It is intended to be used with the [Highfleet Modloader](https://github.com/logdot/Highfleet-Modloader).
 

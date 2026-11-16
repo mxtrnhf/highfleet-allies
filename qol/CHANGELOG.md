@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+
+- Hide friendly and allied pre-fire gun warning lines as well as enemy lines
+  when `enemy_laser_warning` is false. The sound option remains independent.
+
 ## 0.2.1
 
 - Add an independent option to mute the enemy pre-fire sound warning on

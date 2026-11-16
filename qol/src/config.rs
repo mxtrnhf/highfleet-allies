@@ -52,7 +52,7 @@ pub struct Config {
     /// Steam 1.163 only; disabled by default.
     #[serde(default)]
     pub enable_intro: bool,
-    /// Show enemy gun pre-fire laser warnings. Enabled by default.
+    /// Show gun pre-fire laser warnings for both sides. Enabled by default.
     #[serde(default = "default_crash_fix_enabled")]
     pub enemy_laser_warning: bool,
     /// Play the enemy pre-fire sound warning. Enabled by default; Steam 1.163 only.
