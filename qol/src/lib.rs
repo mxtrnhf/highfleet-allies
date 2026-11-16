@@ -17,8 +17,12 @@ mod dumpable;
 mod elevation;
 #[cfg(not(feature = "1_151"))]
 mod elevation_rules;
+#[cfg(not(feature = "1_151"))]
+mod enemy_laser_warning;
 mod flare_crash;
 mod guns;
+#[cfg(not(feature = "1_151"))]
+mod intro;
 mod parts;
 mod plane;
 mod plane_guns;
@@ -163,8 +167,16 @@ unsafe extern "C" fn init() -> bool {
             if config.elevation.enabled {
                 log::warn!("Elevation needs Steam 1.163, leaving it off");
             }
-            log::info!("Refuel rate, speed curve and elevation rules need Steam 1.163, leaving them alone");
+            log::info!(
+                "Refuel rate, speed curve and elevation rules need Steam 1.163, leaving them alone"
+            );
         } else {
+            if config.enable_intro {
+                prepare_patch!(intro::prepare(&mut patch_session));
+            }
+            if !config.enemy_laser_warning {
+                prepare_patch!(enemy_laser_warning::prepare(&mut patch_session));
+            }
             prepare_patch!(crash_fixes::prepare(
                 &mut patch_session,
                 config.fix_plane_ai_crash,

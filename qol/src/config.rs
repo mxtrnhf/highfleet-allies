@@ -48,6 +48,13 @@ pub struct Config {
     /// Enabled by default. Version 1.151 does not require this fix.
     #[serde(default = "default_crash_fix_enabled")]
     pub enable_flare_crash_fix: bool,
+    /// Restore the native intro, skippable with a fresh key press or click.
+    /// Steam 1.163 only; disabled by default.
+    #[serde(default)]
+    pub enable_intro: bool,
+    /// Show enemy gun pre-fire laser warnings. Enabled by default.
+    #[serde(default = "default_crash_fix_enabled")]
+    pub enemy_laser_warning: bool,
     /// Fixes an out-of-bounds read in stock aircraft target choice on Steam 1.163.
     /// Enabled by default; moved from ally.json to qol.json.
     #[serde(default = "default_crash_fix_enabled")]
@@ -197,6 +204,8 @@ impl Default for Config {
             enable_unblocked_guns: false,
             enable_reduced_shake: false,
             enable_flare_crash_fix: true,
+            enable_intro: false,
+            enemy_laser_warning: true,
             fix_plane_ai_crash: true,
             fix_merge_crash: true,
             enable_unblocked_ttl: false,
