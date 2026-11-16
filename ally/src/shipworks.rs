@@ -695,6 +695,17 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     if name == "SW_ALLY_CRASH" {
         if CRASH_BUTTON.load(Ordering::Relaxed) {
             log::error!("hf_ally: deliberate Shipworks fail-fast requested");
+            // SAFETY: Both strings are static and NUL-terminated; a null owner is valid.
+            windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxA(
+                std::ptr::null_mut(),
+                c"What did you expect?\nDisable this button in ally.json"
+                    .as_ptr()
+                    .cast(),
+                c"CRASH".as_ptr().cast(),
+                windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
+                    | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONWARNING
+                    | windows_sys::Win32::UI::WindowsAndMessaging::MB_TOPMOST,
+            );
             // SAFETY: Windows accepts null records and generates STATUS_FAIL_FAST_EXCEPTION.
             // Fail-fast terminates without deliberate invalid memory access, save writes or
             // running native teardown on partially modified state. It bypasses exception handlers;
