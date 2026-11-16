@@ -2,7 +2,7 @@
 
 * **v1.3.9 (prediction launch range):** the debug aim marker reads the live cannon launch-speed randomization bounds along with the selected gun's live ammo speed and lifetime. It suppresses the marker when the fastest possible shot might hit the physics translation cap or an unknown AP lifetime patch prevents a reliable prediction. Includes the v1.3.8 compatibility fix. In-game validation pending.
 
-* **v1.3.8 (Map Mode Extended compatibility):** move the Shipworks level-transition hook past the level loader's entry, allowing Map Mode Extended to install its scene-loader hook without changing Shipworks session cleanup. Windows cross-build validated; compatibility and Shipworks transitions require in-game validation.
+* **v1.3.8 (Map Mode Extended compatibility):** move the Shipworks level-transition hook past the level loader's entry, allowing Map Mode Extended to install its scene-loader hook without changing Shipworks session cleanup. The maintainer confirmed in game with v1.3.9 that Map Mode Extended and allies work together, with no Shipworks problems detected.
 
 * **v1.3.6 (focus target):** press Z to direct AI allies at the enemy in the player's native yellow target box. `focus_target_key` configures the Windows virtual-key code (0 disables it). The order prevents native retargeting for 10 game seconds, then leaves the target to normal AI; it ends early if the target disappears or dies. Prize protection still applies. In-game validation pending.
 

@@ -130,6 +130,10 @@ and GUI geometry `+0x218/+0x21c` remain locally documented RE contracts.
 
 ## Validation
 
+v1.3.9 (2026-11-16): the maintainer reports that Map Mode Extended and allies
+work together in game and that no Shipworks problems were detected. Specific
+Shipworks transitions and load orders were not enumerated in the report.
+
 v1.3.3 (2026-11-15): locked no-default-features Windows release build, targeted
 rustfmt and diff checks passed. Default/megalog Windows release Clippy passed
 with the same 22 existing warnings. Audited the other Shipworks replays: fleet
