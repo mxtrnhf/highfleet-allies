@@ -43,6 +43,8 @@ const OFF_LOADOUT: usize = offset_of!(Body, logic_s1);
 /// The plane's `AircraftLogic`, shared with highfleet-rs (`AircraftLogic`).
 const OFF_LOGIC: usize = offset_of!(Body, aircraft_logic);
 const LOGIC_MODE: usize = offset_of!(AircraftLogic, mode);
+/// `AircraftLogic + 0xc8` (`i32`): side (> 0 player, < 0 AI); verified in `0x14000f5b0`, `0x14000ceb0`, `0x1400102e0`.
+const LOGIC_SIDE: usize = 0xc8;
 const LOGIC_STATE: usize = offset_of!(AircraftLogic, state);
 const LOGIC_TARGET_LINK: usize = offset_of!(AircraftLogic, target_link);
 const LOGIC_TARGET: usize = LOGIC_TARGET_LINK + offset_of!(Link, target);
@@ -52,6 +54,8 @@ const LOGIC_GUN_RATE: usize = offset_of!(AircraftLogic, gun_rate);
 const LOGIC_GUN_LOAD: usize = offset_of!(AircraftLogic, gun_load);
 const LOGIC_GUN_MAX_LOAD: usize = offset_of!(AircraftLogic, gun_max_load);
 const LOGIC_GUN_RESERVE_AMMO: usize = offset_of!(AircraftLogic, gun_reserve_ammo);
+/// Total rounds for the automatically added extra gunpod, including its loaded magazine.
+const EXTRA_GUNPOD_TOTAL_AMMO: i32 = 3_000;
 const LOGIC_BOMB_COUNT: usize =
     offset_of!(AircraftLogic, bomb_ammo_indices) + offset_of!(SentinelList<i32>, length);
 const LOGIC_ROCKET_COUNT: usize =
@@ -843,12 +847,19 @@ unsafe fn guns_engage(logic: usize) {
         return;
     }
 
-    let own_side = rd::<f32>(owner + OFF_SIDE);
+    let own_side = logic_side(logic, owner);
     let target = rd::<usize>(logic + LOGIC_TARGET);
-    let victim = if target != 0 {
+    let valid_target = is_enemy_target(target, own_side);
+    let (px, py) = (rd::<f32>(plane + OFF_PLANE_POS.0), rd::<f32>(plane + OFF_PLANE_POS.1));
+    let victim = if valid_target {
         target
     } else if own_side != 0.0 {
-        find_target(owner, own_side)
+        let air = find_target_from(px, py, own_side);
+        if air != 0 {
+            air
+        } else {
+            find_enemy_ship(px, py, own_side)
+        }
     } else {
         0
     };
@@ -868,11 +879,11 @@ unsafe fn guns_engage(logic: usize) {
             // nothing to shoot yet (no carrier lock, no enemy aircraft): back to the carrier circle
             set_state(logic, 0);
         }
-        2 if target == 0 => {
+        2 if !valid_target => {
             if victim != 0 {
                 set_link(logic + LOGIC_TARGET_LINK, victim);
                 set_state(logic, 3);
-                log::info!("PLANE gun: plane {plane:#x} lost its target, engages {victim:#x} (state {state} -> 3)");
+                log::info!("PLANE gun: plane {plane:#x} retargets {victim:#x} (was {target:#x}, state {state} -> 3)");
             } else {
                 (logic as *mut i32).byte_add(LOGIC_MODE).write_unaligned(6);
                 set_state(logic, 0);
@@ -919,7 +930,7 @@ unsafe fn install_gunpod(logic: usize) -> bool {
     let index = ((rec - begin) / AMMO_SIZE) as i32;
     let delay = rd::<f32>(rec + offset_of!(Ammo, fire_delay));
     let magazine = rd::<i32>(rec + offset_of!(Ammo, salvo_size)).clamp(1, 999);
-    let reserve = (50 - magazine).max(0);
+    let reserve = (EXTRA_GUNPOD_TOTAL_AMMO - magazine).max(0);
     (logic as *mut i32).byte_add(LOGIC_GUN_AMMO_INDEX).write_unaligned(index);
     (logic as *mut f32).byte_add(LOGIC_GUN_RELOAD_DURATION).write_unaligned(2.0);
     (logic as *mut f32).byte_add(LOGIC_GUN_RATE).write_unaligned(delay);
@@ -949,6 +960,7 @@ pub unsafe extern "C" fn on_update(logic: usize, body: usize) {
     if crate::native::plausible(logic) {
         ensure_gunpod(logic);
         attackers_to_mode_3(logic);
+        gunpod_retarget(logic);
         guns_engage(logic);
     }
     if crate::diag::debug() {
@@ -1142,10 +1154,63 @@ unsafe fn dump_owner_candidates(body: usize) {
     log::info!("PLANE zenith {body:#x} owner candidates: {found:?}");
 }
 
+unsafe fn logic_side(logic: usize, owner: usize) -> f32 {
+    let s = rd::<i32>(logic + LOGIC_SIDE) as f32;
+    if s != 0.0 {
+        s
+    } else if crate::native::plausible(owner) {
+        rd::<f32>(owner + OFF_SIDE)
+    } else {
+        0.0
+    }
+}
+
+unsafe fn is_enemy_ship(target: usize, own_side: f32) -> bool {
+    crate::native::live_ship(target) && rd::<f32>(target + OFF_SIDE) * own_side < 0.0
+}
+
+unsafe fn is_enemy_air(target: usize, own_side: f32) -> bool {
+    if !crate::native::plausible(target)
+        || rd::<u8>(target + crate::native_layout::NODE_CODE) & 0x2f == 0x2f
+        || rd::<i32>(target + OFF_ACTIVE) == 0
+    {
+        return false;
+    }
+    if !matches!(rd::<i32>(target + OFF_BODY_LOGIC), 1 | 500) {
+        return false;
+    }
+    let s = rd::<f32>(target + 0x248);
+    let side = if s != 0.0 { s } else { owner_side(target) };
+    side * own_side < 0.0
+}
+
+unsafe fn is_enemy_target(target: usize, own_side: f32) -> bool {
+    is_enemy_ship(target, own_side) || is_enemy_air(target, own_side)
+}
+
+unsafe fn find_enemy_ship(px: f32, py: f32, own_side: f32) -> usize {
+    let (b, e): (usize, usize) = (rd(CREATURES.0), rd(CREATURES.1));
+    if b < 0x10000 || e < b || (e - b) / 0x18 > 4096 {
+        return 0;
+    }
+    let mut best: Option<(f32, usize)> = None;
+    for a in (b..e).step_by(0x18) {
+        let c: usize = rd(a + 8);
+        if !is_enemy_ship(c, own_side) {
+            continue;
+        }
+        let (cx, cy) = (rd::<f32>(c + OFF_SHIP_POS.0), rd::<f32>(c + OFF_SHIP_POS.1));
+        let d = (cx - px).powi(2) + (cy - py).powi(2);
+        if best.map_or(true, |(bd, _)| d < bd) {
+            best = Some((d, c));
+        }
+    }
+    best.map_or(0, |(_, c)| c)
+}
+
 /// The foe the interceptors go for: the nearest living enemy Zenith-type missile (logic id 1), else the nearest enemy plane
-/// (500), measured from the carrier. A foe has the opposite side sign of the owner. 0 when there is none.
-unsafe fn find_target(owner: usize, own_side: f32) -> usize {
-    let (ox, oy) = (rd::<f32>(owner + OFF_SHIP_POS.0), rd::<f32>(owner + OFF_SHIP_POS.1));
+/// (500), measured from `(px, py)`. A foe has the opposite side sign of `own_side`. 0 when there is none.
+unsafe fn find_target_from(px: f32, py: f32, own_side: f32) -> usize {
     let mut best: Option<(i32, f32, usize)> = None; // (rank 0 = Zenith, 1 = plane; distance^2; body)
     for (body, id, side, x, y) in bodies() {
         let rank = match id {
@@ -1157,12 +1222,92 @@ unsafe fn find_target(owner: usize, own_side: f32) -> usize {
         if side * own_side >= 0.0 {
             continue;
         }
-        let d = (x - ox).powi(2) + (y - oy).powi(2);
+        let d = (x - px).powi(2) + (y - py).powi(2);
         if best.map_or(true, |b| (rank, d) < (b.0, b.1)) {
             best = Some((rank, d, body));
         }
     }
     best.map_or(0, |b| b.2)
+}
+
+unsafe fn find_target(owner: usize, own_side: f32) -> usize {
+    find_target_from(
+        rd::<f32>(owner + OFF_SHIP_POS.0),
+        rd::<f32>(owner + OFF_SHIP_POS.1),
+        own_side,
+    )
+}
+
+/// Mode 2's native target selector (`aircraftStateHandler` at `0x14000fbc0`) only scans for missiles (`+0x3c4` 10/1,
+/// with no side check) and leaves `target == 0` when none are in the air, causing `AircraftLogic_Mode2_Interceptor`
+/// (`0x14000ba70`) to fly straight off the map. Keep `extra_gunpod` planes locked onto living enemy ships (or enemy
+/// aircraft/missiles if no ships remain), and leave cleanly in mode 6 state 5 when no enemies are left.
+unsafe fn gunpod_retarget(logic: usize) {
+    let Ok(w) = WATCH.try_lock() else { return };
+    let Some((plane, gunpod, seen)) = w
+        .iter()
+        .find(|(p, _, _, _, _)| crate::native::plausible(*p) && rd::<usize>(*p + OFF_LOGIC) == logic)
+        .map(|(p, _, g, s, _)| (*p, *g, *s))
+    else {
+        return;
+    };
+    drop(w);
+    if !gunpod || !seen {
+        return;
+    }
+    let mode = rd::<i32>(logic + LOGIC_MODE);
+    let state = rd::<i32>(logic + LOGIC_STATE);
+    if mode != 2 || matches!(state, 5..=7) {
+        return;
+    }
+    let rounds = rd::<i32>(logic + LOGIC_GUN_LOAD) + rd::<i32>(logic + LOGIC_GUN_RESERVE_AMMO);
+    if rd::<i32>(logic + LOGIC_GUN_AMMO_INDEX) == 0 || rounds <= 0 {
+        return;
+    }
+    let own_side = rd::<i32>(logic + LOGIC_SIDE) as f32;
+    if own_side == 0.0 {
+        return;
+    }
+    let target = rd::<usize>(logic + LOGIC_TARGET);
+    if is_enemy_ship(target, own_side) {
+        return;
+    }
+    let (px, py) = (rd::<f32>(plane + OFF_PLANE_POS.0), rd::<f32>(plane + OFF_PLANE_POS.1));
+    let set_link: unsafe extern "win64" fn(usize, usize) = std::mem::transmute(SET_LINK);
+    let set_state: unsafe extern "win64" fn(usize, i32) = std::mem::transmute(SET_STATE);
+    let ship = find_enemy_ship(px, py, own_side);
+    if ship != 0 {
+        set_link(logic + LOGIC_TARGET_LINK, ship);
+        if state != 3 {
+            set_state(logic, 3);
+        }
+        log::info!(
+            "PLANE gunpod: plane {plane:#x} retargeted to ship {ship:#x} (was {target:#x}, {rounds} rounds)"
+        );
+        return;
+    }
+    if is_enemy_air(target, own_side) {
+        if state != 3 {
+            set_state(logic, 3);
+        }
+        return;
+    }
+    let air = find_target_from(px, py, own_side);
+    if air != 0 {
+        set_link(logic + LOGIC_TARGET_LINK, air);
+        if state != 3 {
+            set_state(logic, 3);
+        }
+        log::info!(
+            "PLANE gunpod: plane {plane:#x} retargeted to air {air:#x} (was {target:#x}, {rounds} rounds)"
+        );
+        return;
+    }
+    (logic as *mut i32).byte_add(LOGIC_MODE).write_unaligned(6);
+    set_state(logic, 5);
+    log::info!(
+        "PLANE gunpod: plane {plane:#x} no enemies left, leaving (mode 2 -> 6, state {state} -> 5, {rounds} rounds)"
+    );
 }
 
 /// Gives the plane a foe Zenith as its target and sends it into mode 0 state 3. True when one was found.
@@ -1329,6 +1474,7 @@ pub unsafe fn tick() {
     }
     w.retain_mut(|(plane, bombs, gunpod, seen, _)| {
         if !crate::native::plausible(*plane) || rd::<i32>(*plane + OFF_ACTIVE) == 0 {
+            log::info!("PLANE watch: plane {plane:#x} inactive/destroyed");
             return false; // destroyed or gone
         }
         let logic: usize = rd(*plane + OFF_LOGIC);
@@ -1343,7 +1489,16 @@ pub unsafe fn tick() {
             return true;
         }
         if !*seen || !(1..=4).contains(&state) {
-            return !matches!(state, 5..=7);
+            if matches!(state, 5..=7) {
+                let mode = rd::<i32>(logic + LOGIC_MODE);
+                let rounds = rd::<i32>(logic + LOGIC_GUN_LOAD) + rd::<i32>(logic + LOGIC_GUN_RESERVE_AMMO);
+                let target = rd::<usize>(logic + LOGIC_TARGET);
+                log::info!(
+                    "PLANE watch: plane {plane:#x} left/deactivated (mode {mode}, state {state}, rounds {rounds}, target {target:#x})"
+                );
+                return false;
+            }
+            return true;
         }
         // `extra_gunpod`: stay in the fight and strafe with the 37 mm instead of leaving, but only in the normal
         // tactical battle. The strategic bomber scene (`Bombers.seria`) is mode 3/selector 2-3 and never reaches this.
@@ -1353,7 +1508,7 @@ pub unsafe fn tick() {
             }
             let rounds = rd::<i32>(logic + LOGIC_GUN_LOAD) + rd::<i32>(logic + LOGIC_GUN_RESERVE_AMMO);
             let target = rd::<usize>(logic + LOGIC_TARGET);
-            if rd::<i32>(logic + LOGIC_GUN_AMMO_INDEX) != 0 && rounds > 0 && target != 0 {
+            if rd::<i32>(logic + LOGIC_GUN_AMMO_INDEX) != 0 && rounds > 0 {
                 let mode = rd::<i32>(logic + LOGIC_MODE);
                 let set: unsafe extern "win64" fn(usize, i32) = std::mem::transmute(SET_STATE);
                 if mode != 2 {
@@ -1368,10 +1523,14 @@ pub unsafe fn tick() {
                 return true;
             }
         }
+        let mode = rd::<i32>(logic + LOGIC_MODE);
+        if mode != 6 {
+            (logic as *mut i32).byte_add(LOGIC_MODE).write_unaligned(6);
+        }
         let set: unsafe extern "win64" fn(usize, i32) = std::mem::transmute(SET_STATE);
         set(logic, 5);
         log::info!(
-            "PLANE leaves: plane {plane:#x} used up its payload (bombs {bombs_now}, rockets {rockets_now}; watched {}) (state {state} -> 5)",
+            "PLANE leaves: plane {plane:#x} used up its payload (bombs {bombs_now}, rockets {rockets_now}; watched {}) (mode {mode} -> 6, state {state} -> 5)",
             if *bombs { "bombs" } else { "rockets" }
         );
         false
