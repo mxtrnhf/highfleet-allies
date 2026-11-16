@@ -102,8 +102,14 @@ const ENEMY_FLEET_SETUP: [u8; 26] = [
     0x48, 0x8b, 0x84, 0x24, 0xe8, 0x00, 0x00, 0x00, // MOV RAX, [RSP+0xE8]
     0x48, 0x89, 0x44, 0x24, 0x28, // MOV [RSP+0x28], RAX
 ];
-const LEVEL_ENTRY: usize = 0x1_4025_afd0;
-const LEVEL_BYTES: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18];
+/// After the level loader's prologue, before it copies the requested path. This avoids the
+/// entry hook used by Map Mode Extended; RCX still holds the path and RSP is 16-byte aligned.
+const LEVEL_SEAM: usize = 0x1_4025_aff4;
+const LEVEL_BYTES: [u8; 10] = [
+    0x41, 0x0f, 0xb6, 0xf8, // MOVZX EDI, R8B
+    0x0f, 0xb6, 0xf2, // MOVZX ESI, DL
+    0x48, 0x8b, 0xd9, // MOV RBX, RCX
+];
 const COPY_STRING: usize = 0x1_4000_56e0;
 const COPY_STRING_BYTES: [u8; 12] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57,
@@ -229,7 +235,7 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
         (CREATE_ESCADRA, &CREATE_ESCADRA_BYTES[..]),
         (ENEMY_APPEND_SEAM, &ENEMY_APPEND_BYTES[..]),
         (GET_PROFILE, &GET_PROFILE_BYTES[..]),
-        (LEVEL_ENTRY, &LEVEL_BYTES[..]),
+        (LEVEL_SEAM, &LEVEL_BYTES[..]),
         (COPY_STRING, &COPY_STRING_BYTES[..]),
         (LINK_CLEAR_VECTOR, &LINK_CLEAR_VECTOR_BYTES[..]),
         (ENEMY_LOOP_SEAM, &ENEMY_LOOP_BYTES[..]),
@@ -329,13 +335,11 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
         .map_err(|e| e.to_string())?;
 
     let mut level = Trampoline::new();
-    level.bytes(&LEVEL_BYTES);
-    level.bytes(&[0x48, 0x83, 0xec, 0x08]); // Entry RSP is 8 mod 16.
     level.preserved_call(on_level as *const (), &[], &[], ReturnType::None);
-    level.bytes(&[0x48, 0x83, 0xc4, 0x08]);
-    level.absolute_jump(LEVEL_ENTRY + LEVEL_BYTES.len());
+    level.bytes(&LEVEL_BYTES);
+    level.absolute_jump(LEVEL_SEAM + LEVEL_BYTES.len());
     session
-        .detour_trampoline(LEVEL_ENTRY, LEVEL_BYTES.len(), level)
+        .detour_trampoline(LEVEL_SEAM, LEVEL_BYTES.len(), level)
         .map_err(|e| e.to_string())?;
     CRASH_BUTTON.store(crash_button, Ordering::Relaxed);
     READY.store(true, Ordering::Relaxed);
