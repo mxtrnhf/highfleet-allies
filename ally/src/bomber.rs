@@ -423,7 +423,9 @@ unsafe fn steer(ship: usize) {
                 })
                 .map(|entry| entry.target)
         });
-        if let Some(target) = desired.filter(|target| landed_enemy(*target)) {
+        if let Some(target) = desired.filter(|target| {
+            landed_enemy(*target) && battle::commanded_target().is_none_or(|focus| focus == *target)
+        }) {
             if rd::<usize>(ship + crate::native::OFF_TARGET) != Some(target) {
                 set_target(ship, target);
             }

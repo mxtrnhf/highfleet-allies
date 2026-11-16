@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.6 (focus target):** press Z to direct AI allies at the enemy in the player's native yellow target box. `focus_target_key` configures the Windows virtual-key code (0 disables it). The order prevents native retargeting for 10 game seconds, then leaves the target to normal AI; it ends early if the target disappears or dies. Prize protection still applies. In-game validation pending.
+
 * **v1.3.5 (Shipworks crash dialog):** the optional CRASH button displays a Windows message explaining how to disable it before triggering the existing fail-fast termination. In-game validation pending.
 
 * **v1.3.4 (any-border ally retreat extraction):** AI-controlled retreating allies (`mode_d70 == 2, state == 2, ai_flag != 0`) are now extracted as soon as they reach any valid arena border (`xmin`, `xmax`, or `ymin` within `1.5 * bounding_radius`, clamped `60..250u`) without touching the player's `RETREAT_POINT`. Cross-build validated; in-game validation pending.

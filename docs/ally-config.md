@@ -33,6 +33,7 @@ For individual features, use this table. Settings for an already-disabled parent
 | Number of allies | **No zero/disable value** | `max_allies: 0` is clamped to one. Use the per-ship ALLY toggle to skip the wingman. |
 | Automatic flagship-leaves handling | **No separate off switch** | `flagship_leaves` always applies; `enabled: false` turns off the whole mod. |
 | F8 ally retreat hotkey | `retreat_key: 0` | Automatic and fuel-triggered retreat remain independently configurable. |
+| Focus target hotkey | `focus_target_key: 0` | Disables the command; normal AI target selection remains. |
 | Manual ship switching | `ship_switching: false` | Disables 1/2/TAB handoffs; automatic flagship handover remains unchanged. |
 | Low-fuel ally retreat | `ally_fuel_retreat_percent: 0.0` | F8 and flagship-leaves behaviour remain. |
 | Ally radio sounds | `ally_sounds: false` | Ordinary log messages remain. |
@@ -62,6 +63,15 @@ For individual features, use this table. Settings for an already-disabled parent
 Retired logging keys (`max_lines`, `log_precombat`, `probe_lines`, `log_colors`,
 `dead_node`) are ignored if an older config still contains them. See
 [retired diagnostics](retired-diagnostics.md).
+
+## Focus target
+
+`focus_target_key` is a Windows virtual-key code: the default `90` is Z, and
+`0` disables the command. Select a live enemy in the game's yellow target box
+and press the key to direct AI allies to it. Their old target cannot reclaim priority for 10 game seconds;
+afterwards normal targeting resumes without clearing the commanded target.
+The order ends early if the target dies or leaves, and `spare_prizes` still
+protects prize ships. Pressing the key again can select a different target.
 
 ## Stock-game crash fixes moved to QoL
 

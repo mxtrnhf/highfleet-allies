@@ -40,6 +40,12 @@ Every setting is already in the config files of the pack, so there is nothing to
 and **TAB** cycles deployed friendly ships. Your old ship becomes an AI ally.
 Enabled by `ship_switching` (default true); [details and keybinding caveats](docs/ship-switching.md).
 
+**Focus target:** select an enemy ship (the game's yellow target box) and press **Z**
+to direct AI allies to attack it.
+The command resists retargeting for 10 game seconds; afterwards allies may choose targets
+normally. The order ends early if the enemy dies or leaves. Prize protection still applies.
+Configure `focus_target_key` in `ally.json` as a Windows virtual-key code (90 = Z, 0 = off).
+
 **Shipworks test allies and enemies (hf_ally v1.3.3):** **ADD**, beside TEST in the top row,
 captures the edited ship into an ally list. The existing **FIGHT** button includes those
 ships as allies. **ADD ENEMY**, right of ADD, captures the edited ship into an enemy list

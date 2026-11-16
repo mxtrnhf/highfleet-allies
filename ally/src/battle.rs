@@ -40,7 +40,9 @@ use crate::precombat;
 use crate::second_player;
 use crate::ship_switch;
 use crate::sound;
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
 /// The ship mode (`+0xd70`) an ally gets: 0 = the plain AI ship the enemies use.
 /// The former `ally_mode` config was removed in v0.12.1: 1 is player-controlled and 2 is
@@ -89,6 +91,16 @@ static ARMED: AtomicBool = AtomicBool::new(false);
 static HANDOVER: AtomicBool = AtomicBool::new(false);
 static RETREAT_POINT_SAVED: AtomicU64 = AtomicU64::new(0);
 static RETREAT_KEY: AtomicU32 = AtomicU32::new(0);
+static FOCUS_KEY: AtomicU32 = AtomicU32::new(0);
+static FOCUS_KEY_DOWN: AtomicBool = AtomicBool::new(false);
+static FOCUS: Mutex<Option<FocusOrder>> = Mutex::new(None);
+const FOCUS_SECONDS: f64 = 10.0;
+
+#[derive(Clone, Copy)]
+struct FocusOrder {
+    target: usize,
+    started: f64,
+}
 static KEY_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static ALLY_PTR: AtomicUsize = AtomicUsize::new(0);
 static FLAGSHIP: AtomicUsize = AtomicUsize::new(0);
@@ -196,6 +208,7 @@ pub(crate) fn configure(config: &crate::config::Config) {
     };
     HANDOVER.store(handover, Ordering::Relaxed);
     RETREAT_KEY.store(config.retreat_key, Ordering::Relaxed);
+    FOCUS_KEY.store(config.focus_target_key, Ordering::Relaxed);
     ALLY_DELAY.store(
         config.ally_delay_seconds.max(0.0).to_bits(),
         Ordering::Relaxed,
@@ -213,7 +226,7 @@ pub(crate) unsafe fn install_prize_guard(
     enabled: bool,
 ) -> Result<(), String> {
     SPARE_PRIZES.store(enabled, Ordering::Relaxed);
-    if !enabled {
+    if !enabled && FOCUS_KEY.load(Ordering::Relaxed) == 0 {
         return Ok(());
     }
     let target_ok = std::slice::from_raw_parts(TARGET_FN as *const u8, 3) == [0x48, 0x8b, 0xc4];
@@ -234,9 +247,10 @@ pub(crate) unsafe fn install_prize_guard(
         }
     } else {
         log::warn!(
-            "hf_ally: the AI target choice or its call sites differ, prize ships are not spared"
+            "hf_ally: AI target choice hooks differ; prize protection and focus command are unavailable"
         );
         SPARE_PRIZES.store(false, Ordering::Relaxed);
+        FOCUS_KEY.store(0, Ordering::Relaxed);
     }
     Ok(())
 }
@@ -384,6 +398,9 @@ pub(crate) unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
         PLAYER_SEEN.store(0, Ordering::Relaxed);
         battle_diagnostics::reset();
         bomber::reset();
+        if let Ok(mut order) = FOCUS.try_lock() {
+            *order = None;
+        }
         ally_panels::invalidate();
         lifecycle_log::reset_spawn_budget();
         PRIZE_LINES.store(0, Ordering::Relaxed);
@@ -869,11 +886,153 @@ unsafe fn creature_of(node: usize) -> usize {
     }
 }
 
+/// Snapshot the live creature vector before consulting a cached focus address.
+unsafe fn focus_enemies() -> Vec<usize> {
+    let (begin, end): (usize, usize) = (read(CREATURES_BEGIN), read(CREATURES_END));
+    if begin < 0x10000
+        || end < begin
+        || (end - begin) % LINK_STRIDE != 0
+        || (end - begin) / LINK_STRIDE > CREATURE_LIST_LIMIT
+    {
+        return Vec::new();
+    }
+    (begin..end)
+        .step_by(LINK_STRIDE)
+        .map(|entry| read::<usize>(entry + 8))
+        .filter(|&ship| {
+            live_ship(ship)
+                && read::<f32>(ship + OFF_SIDE) < 0.0
+                && (!SPARE_PRIZES.load(Ordering::Relaxed) || read::<u8>(ship + OFF_PRIZE) == 0)
+        })
+        .collect()
+}
+
+/// The native HUD draws its yellow target box from the player's target Link.
+/// See `hf_notes/hf_graphics/battle-hud-callouts.md`, section 9.
+unsafe fn boxed_enemy(player: usize, enemies: &[usize]) -> Option<usize> {
+    let node: usize = read(player + OFF_TARGET);
+    if enemies.contains(&node) {
+        return Some(node);
+    }
+    if !plausible(node) {
+        return None;
+    }
+    // Parts hold their owning creature at +0xb8. The page-checked scalar read is
+    // only used to find a matching live-list entry, not to dereference the owner.
+    let owner = diag::rd::<usize>(node + 0xb8)?;
+    enemies.contains(&owner).then_some(owner)
+}
+
+/// Resolve an order only while the same enemy is still in this frame's live creature vector.
+unsafe fn focus_target(enemies: &[usize]) -> Option<usize> {
+    let mut order = FOCUS.try_lock().ok()?;
+    let current = (*order)?;
+    let now: f64 = read(CLOCK);
+    if !now.is_finite()
+        || now < current.started
+        || now - current.started >= FOCUS_SECONDS
+        || !enemies.contains(&current.target)
+    {
+        *order = None;
+        return None;
+    }
+    Some(current.target)
+}
+
+/// Current focus for bomber steering, validated against the live creature vector.
+pub(crate) unsafe fn commanded_target() -> Option<usize> {
+    if !armed() {
+        return None;
+    }
+    if FOCUS.try_lock().ok()?.is_none() {
+        return None;
+    }
+    focus_target(&focus_enemies())
+}
+
+/// Uses the native registered Link, never an owning copy of game memory.
+unsafe fn apply_focus(ship: usize, target: usize) {
+    if read::<usize>(ship + OFF_TARGET) != target {
+        // SAFETY: game-thread callback; both creatures were established in current native lists,
+        // and SetLink was version/prologue checked. Native code owns and registers the Link.
+        let set_link: SetLinkFn = std::mem::transmute(SET_LINK);
+        set_link(ship + OFF_TARGET_LINK, target);
+    }
+}
+
+unsafe fn focus_tick(ships: &[usize]) {
+    let key = FOCUS_KEY.load(Ordering::Relaxed);
+    let down = key != 0 && key <= 255 && GetAsyncKeyState(key as i32) as u16 & 0x8000 != 0;
+    let pressed = down && !FOCUS_KEY_DOWN.swap(down, Ordering::Relaxed);
+    if !down {
+        FOCUS_KEY_DOWN.store(false, Ordering::Relaxed);
+    }
+    if !armed() || ships.is_empty() {
+        if let Ok(mut order) = FOCUS.try_lock() {
+            *order = None;
+        }
+        return;
+    }
+    if !pressed && FOCUS.try_lock().is_ok_and(|order| order.is_none()) {
+        return;
+    }
+    let enemies = focus_enemies();
+    if pressed {
+        let mut foreground = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &mut foreground);
+        let dt: f32 = read(0x1_403c_126c);
+        let player: usize = read(CONTROLLED_LINKS + 8);
+        if foreground == GetCurrentProcessId()
+            && !precombat::is_open()
+            && read::<u8>(0x1_47fc_6fb7) != 0
+            && read::<usize>(0x1_43a1_3e08) == 0
+            && dt.is_finite()
+            && dt > 0.0
+            && ships.contains(&player)
+            && live_ship(player)
+            && read::<u8>(player + OFF_AI_FLAG) == 0
+        {
+            if let Some(target) = boxed_enemy(player, &enemies) {
+                let now: f64 = read(CLOCK);
+                if now.is_finite() {
+                    if let Ok(mut order) = FOCUS.try_lock() {
+                        *order = Some(FocusOrder {
+                            target,
+                            started: now,
+                        });
+                        log::info!("ALLY focus: target {target:#x}");
+                    }
+                }
+            }
+        }
+    }
+    let Some(target) = focus_target(&enemies) else {
+        return;
+    };
+    let allies: Vec<usize> = match ALLIES.try_lock() {
+        Ok(allies) => allies
+            .iter()
+            .copied()
+            .filter(|ship| ships.contains(ship))
+            .collect(),
+        Err(_) => return,
+    };
+    for ship in allies {
+        if live_ship(ship)
+            && read::<f32>(ship + OFF_SIDE) > 0.0
+            && read::<u8>(ship + OFF_AI_FLAG) != 0
+            && read::<i32>(ship + OFF_MODE_D70) == ALLY_MODE
+        {
+            apply_focus(ship, target);
+        }
+    }
+}
+
 /// Runs right after the AI has chosen a target for `ship`. An AI-run ship of the player's side (an ally) that
 /// picked a prize ship takes the nearest other enemy instead, or no target when only prizes are left.
 unsafe extern "C" fn on_target_chosen(ship: usize) {
     let _hook = diag::scope("on_target_chosen");
-    if !plausible(ship) || !SPARE_PRIZES.load(Ordering::Relaxed) {
+    if !plausible(ship) {
         return;
     }
     // v0.9.3: only the ships this mod brought in (not the vanilla defenders of a missile or plane defense battle)
@@ -886,6 +1045,15 @@ unsafe extern "C" fn on_target_chosen(ship: usize) {
     }
     // friendly and AI-run: the player's side, AI flag set (the ship the player flies has it cleared)
     if read::<f32>(ship + OFF_SIDE) <= 0.0 || read::<u8>(ship + OFF_AI_FLAG) == 0 {
+        return;
+    }
+    if read::<i32>(ship + OFF_MODE_D70) == ALLY_MODE {
+        if let Some(target) = commanded_target() {
+            apply_focus(ship, target);
+            return;
+        }
+    }
+    if !SPARE_PRIZES.load(Ordering::Relaxed) {
         return;
     }
     let node: usize = read(ship + OFF_TARGET);
@@ -956,6 +1124,7 @@ unsafe extern "C" fn on_battle_tick() {
     let ships = roster();
     restore_orders("battle tick", false);
     ship_switch::tick(&ships);
+    focus_tick(&ships);
     if !ARMED.load(Ordering::Relaxed) {
         // not an ally battle: touch nothing; just keep the roster-empty bookkeeping so a later battle starts clean
         if ships.is_empty() {

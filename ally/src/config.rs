@@ -27,6 +27,8 @@ pub(crate) struct Config {
     pub(crate) flagship_leaves: String,
     /// Virtual-key code of the "ally, retreat" key (0x77 = F8); 0 disables the key.
     pub(crate) retreat_key: u32,
+    /// Windows virtual-key code for directing allies at the boxed enemy; 0 disables it.
+    pub(crate) focus_target_key: u32,
     /// How many AI allies may fight at the same time. Ships switched on beyond that wait in the reserve and
     /// step in, in ship-number order, when an ally is destroyed or has left.
     pub(crate) max_allies: u32,
@@ -97,6 +99,7 @@ impl Default for Config {
             ally_delay_seconds: 1.5,
             flagship_leaves: "handover".to_string(),
             retreat_key: 0x77,
+            focus_target_key: 0x5a,
             max_allies: 2,
             ship_switching: true,
             spare_prizes: true,

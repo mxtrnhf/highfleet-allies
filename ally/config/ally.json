@@ -5,6 +5,7 @@
   "ally_delay_seconds": 1.5,
   "flagship_leaves": "handover",
   "retreat_key": 119,
+  "focus_target_key": 90,
   "max_allies": 2,
   "ship_switching": true,
   "spare_prizes": true,
