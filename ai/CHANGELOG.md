@@ -1,5 +1,12 @@
 # hf_ai changelog
 
+## v1.2.10 — independent AI reload rates
+
+- Add separate `reload_rate_ally` and `reload_rate_ai` countdown multipliers,
+  defaulting to the native player multiplier of 1.75. Set either to 1.0 for
+  native AI reload speed. Player reload and per-shot firing rates are unchanged.
+- Static inspection and cross-build only; in-game reload validation is pending.
+
 ## v1.2.9 — tighten retreat lane-block check so top exits still work
 
 - Remove `RETREAT_CLIMB_BIAS` (`250u`) and replace the wide 120-deg cone

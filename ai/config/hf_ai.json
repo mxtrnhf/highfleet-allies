@@ -1,5 +1,7 @@
 {
   "enabled": true,
+  "reload_rate_ally": 1.75,
+  "reload_rate_ai": 1.75,
   "logging": {
     "log_panic": false
   },

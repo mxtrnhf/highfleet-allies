@@ -26,6 +26,10 @@ player profile and is not a vanilla/off configuration.
 
 ## Behavior
 
+- **AI reload multipliers:** `reload_rate_ally` and `reload_rate_ai` independently
+  set the friendly and enemy AI reload countdown speeds. Both default to `1.75`,
+  matching the player; `1.0` restores native AI speed. Shot RPM and AI pauses
+  are unchanged.
 - **Universal aim dodging (`tactics.aim_*`):** during per-ship staggered awareness
   windows, enemy and allied AI ships check all hostile shooters (both the player
   and AI ships) and slip off the closest active aim ray (`aim_chance` roll per

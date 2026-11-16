@@ -4,7 +4,7 @@ The checked-in [player preset](../ai/config/hf_ai.json) and compiled defaults us
 
 ## Missing keys and how to revert to vanilla
 
-**You do not have to list every key.** Every top-level key, nested block and key inside a block may be omitted; hf_ai supplies the code default shown below. The current v1.2.0 preset lists 40 gameplay settings plus `logging.log_panic` (41 total leaf settings). Internal timing/math parameters use their compiled defaults unless explicitly added. An empty `{}` is also valid. If the file is absent, hf_ai tries to create it with the full defaults; if the JSON is invalid, it logs an error and uses the defaults.
+**You do not have to list every key.** Every top-level key, nested block and key inside a block may be omitted; hf_ai supplies the code default shown below. Internal timing/math parameters use their compiled defaults unless explicitly added. An empty `{}` is also valid. If the file is absent, hf_ai tries to create it with the full defaults; if the JSON is invalid, it logs an error and uses the defaults.
 
 **Player default does not mean vanilla.** Missing keys use the active player profile; flares, tactics and missile dumping are enabled by default. Use the explicit values below when you want stock behaviour. There is no general `-1` disable convention.
 
@@ -19,6 +19,8 @@ To keep hf_ai loaded but restore stock gameplay and disable its optional data fi
 ```json
 {
   "enabled": true,
+  "reload_rate_ally": 1.0,
+  "reload_rate_ai": 1.0,
   "logging": { "log_panic": false },
   "plane_group_per_launch": 1,
   "twr_limit": 0.0,
@@ -35,6 +37,7 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Feature | Setting that disables or neutralizes it | What remains / important dependency |
 |---|---|---|
 | Entire mod | `"enabled": false` | No hf_ai gameplay hooks are installed. |
+| AI reload speed | `reload_rate_ally: 1.0` and `reload_rate_ai: 1.0` | Restores native AI countdown speed; player remains at 1.75. |
 | High-TWR hf_ai boost limiter | `twr_limit: 0.0` or `twr_deceleration: 0.0` | Normal thrust and vanilla avoidance are always unchanged. |
 | All flare and panic behaviour | `ai_flares.enabled: false` | Tactics, tactics engine boosts, plane groups and missile dump remain. |
 | All threat-triggered panics, locked and stray | `ai_flares.reaction_probability: 0.0` | No new threat panic, flare burst, roll or panic evasion. |
@@ -43,7 +46,7 @@ This leaves hf_ai's pass-through steering hook installed; `"enabled": false` avo
 | Plain evasion steering only | `ai_flares.evasion_strength: 0.0` | Neutralizes its steering contribution, but the panic state, boosted panic evasion and rolls remain possible. |
 | Stray/lost-lock missile evasion | `ai_flares.stray_missiles: false` | Locked-missile behaviour remains. |
 | Allied flares and panic | `ai_flares.allies: false` | Enemy behaviour remains. The player-flown ship is always excluded. |
-| Allied tactical steering and aim dodging | `tactics.allies: false` | Independent of `ai_flares.allies`; set both to false to exclude allies from everything, including allied missile dumping. |
+| Allied tactical steering and aim dodging | `tactics.allies: false` | Independent of `ai_flares.allies`; setting both to false also excludes allied missile dumping, but does not disable the allied reload multiplier. |
 | Barrel rolls | `ai_flares.barrel_roll_probability: 0.0` | Plain and boosted panic evasion remain. |
 | Boosted/full-steering panic evasion | `ai_flares.panic_evasion_probability: 0.0` | Plain evasion and barrel rolls remain. |
 | Panic/roll boost and dash | `ai_flares.panic_boost: 1.0` | Steering and roll angles remain. |
@@ -70,6 +73,8 @@ removed; old `log_steering`, `log_hz`, `log_scan` and `log_scan_bodies` keys do 
 | Key | Default | If key omitted | What it does |
 |---|---|---|---|
 | `enabled` | `true` | Uses player default `true`. | Master switch. |
+| `reload_rate_ally` | `1.75` | Uses `1.75`. | Reload countdown multiplier for AI-controlled friendly ships. `1.0` is native AI speed; `1.75` matches the player. |
+| `reload_rate_ai` | `1.75` | Uses `1.75`. | Reload countdown multiplier for enemy AI ships. Independent of the ally setting. |
 | `twr_cutoff` | `2.0` | Uses player default `2.0`. | Minimum live strategic/Shipworks TWR (`creature +0x160c`, before UI rounding) for tactics, missile evasion, rolls/boosts and stray-missile reactions. Below the cutoff these are suppressed; at or above it their individual switches still apply. Locked-missile flare bursts remain available. Negative/non-finite cutoffs use `0.0`. Independent of carrier plane groups. Restart after editing. |
 | `twr_limit` | `5.0` | Uses player default `5.0`. | Strictly above this live strategic/Shipworks TWR, multiply hf_ai boost-command strengths by `twr_deceleration`. `0` disables; negative/non-finite values become `0`. Applies to enemies and AI allies only while an hf_ai aim/dive boost, panic boost or boosted roll is active. Existing maneuver/feature switches still apply. Missing/invalid live TWR leaves boosts unchanged. Restart after editing. |
 | `twr_deceleration` | `0.75` | Uses player default `0.75`. | hf_ai boost-strength multiplier above `twr_limit`: a boost of `2` becomes `1.5`. `0` disables, `1` leaves strengths unchanged; clamped to `0..1`, negative/non-finite values disable. Boost settings of `1`, normal thrust, vanilla avoidance and player control are untouched. Temporary ramming mitigation, not collision avoidance or a velocity cap. |
@@ -78,6 +83,12 @@ removed; old `log_steering`, `log_hz`, `log_scan` and `log_scan_bodies` keys do 
 | `ai_missile_dump_chance` | `0.4` | Uses player default `0.4`. | Chance (`0..1`) that an AI ship (enemy, or ally when `ai_flares.allies` or `tactics.allies` is true) keeps launching Zenith missiles right after a launch instead of waiting for the game's 2 s cooldown. `0` = vanilla. |
 | `ai_missile_dump_min_delay` | `0.6` | Uses player default `0.6`. | Shortest wait between the launches of a burst, in seconds. |
 | `ai_missile_dump_max_delay` | `1.5` | Uses player default `1.5`. | Longest wait between the launches of a burst, in seconds (`max` never below `min`). |
+
+Reload multipliers accept `0..100`; zero stops the reload countdown and invalid
+values use `1.75`. They apply to the native part reload timer, not the per-shot
+RPM timer or AI firing pauses. Native power, ammunition, promotion and off-screen
+gates remain in effect. Player-controlled ships retain the native `1.75`, including
+after ship switching. Restart after editing.
 
 ## `ai_flares` (flares, evasion, panic)
 

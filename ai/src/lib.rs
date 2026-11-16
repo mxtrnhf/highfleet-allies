@@ -32,6 +32,7 @@ mod native_layout;
 mod panic_math;
 mod plane_group;
 mod plane_group_math;
+mod reload_rate;
 mod rng;
 mod tactics;
 mod tactics_config;
@@ -316,6 +317,9 @@ fn parse_config(text: &str) -> Result<Config, serde_json::Error> {
 struct Config {
     /// Master switch.
     enabled: bool,
+    /// Reload countdown multipliers for allied and enemy AI ships.
+    reload_rate_ally: f32,
+    reload_rate_ai: f32,
     /// Planes per tactical AI carrier launch group (1 = stock; limited to 1..64).
     plane_group_per_launch: i32,
     /// Seconds between group members (limited to 0.05..60; default 0.5).
@@ -344,6 +348,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: true,
+            reload_rate_ally: 1.75,
+            reload_rate_ai: 1.75,
             plane_group_per_launch: plane_group_math::DEFAULT_GROUP_SIZE,
             plane_group_launch_delay_seconds: plane_group_math::DEFAULT_DELAY,
             twr_cutoff: 2.0,
@@ -472,6 +478,7 @@ unsafe extern "C" fn init() -> bool {
             &mut session, module, config.plane_group_per_launch,
             config.plane_group_launch_delay_seconds,
         )?;
+        reload_rate::prepare(&mut session, module, config.reload_rate_ally, config.reload_rate_ai)?;
         let boost_wanted = tactics::wants_engine_boost()
             || (with_flares && ai_flares::wants_engine_boost(&config.ai_flares));
         let boost = if boost_wanted {
