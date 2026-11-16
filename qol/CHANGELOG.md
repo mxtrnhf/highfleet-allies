@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Add an independent option to mute the enemy pre-fire sound warning on
+  Steam 1.163.
+
 ## 0.2.0
 
 - Integrate hf_intro 0.2.0: restore the native startup logos with keyboard or

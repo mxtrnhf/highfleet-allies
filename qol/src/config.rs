@@ -55,6 +55,9 @@ pub struct Config {
     /// Show enemy gun pre-fire laser warnings. Enabled by default.
     #[serde(default = "default_crash_fix_enabled")]
     pub enemy_laser_warning: bool,
+    /// Play the enemy pre-fire sound warning. Enabled by default; Steam 1.163 only.
+    #[serde(default = "default_crash_fix_enabled")]
+    pub enemy_sound_warning: bool,
     /// Fixes an out-of-bounds read in stock aircraft target choice on Steam 1.163.
     /// Enabled by default; moved from ally.json to qol.json.
     #[serde(default = "default_crash_fix_enabled")]
@@ -206,6 +209,7 @@ impl Default for Config {
             enable_flare_crash_fix: true,
             enable_intro: false,
             enemy_laser_warning: true,
+            enemy_sound_warning: true,
             fix_plane_ai_crash: true,
             fix_merge_crash: true,
             enable_unblocked_ttl: false,

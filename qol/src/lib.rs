@@ -177,6 +177,11 @@ unsafe extern "C" fn init() -> bool {
             if !config.enemy_laser_warning {
                 prepare_patch!(enemy_laser_warning::prepare(&mut patch_session));
             }
+            if !config.enemy_sound_warning {
+                prepare_patch!(enemy_laser_warning::prepare_sound_suppression(
+                    &mut patch_session
+                ));
+            }
             prepare_patch!(crash_fixes::prepare(
                 &mut patch_session,
                 config.fix_plane_ai_crash,
