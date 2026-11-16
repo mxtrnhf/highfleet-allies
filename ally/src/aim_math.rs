@@ -8,7 +8,6 @@ const STEP: f32 = 0.02;
 const DAMPING: f32 = 0.05;
 const GRAVITY: f32 = 9.82;
 const MUZZLE_OFFSET: f32 = 10.0;
-pub const MEAN_SPEED_FACTOR: f32 = (0.98 + 1.2) * 0.5;
 const MAX_STEPS: usize = 1500;
 
 pub struct Solution {

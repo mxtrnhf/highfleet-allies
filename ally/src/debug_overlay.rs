@@ -89,6 +89,10 @@ const MAX_GUNS_PER_GROUP: usize = 64;
 const AMMO_LIST: usize = 0x1_43a1_3be0;
 /// Ceiling on the records read from the ammo list; a longer list means the header is corrupt.
 const AMMO_LIST_LIMIT: usize = 10_000;
+/// Random_Float bounds used by Body_InitializeCannonShell; see docs/shell-launch-speed.md.
+const LAUNCH_SPEED_MIN: usize = 0x1_4035_4740;
+const LAUNCH_SPEED_MAX: usize = 0x1_4035_4758;
+const AP_LIFETIME_OVERRIDE: usize = 0x1_4005_2af2;
 /// Lead marker on hostile ships: the game's hostile red, a half-strength halo and the flight time.
 /// Each lead marker also draws a bearing circle at the configured pointer length.
 const PREDICTION_COLOR: u32 = 0xffff_dd27;
@@ -480,9 +484,9 @@ unsafe fn first_gun(ship: usize) -> Option<usize> {
     None
 }
 
-/// Mean muzzle speed and lifetime of the first gun's supported loaded ammo. Return None
+/// Mean and maximum muzzle speed and lifetime of the first gun's supported loaded ammo. Return None
 /// for unreadable records or projectile behavior the linear ballistic model cannot predict.
-unsafe fn gun_ballistics(gun: usize) -> Option<(f32, f32)> {
+unsafe fn gun_ballistics(gun: usize) -> Option<(f32, f32, f32)> {
     let index = rd::<i32>(gun + offset_of!(Body, weapon_ammo));
     if index < 0 {
         return None;
@@ -515,16 +519,42 @@ unsafe fn gun_ballistics(gun: usize) -> Option<(f32, f32)> {
     }
     let speed = rd::<f32>(record + offset_of!(Ammo, speed));
     let mut lifespan = rd::<f32>(record + offset_of!(Ammo, lifespan));
-    // QoL can NOP the vanilla AP TTL override; follow the live code rather than its config.
-    if rd::<f32>(record + offset_of!(Ammo, penetrative_power)) != 0.0
-        && std::slice::from_raw_parts(0x1_4005_2af2 as *const u8, 4) == [0x41, 0x0f, 0x28, 0xca]
-    {
-        lifespan = 1.0;
+    // QoL can NOP the vanilla AP TTL override. Unknown patches cannot be interpreted safely.
+    if rd::<f32>(record + offset_of!(Ammo, penetrative_power)) != 0.0 {
+        if !crate::diag::readable_span(AP_LIFETIME_OVERRIDE, 4) {
+            return None;
+        }
+        let bytes = std::slice::from_raw_parts(AP_LIFETIME_OVERRIDE as *const u8, 4);
+        match bytes {
+            [0x41, 0x0f, 0x28, 0xca] => lifespan = 1.0,
+            [0x90, 0x90, 0x90, 0x90] => {}
+            _ => return None,
+        }
     }
-    (speed.is_finite() && speed > 0.0 && lifespan.is_finite() && lifespan > 0.0).then_some((
-        speed * crate::aim_math::MEAN_SPEED_FACTOR,
-        lifespan.min(30.0),
-    ))
+    if !crate::diag::readable_span(LAUNCH_SPEED_MIN, size_of::<f32>())
+        || !crate::diag::readable_span(LAUNCH_SPEED_MAX, size_of::<f32>())
+    {
+        return None;
+    }
+    let min_factor = rd::<f32>(LAUNCH_SPEED_MIN);
+    let max_factor = rd::<f32>(LAUNCH_SPEED_MAX);
+    if !speed.is_finite()
+        || speed <= 0.0
+        || !lifespan.is_finite()
+        || lifespan <= 0.0
+        || !min_factor.is_finite()
+        || min_factor <= 0.0
+        || !max_factor.is_finite()
+        || max_factor < min_factor
+    {
+        return None;
+    }
+    let mean_speed = speed * (min_factor * 0.5 + max_factor * 0.5);
+    let max_speed = speed * max_factor;
+    if !mean_speed.is_finite() || !max_speed.is_finite() {
+        return None;
+    }
+    Some((mean_speed, max_speed, lifespan.min(30.0)))
 }
 
 /// Frame-local player hull centre, first gun origin, inherited source velocity and ammo data.
@@ -558,9 +588,9 @@ unsafe fn player_guns(player: usize) -> Option<PlayerGuns> {
         rd::<f32>(root + offset_of!(Body, velocity_x)),
         rd::<f32>(root + offset_of!(Body, velocity_y)),
     ];
-    let (muzzle_speed, lifespan) = gun_ballistics(gun)?;
+    let (muzzle_speed, max_muzzle_speed, lifespan) = gun_ballistics(gun)?;
     // The linear model cannot reproduce Box2D's per-step 2000 u/s translation cap.
-    if muzzle_speed + velocity[0].hypot(velocity[1]) >= 2000.0 {
+    if max_muzzle_speed + velocity[0].hypot(velocity[1]) >= 2000.0 {
         return None;
     }
     if !world[0].is_finite()

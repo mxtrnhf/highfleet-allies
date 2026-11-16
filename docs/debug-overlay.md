@@ -36,8 +36,10 @@ For every live ship in the battle (player, allies, enemies, neutrals):
   reachable by the player's first live gun (group 0, else group 1), labelled
   `AIM ~<flight time>s`. Since v1.0.3 it uses the gun's actual world origin, the native
   10-unit muzzle offset, the firing gun's master-root inherited velocity, shell gravity
-  and linear damping. It uses the mean launch-speed multiplier **1.09**, because the
-  game independently rolls **0.98–1.2 per shell**; see [instruction-level evidence](shell-launch-speed.md).
+  and linear damping. It reads speed and lifetime from the currently selected gun's
+  live ammo record, including records replaced by ammo_extended. It reads the live
+  launch-speed randomization bounds and uses their midpoint (vanilla **1.09**, from
+  **0.98–1.2 per shell**); see [instruction-level evidence](shell-launch-speed.md).
   The marker represents the required **barrel bearing**, not the shell's future impact
   position: pointing at the latter fails when inherited velocity or gravity matters.
   The target is assumed to maintain its current root-body velocity. The bounded solver
@@ -60,7 +62,10 @@ arcs and target manoeuvres still cause misses; mixed guns are represented by the
 live gun only. Rockets, guided shells, canister, harpoons and **quadratic-drag AP** have
 different trajectory rules and intentionally get **no prediction**, rather than a false
 straight-shell solution. The native pointer remains available with those loadouts.
-Launches reaching the Box2D 2,000 u/s translation cap are also not predicted.
+The marker is suppressed when the fastest possible launch could reach the Box2D
+2,000 u/s translation cap, or when an unrecognized AP lifetime patch is present.
+The randomization constants are assumed to remain the operands used by the native
+cannon initializer; mods that replace its launch or trajectory code are not modeled.
 
 | Label | Meaning |
 |---|---|
