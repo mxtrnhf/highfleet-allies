@@ -1,10 +1,5 @@
-> **This directory is a copy of [logdot/highfleet-qol](https://github.com/logdot/highfleet-qol)** (MIT, (c) Timoteo Rider, see `LICENSE`)
-> at upstream `main` (refuel rate and speed curve, flare crash fix, the cargo-lock fix; **refuel and speed are in logdot's `main` but not yet in his v1.3.0 release, so they are included here until the changes are merged into a release of the main repo**) **plus one extra feature: manual
-> elevation in the ship editor** (upstream pull request [#20](https://github.com/logdot/highfleet-qol/pull/20), still a draft).
-> Nothing else is changed. It is here so that people who want elevation can build it or read the source; **once logdot merges
-> the pull request, use his release and delete this copy.** Our AI parts (`ai_flares`, missile dump) are not in it: they live in
-> [`../ai`](../ai). Branch with the full history: [mxtrnhf/highfleet-qol `allies-qol`](https://github.com/mxtrnhf/highfleet-qol/tree/allies-qol).
-> Build: `cargo xwin build --release --target x86_64-pc-windows-msvc`.
+> **This is the HighFleet Allies build of [logdot/highfleet-qol](https://github.com/logdot/highfleet-qol)** (MIT, (c) Timoteo Rider, see `LICENSE`), synced through upstream [`c07b521`](https://github.com/logdot/highfleet-qol/commit/c07b521).
+> It keeps the Allies-specific pre-fire warning options, stock crash guards, `classic_kaz`, and manual ship-editor elevation ([upstream draft #20](https://github.com/logdot/highfleet-qol/pull/20)). Our AI changes live in [`../ai`](../ai).
 
 # Highfleet QOL
 
@@ -20,11 +15,11 @@ Both options default to `true` and work independently.
 Simple mod with various QOL features.
 It is intended to be used with the [Highfleet Modloader](https://github.com/logdot/Highfleet-Modloader).
 
-To install, download the mod from [releases](https://github.com/logdot/highfleet-qol/releases/latest).
-The zip has two folders, one each for the 1.151 and 1.163 versions of the game.
-Open the respective folder for your version.
-There should be a `Modloader` folder inside.
-Move the `Modloader` folder (not it's contents) into the root of your highfleet installation.
+## Building and installing the Allies version
+
+From this directory run `cargo xwin build --release --locked --target x86_64-pc-windows-msvc` for Steam 1.163 from Linux. Use `cargo build` instead on Windows.
+This checkout pins [logdot/highfleet-rs](https://github.com/logdot/highfleet-rs) to the same revision as upstream QoL using a Git dependency, so no submodule setup is required.
+Copy `target/x86_64-pc-windows-msvc/release/highfleet_qol.dll` to `Modloader/mods/` as `hf_qol_v<version>.dll` and disable any older QoL DLL so only one is loaded. Keep your existing `Modloader/config/qol.json`.
 
 Your Highfleet folder should look like this:
 
@@ -56,13 +51,15 @@ This is what the file looks like by default:
 
 The list of toggles is:
 1. Anti Wobble: Custom GUI elements in the battle screen will no longer shake.
-2. Unblocked Guns: Hull and other components no longer block weapons. Only does anything in 1.151 since this is the default behaviour in 1.163.
+2. Unblocked Guns: Hull and other components no longer block weapons. On 1.151 this disables the game's check; on 1.163 it leaves the game unblocked instead of restoring the check.
 3. Reduced Shake: Greatly reduces the amount of screen shake in the battle screen, e.g. when firing weapons or using thrusters.
 4. Flare Crash Fix: Prevents the 1.163 missile-fuze crash when a flare's linked object is no longer available. Enabled by default and not required on 1.151.
 5. Arcade Zoom: Unlocks zooming in and out in the battle screen.
      * Max Zoom: The maximum zoom level.
      * Min Zoom: The minimum zoom level (must be at least 0). This will be the default zoom when entering a battle.
-     * Zoom levels: List of each zoom value. You can define as many zoom levels as you want. The first value is zoom level 0.
+      * Zoom levels: List of each zoom value. You can define as many zoom levels as you want. The first value is zoom level 0.
+
+On Steam 1.163, set `"elevation_rules": "classic"` to restore the 1.151 firing-arc rules for free-standing parts and KAZ. `"classic_kaz"` also exempts trusses from the KAZ arc check. The default `"vanilla"` and `"modern"` leave the game's firing-arc rules unchanged; they do not toggle gun blocking. See the [Allies QoL guide](../docs/qol-guide.md#elevation_rules-gunkaz-firing-arcs).
 
 ## Refuel rate and speed curve (1.163 only)
 

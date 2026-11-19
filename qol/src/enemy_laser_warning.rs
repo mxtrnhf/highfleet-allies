@@ -5,7 +5,13 @@
 //! native code handles the warning sound independently; preserve that code.
 
 use patchy::{PatchError, PatchSession, Result};
+use std::mem::{size_of, MaybeUninit};
+use windows_sys::Win32::System::Memory::{
+    VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
+    PAGE_EXECUTE_WRITECOPY, PAGE_GUARD,
+};
 
+const IMAGE_BASE: usize = 0x140000000;
 // BattleHud_DrawCombatMarkers calls playSFXSound_ with "alarm_small_09" here.
 const SOUND_CALL: usize = 0x14029e119;
 const SOUND_CALL_ORIGINAL: [u8; 5] = [0xe8, 0xc2, 0x4f, 0x04, 0x00];
@@ -16,7 +22,7 @@ const SITES: [(usize, [u8; 5]); 2] = [
 
 pub unsafe fn prepare(session: &mut PatchSession) -> Result {
     for (address, expected) in SITES {
-        if !crate::intro::matches_executable_bytes(address, &expected) {
+        if !matches_executable_bytes(address, &expected) {
             return Err(PatchError::SourceChanged { address });
         }
     }
@@ -31,7 +37,7 @@ pub unsafe fn prepare(session: &mut PatchSession) -> Result {
 
 /// Suppress the enemy pre-fire alarm without changing the warning state.
 pub unsafe fn prepare_sound_suppression(session: &mut PatchSession) -> Result {
-    if !crate::intro::matches_executable_bytes(SOUND_CALL, &SOUND_CALL_ORIGINAL) {
+    if !matches_executable_bytes(SOUND_CALL, &SOUND_CALL_ORIGINAL) {
         return Err(PatchError::SourceChanged {
             address: SOUND_CALL,
         });
@@ -41,4 +47,38 @@ pub unsafe fn prepare_sound_suppression(session: &mut PatchSession) -> Result {
     unsafe { session.overwrite(SOUND_CALL, &[0x90; 5])? };
     log::info!("Prepared enemy pre-fire sound warning suppression");
     Ok(())
+}
+
+fn matches_executable_bytes(address: usize, expected: &[u8]) -> bool {
+    let mut information = MaybeUninit::<MEMORY_BASIC_INFORMATION>::uninit();
+    // SAFETY: VirtualQuery writes a properly aligned, sized output buffer.
+    let queried = unsafe {
+        VirtualQuery(
+            address as *const _,
+            information.as_mut_ptr(),
+            size_of::<MEMORY_BASIC_INFORMATION>(),
+        )
+    };
+    if queried != size_of::<MEMORY_BASIC_INFORMATION>() {
+        return false;
+    }
+    // SAFETY: VirtualQuery reported a complete initialized structure.
+    let information = unsafe { information.assume_init() };
+    if information.State != MEM_COMMIT || information.Protect & PAGE_GUARD != 0 {
+        return false;
+    }
+    if !matches!(
+        information.Protect,
+        PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY
+    ) || information.AllocationBase as usize != IMAGE_BASE
+    {
+        return false;
+    }
+    let offset = address.saturating_sub(information.BaseAddress as usize);
+    if expected.len() > information.RegionSize.saturating_sub(offset) {
+        return false;
+    }
+    // SAFETY: The range is committed readable code in the main image. Modloader
+    // prepares patches before gameplay starts.
+    unsafe { std::slice::from_raw_parts(address as *const u8, expected.len()) == expected }
 }

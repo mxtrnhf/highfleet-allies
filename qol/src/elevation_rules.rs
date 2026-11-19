@@ -6,8 +6,12 @@
 //! ClassicKaz additionally skips MDL_FERMA trusses for KAZ ray scans only.
 //! Vanilla/modern do not install any of these patches. Every patch checks its bytes.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    mem::offset_of,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
+use highfleet::v1_163::Body;
 use patchy::{Condition, PatchSession, Result, ReturnType, Trampoline};
 use windows_sys::Win32::System::{
     LibraryLoader::GetModuleHandleA,
@@ -33,13 +37,11 @@ const CANDIDATE_SKIP: usize = 0x14023a1bc;
 const CANDIDATE_CONTINUE: usize = 0x14023a128;
 const GET_STATS: usize = 0x140281e00;
 
-// Reviewed upstream Body has these fields, but this crate's locked highfleet
-// revision 3f6b54b3 does not. Keep the existing dependency unchanged for this port.
-// Native Body/std::string offsets and Stats category: findings linked above.
-const BODY_PART_INDEX: usize = 0x188;
-const BODY_OID: usize = 0x190;
-const BODY_OID_LEN: usize = 0x1a0;
-const BODY_OID_CAP: usize = 0x1a8;
+// Native std::string layout and unmodeled Stats category: findings linked above.
+const BODY_PART_INDEX: usize = offset_of!(Body, part_index);
+const BODY_OID: usize = offset_of!(Body, oid);
+const BODY_OID_LEN: usize = BODY_OID + 0x10;
+const BODY_OID_CAP: usize = BODY_OID + 0x18;
 const STATS_CATEGORY: usize = 0xb0;
 const KAZ_CATEGORY: u32 = 1 << 25;
 const TRUSS_PREFIX: &[u8; 9] = b"MDL_FERMA";

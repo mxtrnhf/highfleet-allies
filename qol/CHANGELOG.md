@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3
+
+- Sync with [logdot/highfleet-qol `c07b521`](https://github.com/logdot/highfleet-qol/commit/c07b521): use shared native layouts for gun blocking and aircraft, and use the upstream skippable intro.
+- Keep Allies-specific settings and behavior, including both sides' pre-fire line suppression, independent enemy sound suppression, manual editor elevation, `classic_kaz`, and the additional stock crash guards.
+
 ## 0.2.2
 
 - Hide friendly and allied pre-fire gun warning lines as well as enemy lines
