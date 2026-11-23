@@ -13,10 +13,8 @@ The command uses `cargo-xwin` to build Windows DLLs from Linux. On Windows, use
 `cargo build` with the same options instead. A successful build doesn't validate
 hooks or gameplay; verify those in Steam 1.163 before claiming in-game support.
 
-The separate experimental [`native/`](../native/README.md) DLL isn't part of the
-player pack and doesn't replace ally, AI, or QoL. See its
-[architecture notes](native-engine-dll-architecture.md) for build and validation
-scope.
+The experimental `hf_perf` and `hf_native` DLLs and their research notes live
+on the `perf/native` branch. They are not built or shipped with the player pack.
 
 ## Package and publish
 
@@ -53,6 +51,5 @@ feature patches through one `PatchSession` before permanent installation.
 Keep state with the operations that enforce its lifetime. A cached address is
 not proof of a live object. Preserve membership checks, traversal bounds, game
 ownership, callback order, and blocking versus non-blocking lock behavior when
-moving code. See [native-engine architecture](native-engine-dll-architecture.md)
-for more on native layout and ownership, and [hf_notes](https://github.com/mxtrnhf/hf_notes)
-for reverse-engineering findings on Steam 1.163.
+moving code. See [hf_notes](https://github.com/mxtrnhf/hf_notes) for
+reverse-engineering findings on Steam 1.163.
