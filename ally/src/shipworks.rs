@@ -9,7 +9,7 @@ use std::{
     fmt::Write as _,
     mem::{offset_of, size_of},
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex,
     },
 };
@@ -207,7 +207,6 @@ static SESSION: Mutex<Session> = Mutex::new(Session {
 });
 static READY: AtomicBool = AtomicBool::new(false);
 static CONTROLS_VISIBLE: AtomicBool = AtomicBool::new(false);
-static TEST_ALLIES: AtomicU32 = AtomicU32::new(0);
 static ADD_GUI: AtomicUsize = AtomicUsize::new(0);
 static ENEMY_ADD_GUI: AtomicUsize = AtomicUsize::new(0);
 static CLEAR_GUI: AtomicUsize = AtomicUsize::new(0);
@@ -217,11 +216,6 @@ static ROW_GUIS: [AtomicUsize; ROSTER_LIMIT] = [const { AtomicUsize::new(0) }; R
 static ENEMY_ROW_GUIS: [AtomicUsize; ENEMY_LIMIT] = [const { AtomicUsize::new(0) }; ENEMY_LIMIT];
 static STATUS_GUI: AtomicUsize = AtomicUsize::new(0);
 static ENEMY_STATUS_GUI: AtomicUsize = AtomicUsize::new(0);
-
-/// Only Shipworks fights override campaign ally capacity and deployment delay.
-pub(crate) fn test_allies() -> u32 {
-    TEST_ALLIES.load(Ordering::Relaxed)
-}
 
 /// Install the two byte-checked native seams. Existing pre-combat input/click hooks service the UI.
 ///
@@ -824,7 +818,6 @@ unsafe extern "C" fn on_fleet(fleet: usize) {
         let previous = precombat::replace_selected_mask(mask);
         state.saved_mask.get_or_insert(previous);
     }
-    TEST_ALLIES.store(added, Ordering::Relaxed);
     log::info!("hf_ally: Shipworks FIGHT added {added} allies");
 }
 
@@ -1128,7 +1121,6 @@ unsafe extern "C" fn on_level(path: usize) {
     let Ok(mut state) = SESSION.try_lock() else {
         return;
     };
-    TEST_ALLIES.store(0, Ordering::Relaxed);
     if let Some(mask) = state.saved_mask.take() {
         precombat::replace_selected_mask(mask);
     }

@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.13 (Shipworks ally deployment limits):** custom Shipworks allies now follow `max_allies`, `ally_delay_seconds`, and the normal three-game-second spacing between deployments, just like campaign allies. Selected ships above the limit wait in reserve. In-game validation pending.
+
 * **v1.3.12 (mode 2 retargeting for extra-gunpod and gun planes):** `aircraftStateHandler` (`0x14000fbc0`) in mode 2 only scans for missiles (`+0x3c4` 10/1, with no side check) and leaves `target == 0` when none are in the air, causing `AircraftLogic_Mode2_Interceptor` (`0x14000ba70`) to fly straight off the map as soon as the initial target ship dies. `on_update` now retargets `extra_gunpod` planes in mode 2 to the nearest living enemy ship (falling back to enemy planes/Zeniths, or leaving cleanly in mode 6 state 5 if no enemies remain), fixes `tick()` to restore mode 6 before setting state 5 when ammo runs out, updates `guns_engage` to validate targets and fall back to enemy ships, and logs watched plane departures. Confirmed working in game.
 
 * **v1.3.11 (extra gunpod without a target):** keep eligible planes in their post-payload gun phase while their gun has rounds, even when the current target link is empty.

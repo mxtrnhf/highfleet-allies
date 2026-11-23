@@ -76,8 +76,9 @@ pre-combat roster with ALLY enabled. The normal ally controls, aircraft loadout
 buttons and combat ship switching still apply.
 
 - Up to **eight allies**, matching the native nine-player-card screen.
-- All added ships can deploy together, without the campaign `max_allies` or
-  reinforcement delay. Campaign settings and card choices are unchanged.
+- Added ships follow `ally.json`'s `max_allies` and `ally_delay_seconds`, plus
+  the normal three-game-second spacing between deployments. Selected ships above
+  the limit wait in reserve. Campaign card choices are unchanged.
 - Loading, switching designs, RESET, returning from test combat, and RETRY do not
   clear the list. Returning from the Shipworks landing test also preserves it.
 - CLEAR or leaving Shipworks clears both the ally and the enemy list. There is no
@@ -129,6 +130,11 @@ layouts; `Creature+0xa90` (design name), `+0x1a20` (initial morale), editor glob
 and GUI geometry `+0x218/+0x21c` remain locally documented RE contracts.
 
 ## Validation
+
+v1.3.13: Shipworks deployment-limit changes require in-game validation. Set
+`max_allies` below the number of added allies and a nonzero `ally_delay_seconds`;
+verify the initial delay, deployment spacing, capacity, and reserve replacement,
+then check campaign combat and Shipworks RETRY.
 
 v1.3.9 (2026-11-16): the maintainer reports that Map Mode Extended and allies
 work together in game and that no Shipworks problems were detected. Specific
