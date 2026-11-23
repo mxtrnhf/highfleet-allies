@@ -14,6 +14,7 @@ import zipfile
 
 REPO = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-pc-windows-msvc"
+MANUAL = "Allies_Manual_V2.pdf"
 GUIDES = (
     "ally-config.md", "debug-overlay.md", "shell-launch-speed.md", "hf-ai-config-reference.md", "hf-ai-tuning-guide.md",
     "qol-guide.md", "player-defaults.md", "retired-diagnostics.md", "retired-settings.md",
@@ -35,11 +36,24 @@ def component_versions():
 def populate(stage, version, versions, commit, validation):
     shutil.copytree(REPO / "release", stage, dirs_exist_ok=True)
     shutil.copy2(REPO / "LICENSE", stage / "LICENSE.txt")
+    shutil.copy2(REPO / "docs" / MANUAL, stage / MANUAL)
+    configs = stage / "Modloader/config"
+    if (configs / "qol.full.json").exists():
+        raise RuntimeError("Ship the active qol.json preset, not qol.full.json")
+    qol_preset = json.loads((configs / "qol.json").read_bytes())
+    if qol_preset.get("enable_flare_crash_fix") is not True:
+        raise RuntimeError("The QoL preset must enable the flare crash fix for hf_ai")
 
+    placeholders = {
+        "PACK_VERSION": version,
+        "ALLY_VERSION": versions["ally"],
+        "AI_VERSION": versions["ai"],
+        "QOL_VERSION": versions["qol"],
+    }
     for name in ("README.txt", "NOTES.md"):
         destination = stage / name
         text = destination.read_text()
-        for key, value in {"PACK_VERSION": version, "ALLY_VERSION": versions["ally"], "AI_VERSION": versions["ai"]}.items():
+        for key, value in placeholders.items():
             text = text.replace("@" + key + "@", value)
         destination.write_text(text)
     (stage / "docs").mkdir()
@@ -54,7 +68,7 @@ def populate(stage, version, versions, commit, validation):
     for crate, library, destination in (
         ("ally", "hf_ally.dll", f'hf_ally_v{versions["ally"]}.dll'),
         ("ai", "hf_ai.dll", f'hf_ai_v{versions["ai"]}.dll'),
-        ("qol", "highfleet_qol.dll", "highfleet_qol.dll"),
+        ("qol", "highfleet_qol.dll", f'hf_qol_v{versions["qol"]}.dll'),
     ):
         source = REPO / crate / "target" / TARGET / "release" / library
         if source.read_bytes()[:2] != b"MZ":
@@ -63,7 +77,7 @@ def populate(stage, version, versions, commit, validation):
     for crate, name in (("ally", "ally.json"), ("ai", "hf_ai.json")):
         preset = REPO / crate / "config" / name
         json.loads(preset.read_bytes())
-        destination = stage / "Modloader/config" / name
+        destination = configs / name
         shutil.copy2(preset, destination)
         assert destination.read_bytes() == preset.read_bytes()
     manifest = {

@@ -1,6 +1,6 @@
 # QoL settings: refuel, speed and elevation (`Modloader/config/qol.json`)
 
-For fresh installs, use the `highfleet_qol.dll` included in the Allies pack.
+For fresh installs, use the `hf_qol_v*.dll` included in the Allies pack.
 It's based on [logdot's highfleet-qol](https://github.com/logdot/highfleet-qol)
 and adds manual elevation, optional firing-arc rules, and the aircraft and fleet
 guards described below. If you prefer upstream QoL, don't install the bundled
@@ -14,8 +14,8 @@ DLL alongside it. Keep `enable_flare_crash_fix` on with `hf_ai` in either build.
 | `elevation_rules` | choose gun/KAZ firing-arc rules | ported from our separate QoL fork; vanilla by default |
 
 ## Getting the settings into your file
-* **No `qol.json` yet:** start the game once with the DLL; it writes a full `qol.json` with all keys (vanilla values, manual elevation off), or copy `Modloader/config/qol.full.json` from the pack to `qol.json`.
-* **You already have an older `qol.json`:** the DLL does **not** rewrite it. Open `Modloader/config/qol.full.json` from the pack and copy the settings you need: `refuel`, `speed`, `elevation`, and top-level `elevation_rules`. Missing new settings take their defaults.
+* **No `qol.json` yet:** the pack includes an active `Modloader/config/qol.json`. If the file is absent when the game starts, the DLL generates one.
+* **You already have an older `qol.json`:** back it up before extracting the pack, then merge your custom settings into the bundled file. If you keep your older file, the DLL does **not** rewrite it; missing new settings take their defaults.
 * Edit with the game closed; settings are read once at start-up. JSON has no comments and no trailing commas.
 
 ## Stock-game crash fixes
@@ -99,8 +99,8 @@ mismatches are logged and skipped. This port has not been validated in-game;
 classic/KAZ behaviour still needs gameplay testing. The existing
 `enable_unblocked_guns` option is separate and can bypass gun blocking entirely.
 
-## Every key (`qol.full.json`)
-`Modloader/config/qol.full.json` is a complete configuration reference, not an active config. It includes the crash-fix flags above, refuel/speed settings, manual elevation and firing-arc rules. Copy only the settings you need into `qol.json`. The `planes` block is the game's own default aircraft table. Keep **enable_flare_crash_fix** enabled with hf_ai. Other `enable_*` keys are gameplay tweaks, all off except zoom.
+## Every key (`qol.json`)
+The pack ships the active file as `Modloader/config/qol.json`, not `qol.full.json`. The preset includes the stock aircraft loadouts. Keep **enable_flare_crash_fix** enabled with hf_ai.
 
 | Key | Default | What it does |
 |---|---|---|
@@ -108,6 +108,9 @@ classic/KAZ behaviour still needs gameplay testing. The existing
 | `enable_unblocked_guns` | `false` | Allows guns to fire through parts of the ship carrying them. Disabled by default so the normal gun-blocking rules remain active. |
 | `enable_reduced_shake` | `false` | Greatly reduces combat screen shake from gunfire, thrusters, and similar effects. Disabled by default. |
 | `enable_flare_crash_fix` | `true` | Prevents a crash in version 1.163 when a missile fuze loses its linked target. Enabled by default. Version 1.151 does not require this fix. |
+| `enable_intro` | `false` | Restores the skippable startup intro on Steam 1.163. |
+| `enemy_laser_warning` | `true` | Shows pre-fire gun warning lines for both sides. |
+| `enemy_sound_warning` | `true` | Plays the enemy pre-fire warning sound independently of the lines. Steam 1.163 only. |
 | `fix_plane_ai_crash` | `true` | Stock aircraft target-choice crash fix, moved from ally. Steam 1.163 only. |
 | `fix_merge_crash` | `true` | Null-fleet and fleet-vector crash guards, moved from ally. Steam 1.163 only; not a confirmed fix for every merge crash. |
 | `enable_unblocked_ttl` | `false` | Stops armor-piercing projectiles from being forced to a shorter lifetime. Disabled by default. |
@@ -115,7 +118,7 @@ classic/KAZ behaviour still needs gameplay testing. The existing
 | `max_zoom_level` | `5` | Highest zoom level the player can select. This level must have a matching entry in `zoom_levels`. The default is `5`. |
 | `min_zoom_level` | `3` | Lowest zoom level the player can select and the level used when combat begins. The default is `3`. |
 | `zoom_levels` | `[14.0, 7.0, 1.0, 0.7, 0.5, 0.3]` | Zoom value for each level, starting with level `0`. The list must contain every level from `0` through `max_zoom_level`. |
-| `planes` | `(game table, see qol.full.json)` | Settings and loadouts for each aircraft type. Each key is an aircraft's internal name. The default configuration copies the aircraft and loadout names from the game. The standard `30.0` health is automatically assigned. |
+| `planes` | `(game table, see qol.json)` | Settings and loadouts for each aircraft type. Each key is an aircraft's internal name. The default configuration copies the aircraft and loadout names from the game. The standard `30.0` health is automatically assigned. |
 | `enable_shop_parts` | `false` | Adds the entries in `shop_parts` to city shops. Disabled by default. |
 | `shop_parts` | `{}` | Additional parts that can appear in city shops, grouped by internal part name. A part can have one rule or several rules. Multiple rules are useful when it should have different chances or quantities in different city types. |
 | `sell_multiplier` | `1.0` | Multiplies the money received when selling ship parts. `1.0` gives the normal amount, `2.0` doubles it, and `0.5` halves it. |

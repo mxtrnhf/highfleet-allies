@@ -64,7 +64,7 @@ jobs:
       - name: Package only the GitHub-built DLLs with tracked player presets
         env:
           PACK_VERSION: ${{ inputs.version }}
-        run: python3 tools/package_release.py --version "$PACK_VERSION" --validation "Steam 1.163, 2026-11-15, hf_ally v1.3.4 and hf_ai v1.2.9 validated in game by maintainer (dive avoidance with hull-radius clearance/TWR floor and any-border ally retreat)." --output release-artifacts
+        run: python3 tools/package_release.py --version "$PACK_VERSION" --validation "Windows builds and packaging verified by CI. This workflow does not test gameplay." --output release-artifacts
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

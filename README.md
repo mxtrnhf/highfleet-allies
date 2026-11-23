@@ -22,16 +22,16 @@ combat AI for both sides.
    and extract it into the folder containing `Highfleet.exe`.
 4. Check `Modloader/mods/`: remove older `hf_ally` and `hf_ai` DLLs so only one
    of each remains. Keep only one QoL DLL as well.
-5. If upgrading, merge your custom settings into the new `ally.json` and
-   `hf_ai.json` presets rather than restoring old files wholesale. See the
+5. If upgrading, merge your custom settings into the new `ally.json`,
+   `hf_ai.json`, and `qol.json` presets rather than restoring old files wholesale. See the
    [player defaults and legacy settings](docs/player-defaults.md) if coming from
    a pre-1.0 build.
 
-**Which QoL DLL?** Use the bundled `highfleet_qol.dll` for a fresh install. It
+**Which QoL DLL?** Use the bundled `hf_qol_v*.dll` for a fresh install. It
 includes aircraft and fleet crash guards not in the stock upstream release. If
 you prefer to keep [upstream QoL](https://github.com/logdot/highfleet-qol/releases),
-extract the ZIP to a temporary folder and skip `Modloader/mods/highfleet_qol.dll`
-when copying the files into your game folder. With either build, keep
+extract the ZIP to a temporary folder and keep your existing QoL DLL and config
+instead of copying the bundled ones. With either build, keep
 `enable_flare_crash_fix` enabled in `Modloader/config/qol.json` when using `hf_ai`.
 
 ## Settings and controls
@@ -39,7 +39,7 @@ when copying the files into your game folder. With either build, keep
 Edit settings in `Modloader/config/` while the game is closed. Set
 `"enabled": false` in `ally.json` or `hf_ai.json` to turn off that mod.
 
-- **Allies:** [Settings reference](docs/ally-config.md) · [Ship switching](docs/ship-switching.md) · [Shipworks test battles](docs/shipworks-test-allies.md)
+- **Allies:** [Player manual V2 (PDF)](docs/Allies_Manual_V2.pdf) · [Settings reference](docs/ally-config.md) · [Ship switching](docs/ship-switching.md) · [Shipworks test battles](docs/shipworks-test-allies.md)
 - **Combat AI:** [Tuning guide](docs/hf-ai-tuning-guide.md) · [Settings reference](docs/hf-ai-config-reference.md)
 - **QoL:** [Crash fixes, refueling, map speed, and editor settings](docs/qol-guide.md)
 
