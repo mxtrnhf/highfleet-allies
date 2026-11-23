@@ -14,6 +14,7 @@ const SITE_BYTES: [u8; 24] = [
 ];
 const FRAME_DELTA: usize = 0x1403c126c;
 const RELOAD_TIMER: usize = 0x864;
+/// Native player reload multiplier, also the fallback for an invalid configured rate.
 const DEFAULT_RATE: f32 = 1.75;
 static ALLY_RATE: AtomicU32 = AtomicU32::new(DEFAULT_RATE.to_bits());
 static ENEMY_RATE: AtomicU32 = AtomicU32::new(DEFAULT_RATE.to_bits());
@@ -34,17 +35,23 @@ unsafe extern "C" fn countdown(part: usize, owner: usize, non_player: u32) -> f3
     // ownership of game objects are created. A missing/non-creature owner keeps
     // the native non-player multiplier, as do unknown side values.
     let rate = if non_player == 0 {
+        // The player's own ship keeps its native multiplier.
         DEFAULT_RATE
-    } else if owner != 0
-        && crate::rd::<u8>(owner + crate::OFF_CODE).is_some_and(|code| code & 0x2f == 0x2f)
-    {
-        match crate::rd::<f32>(owner + crate::OFF_SIDE) {
-            Some(side) if side > 0.0 => f32::from_bits(ALLY_RATE.load(Ordering::Relaxed)),
-            Some(side) if side < 0.0 => f32::from_bits(ENEMY_RATE.load(Ordering::Relaxed)),
-            _ => 1.0,
-        }
     } else {
-        1.0
+        let owner_is_creature = owner != 0
+            && crate::rd::<u8>(owner + crate::OFF_CODE)
+                .is_some_and(crate::native_layout::is_creature_code);
+        if !owner_is_creature {
+            // Missing or non-creature owner: keep the native non-player multiplier.
+            1.0
+        } else {
+            match crate::rd::<f32>(owner + crate::OFF_SIDE) {
+                Some(side) if side > 0.0 => f32::from_bits(ALLY_RATE.load(Ordering::Relaxed)),
+                Some(side) if side < 0.0 => f32::from_bits(ENEMY_RATE.load(Ordering::Relaxed)),
+                // Unknown side: also keep the native multiplier.
+                _ => 1.0,
+            }
+        }
     };
     let timer = (part as *const u8)
         .add(RELOAD_TIMER)
@@ -61,6 +68,8 @@ pub unsafe fn prepare(
     enemy: f32,
 ) -> Result<(), String> {
     let address = module.resolve_rva(SITE_RVA).map_err(|e| e.to_string())?;
+    // SAFETY: `address` is inside the loaded main module (pinned 1.163 executable) and the
+    // compared slice is exactly `SITE_BYTES.len()` bytes at that site.
     if crate::rd::<u8>(address).is_none()
         || std::slice::from_raw_parts(address as *const u8, SITE_BYTES.len()) != SITE_BYTES
     {

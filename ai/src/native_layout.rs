@@ -15,8 +15,17 @@ pub use highfleet::v1_163::{Body, Creature, PartStats};
 /// Native class code of a `Node` (`IObject::code`); the low byte carries the class bits.
 pub const NODE_CODE: usize =
     offset_of!(Node, base) + offset_of!(ISerializable, base) + offset_of!(IObject, code);
+/// Class bits in the `NODE_CODE` byte that mark a creature (ship) node.
+pub const CREATURE_CLASS_MASK: u8 = 0x2f;
+
+/// Whether a `NODE_CODE` byte carries the creature (ship) class bits.
+pub fn is_creature_code(code: u8) -> bool {
+    code & CREATURE_CLASS_MASK == CREATURE_CLASS_MASK
+}
 /// Active `Node` state word (`m_state`); non-zero while the object is in the level.
 pub const NODE_STATE: usize = offset_of!(Node, state);
+/// Local identity word used to spot a recycled creature slot (not `Node::id`; not modeled upstream).
+pub const NODE_ID_WORD: usize = 0x18;
 /// Owner node of a part (`Node::owner` target).
 pub const NODE_OWNER: usize = offset_of!(Node, owner) + offset_of!(Link, target);
 /// Current target of a `Creature` (`Creature::target` target).

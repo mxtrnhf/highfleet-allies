@@ -51,8 +51,6 @@ const SIDE_OFFSET: usize = native_layout::CREATURE_SIDE;
 const AI_FLAG_OFFSET: usize = native_layout::CREATURE_AI_FLAG;
 /// Offset in the engine object's function table of the random number function.
 const RANDOM_SLOT: usize = 0x110;
-/// Global with the game time in seconds.
-const GAME_TIME: usize = 0x143a119c0;
 
 /// Default shortest and longest wait between the launches of a burst, in seconds.
 pub const DEFAULT_MIN_DELAY: f32 = 0.6;
@@ -93,7 +91,7 @@ fn bursts() -> MutexGuard<'static, Vec<Burst>> {
 }
 
 unsafe fn game_time() -> Option<f64> {
-    rd::<f64>(GAME_TIME).filter(|t| t.is_finite())
+    rd::<f64>(crate::CLOCK).filter(|t| t.is_finite())
 }
 
 fn eligible_ship(ship: usize) -> bool {
@@ -125,14 +123,17 @@ pub unsafe fn patch_ai_missile_dump(
     max_delay: f32,
     allies: bool,
 ) -> Result {
-    if !(chance > 0.0) {
+    let enabled = chance > 0.0;
+    if !enabled {
         return Ok(());
     }
 
     let roll = std::slice::from_raw_parts(ROLL_ADDRESS as *const u8, ROLL_EXPECTED.len());
     let launch = std::slice::from_raw_parts(LAUNCH_ADDRESS as *const u8, LAUNCH_EXPECTED.len());
     if roll != ROLL_EXPECTED || launch != LAUNCH_EXPECTED {
-        log::error!("hf_ai: missile dump: the game code is not what was expected, leaving it alone");
+        log::error!(
+            "hf_ai: missile dump: the game code is not what was expected, leaving it alone"
+        );
         return Ok(());
     }
 
@@ -257,7 +258,9 @@ unsafe extern "C" fn launch_hook(launcher: *mut u8) -> u64 {
                 next: now + delay,
                 expires: now + delay + BURST_TIMEOUT,
             });
-            log::debug!("hf_ai: missile dump: ship {ship:#x} launched, next launch in {delay:.2} s");
+            log::debug!(
+                "hf_ai: missile dump: ship {ship:#x} launched, next launch in {delay:.2} s"
+            );
             return true;
         }
         false

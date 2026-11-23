@@ -91,7 +91,7 @@ use crate::native_layout::{self, Link};
 use crate::{
     flares_config::AiFlaresConfig,
     panic_math::{self, PanicParams, PanicState, Threat, ThreatEvent, ThreatScan},
-    rng, STEER_RVA,
+    plausible, rng, MIN_MAPPED_ADDRESS, PAGE_SIZE, STEER_RVA,
 };
 
 const HOOK_RVA: usize = 0x7f864;
@@ -123,7 +123,8 @@ const RELEASE_RVA: usize = 0x2eed0;
 const RELEASE_PROLOGUE: [u8; 8] = [0x48, 0x8b, 0xc4, 0x53, 0x55, 0x56, 0x57, 0x48];
 /// `traverseLinkedListCreature_(creature) -> body`: the body that carries the ship's heading.
 const CREATURE_BODY_RVA: usize = 0x48fc0;
-const CREATURE_BODY_PROLOGUE: [u8; 10] = [0x48, 0x8b, 0xd1, 0x48, 0x8b, 0x89, 0x88, 0x00, 0x00, 0x00];
+const CREATURE_BODY_PROLOGUE: [u8; 10] =
+    [0x48, 0x8b, 0xd1, 0x48, 0x8b, 0x89, 0x88, 0x00, 0x00, 0x00];
 /// Body heading in radians.
 const BODY_HEADING: usize = native_layout::BODY_HEADING;
 /// Offsets from the `0x66` command: the angle of it and of the `0x67` command after it, and the
@@ -155,6 +156,8 @@ const BODY_POS_X: usize = native_layout::BODY_POS_X;
 const BODY_POS_Y: usize = native_layout::BODY_POS_Y;
 const BODY_STATS_ID: usize = native_layout::BODY_PART_INDEX;
 const BODY_TARGET: usize = native_layout::BODY_PROJECTILE_TARGET;
+/// Owner side times 100, used instead of an owner link by the K-13 air-to-air missile.
+const BODY_SIDE_MARKER: usize = 0x248;
 const NODE_OWNER: usize = native_layout::NODE_OWNER;
 const STATS_CATEGORY: usize = native_layout::STATS_CATEGORY;
 const VTABLE_IS_ACTIVE: usize = 0x78;
@@ -215,13 +218,22 @@ static LOGGED_CHILD_TARGET: AtomicBool = AtomicBool::new(false);
 static CAUGHT_PANICS: AtomicU32 = AtomicU32::new(0);
 static LOGGED_CRASH_FIX_CHECK: AtomicBool = AtomicBool::new(false);
 
-/// hf_ai: reads `T` at `address` only if the pages are mapped and readable (same test as `hf_ally`'s `diag::rd`).
-/// The raw `read` of the original is used only for the AI tick's own arguments (see [`Region`] for the scan).
+/// Checks that a small scalar read stays on admitted pages. Unlike the general
+/// `crate::rd`, this also requires `region_of`'s checked end address.
+///
+/// # Safety
+/// The caller must establish that the small, non-owning `T` is valid and live,
+/// with no concurrent write. Region checks alone do not prove those conditions.
 unsafe fn rd<T: Copy>(address: usize) -> Option<T> {
     let end = address.checked_add(std::mem::size_of::<T>())?;
-    if address < 0x1_0000 || !readable(address) || (end - 1) / 4096 != address / 4096 && !readable(end - 1) {
+    if address < MIN_MAPPED_ADDRESS || !readable(address) {
         return None;
     }
+    let last = end - 1;
+    if last / PAGE_SIZE != address / PAGE_SIZE && !readable(last) {
+        return None;
+    }
+
     Some(ptr::read_unaligned(address as *const T))
 }
 
@@ -232,7 +244,12 @@ unsafe fn readable(address: usize) -> bool {
 /// The committed, accessible memory region around `address` as `(start, end)`.
 unsafe fn region_of(address: usize) -> Option<(usize, usize)> {
     let mut info: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
-    if VirtualQuery(address as *const c_void, &mut info, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 {
+    if VirtualQuery(
+        address as *const c_void,
+        &mut info,
+        std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+    ) == 0
+    {
         return None;
     }
     // MEM_COMMIT, and not PAGE_NOACCESS (0x01) / PAGE_GUARD (0x100)
@@ -254,15 +271,21 @@ struct Region {
 
 impl Region {
     fn new() -> Self {
-        Self { cached: [(0, 0); 4], next: 0 }
+        Self {
+            cached: [(0, 0); 4],
+            next: 0,
+        }
     }
 
     unsafe fn read<T: Copy>(&mut self, address: usize) -> Option<T> {
         let end = address.checked_add(std::mem::size_of::<T>())?;
-        if address < 0x1_0000 {
+        if address < MIN_MAPPED_ADDRESS {
             return None;
         }
-        let known = self.cached.iter().any(|&(start, stop)| address >= start && end <= stop);
+        let known = self
+            .cached
+            .iter()
+            .any(|&(start, stop)| address >= start && end <= stop);
         if !known {
             let region = region_of(address)?;
             if end > region.1 {
@@ -357,7 +380,9 @@ pub unsafe fn patch_ai_flares(
             panic_evasion_seconds: config.panic_evasion_seconds,
         },
         release: std::mem::transmute::<usize, ReleaseFn>(module.resolve_rva(RELEASE_RVA)?),
-        creature_body: std::mem::transmute::<usize, CreatureBodyFn>(module.resolve_rva(CREATURE_BODY_RVA)?),
+        creature_body: std::mem::transmute::<usize, CreatureBodyFn>(
+            module.resolve_rva(CREATURE_BODY_RVA)?,
+        ),
         stats: std::mem::transmute::<usize, StatsFn>(module.resolve_rva(STATS_RVA)?),
         distance: std::mem::transmute::<usize, DistanceFn>(module.resolve_rva(DISTANCE_RVA)?),
         bodies: module.resolve_rva(BODIES_RVA)?,
@@ -487,10 +512,6 @@ fn lock_ships() -> std::sync::MutexGuard<'static, Ships> {
         .get_or_init(|| Mutex::new(Ships::default()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn plausible(address: usize) -> bool {
-    (0x1_0000..0x7fff_ffff_0000).contains(&address) && address % 8 == 0
 }
 
 /// Runs a hook body so that a Rust panic never unwinds into the game (which would abort the process).
@@ -624,12 +645,31 @@ unsafe extern "C" fn on_creature_update(creature: *mut u8) {
 
 /// For the panic trace: the sides of the panicking ship, the missile's launcher (owner link) and what it is aimed at.
 unsafe fn describe_threat(creature: usize, body: usize) -> String {
-    let side = |node: usize| if plausible(node) { rd::<f32>(node + CREATURE_SIDE).map_or("?".to_string(), |s| format!("{s:+.0}")) } else { "?".to_string() };
+    let side = |node: usize| {
+        if plausible(node) {
+            rd::<f32>(node + CREATURE_SIDE).map_or("?".to_string(), |s| format!("{s:+.0}"))
+        } else {
+            "?".to_string()
+        }
+    };
     let owner = rd::<usize>(body + MISSILE_OWNER_LINK).unwrap_or(0);
     let target = rd::<usize>(body + BODY_TARGET).unwrap_or(0);
-    let locked = target != 0 && (target == creature || rd::<usize>(target + NODE_OWNER) == Some(creature));
-    let raw = |node: usize| if plausible(node) { rd::<f32>(node + CREATURE_SIDE).map_or("?".to_string(), |s| format!("{s}")) } else { "?".to_string() };
-    let class = |node: usize| if plausible(node) { rd::<u8>(node + native_layout::NODE_CODE).map_or("?".to_string(), |c| format!("{c:#x}")) } else { "?".to_string() };
+    let locked =
+        target != 0 && (target == creature || rd::<usize>(target + NODE_OWNER) == Some(creature));
+    let raw = |node: usize| {
+        if plausible(node) {
+            rd::<f32>(node + CREATURE_SIDE).map_or("?".to_string(), |s| format!("{s}"))
+        } else {
+            "?".to_string()
+        }
+    };
+    let class = |node: usize| {
+        if plausible(node) {
+            rd::<u8>(node + native_layout::NODE_CODE).map_or("?".to_string(), |c| format!("{c:#x}"))
+        } else {
+            "?".to_string()
+        }
+    };
     format!(
         "ship_side {} launcher_side {} target_side {} (raw {} class {}) locked {} stats {} marker248 {:?} owner {owner:#x} target {target:#x}",
         side(creature),
@@ -639,7 +679,7 @@ unsafe fn describe_threat(creature: usize, body: usize) -> String {
         class(target),
         locked,
         rd::<i32>(body + BODY_STATS_ID).unwrap_or(-1),
-        rd::<f32>(body + 0x248)
+        rd::<f32>(body + BODY_SIDE_MARKER)
     )
 }
 
@@ -738,7 +778,11 @@ unsafe fn creature_update(creature: usize) {
                 "EXTEND",
                 format_args!(
                     "dist={:.0} missile={:.0},{:.0} maneuver_until={:.3} cooldown_until={:.3}",
-                    threat.distance, threat.position.0, threat.position.1, snapshot.maneuver_until, snapshot.cooldown_until
+                    threat.distance,
+                    threat.position.0,
+                    threat.position.1,
+                    snapshot.maneuver_until,
+                    snapshot.cooldown_until
                 ),
             ),
             ThreatEvent::ReactionRollFailed(threat) => trace(
@@ -748,13 +792,22 @@ unsafe fn creature_update(creature: usize) {
                 "IGNORED",
                 format_args!(
                     "dist={:.0} missile={:.0},{:.0} reaction_probability={}",
-                    threat.distance, threat.position.0, threat.position.1, runtime.config.reaction_probability
+                    threat.distance,
+                    threat.position.0,
+                    threat.position.1,
+                    runtime.config.reaction_probability
                 ),
             ),
             ThreatEvent::NotDue | ThreatEvent::NoThreat => {}
         }
         if ended {
-            trace(runtime, now, creature, "END", format_args!("mode={}", snapshot.mode(evade)));
+            trace(
+                runtime,
+                now,
+                creature,
+                "END",
+                format_args!("mode={}", snapshot.mode(evade)),
+            );
         }
     }
 
@@ -793,8 +846,14 @@ static TRACKS: Mutex<Option<Tracks>> = Mutex::new(None);
 
 /// Updates the tracks of all live guided missiles at most ten times a second (shared by all ships).
 unsafe fn update_tracks(runtime: &Runtime, now: f64) {
-    let mut guard = TRACKS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let tracks = guard.get_or_insert_with(|| Tracks { next_scan: 0.0, last_scan: 0.0, map: HashMap::new() });
+    let mut guard = TRACKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let tracks = guard.get_or_insert_with(|| Tracks {
+        next_scan: 0.0,
+        last_scan: 0.0,
+        map: HashMap::new(),
+    });
     if now < tracks.last_scan {
         tracks.map.clear(); // the game clock restarted: a new battle
         tracks.next_scan = 0.0;
@@ -829,7 +888,10 @@ unsafe fn update_tracks(runtime: &Runtime, now: f64) {
         if category != CATEGORY_TACTICAL_MISSILE && category != CATEGORY_STRATEGIC_MISSILE {
             continue;
         }
-        let (Some(x), Some(y)) = (memory.read::<f32>(body + BODY_POS_X), memory.read::<f32>(body + BODY_POS_Y)) else {
+        let (Some(x), Some(y)) = (
+            memory.read::<f32>(body + BODY_POS_X),
+            memory.read::<f32>(body + BODY_POS_Y),
+        ) else {
             continue;
         };
         if !(x.is_finite() && y.is_finite()) {
@@ -840,13 +902,23 @@ unsafe fn update_tracks(runtime: &Runtime, now: f64) {
             let dt = (now - previous.time) as f32;
             if dt > 0.02 && dt < 1.0 {
                 let inst = ((x - previous.pos.0) / dt, (y - previous.pos.1) / dt);
-                vel = (0.5 * previous.vel.0 + 0.5 * inst.0, 0.5 * previous.vel.1 + 0.5 * inst.1);
+                vel = (
+                    0.5 * previous.vel.0 + 0.5 * inst.0,
+                    0.5 * previous.vel.1 + 0.5 * inst.1,
+                );
                 if previous.vel == (0.0, 0.0) {
                     vel = inst;
                 }
             }
         }
-        fresh.insert(body, Track { pos: (x, y), vel, time: now });
+        fresh.insert(
+            body,
+            Track {
+                pos: (x, y),
+                vel,
+                time: now,
+            },
+        );
     }
     tracks.map = fresh;
 }
@@ -874,10 +946,19 @@ pub fn panicking(creature: usize, now: f64) -> bool {
     if RUNTIME.get().is_none() {
         return false;
     }
-    let Some(ships) = SHIPS.get() else { return false };
+    let Some(ships) = SHIPS.get() else {
+        return false;
+    };
     match ships.try_lock() {
-        Ok(guard) => guard.by_creature.get(&creature).is_some_and(|s| s.is_panicking(now)),
-        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner().by_creature.get(&creature).is_some_and(|s| s.is_panicking(now)),
+        Ok(guard) => guard
+            .by_creature
+            .get(&creature)
+            .is_some_and(|s| s.is_panicking(now)),
+        Err(std::sync::TryLockError::Poisoned(p)) => p
+            .into_inner()
+            .by_creature
+            .get(&creature)
+            .is_some_and(|s| s.is_panicking(now)),
         Err(std::sync::TryLockError::WouldBlock) => true,
     }
 }
@@ -885,11 +966,24 @@ pub fn panicking(creature: usize, now: f64) -> bool {
 /// The panic stage of the steering hook, called by `lib.rs` after the waypoint stage (`decide`) with the waypoint
 /// the AI tick would store (`wanted`, possibly already changed by `decide`) and the ship position. Returns the
 /// replacement waypoint while the ship is evading, `None` to leave it. Never panics.
-pub unsafe fn panic_waypoint(creature: usize, now: f64, wanted: (f32, f32), ship: (f32, f32)) -> Option<(f32, f32)> {
-    guarded("panic waypoint", || panic_waypoint_inner(creature, now, wanted, ship)).flatten()
+pub unsafe fn panic_waypoint(
+    creature: usize,
+    now: f64,
+    wanted: (f32, f32),
+    ship: (f32, f32),
+) -> Option<(f32, f32)> {
+    guarded("panic waypoint", || {
+        panic_waypoint_inner(creature, now, wanted, ship)
+    })
+    .flatten()
 }
 
-unsafe fn panic_waypoint_inner(creature: usize, now: f64, wanted: (f32, f32), ship: (f32, f32)) -> Option<(f32, f32)> {
+unsafe fn panic_waypoint_inner(
+    creature: usize,
+    now: f64,
+    wanted: (f32, f32),
+    ship: (f32, f32),
+) -> Option<(f32, f32)> {
     let runtime = RUNTIME.get()?;
     // hf_ai: with evade off the original installs no steering hook at all; this keeps that explicit.
     if !runtime.params.evade || !is_ai(creature) || !crate::maneuvers_allowed(creature) {
@@ -918,7 +1012,12 @@ unsafe fn panic_waypoint_inner(creature: usize, now: f64, wanted: (f32, f32), sh
                 now,
                 creature,
                 "FLIGHT",
-                format_args!("side={:+.0} dir={:.3},{:.3}", snapshot.dodge_side, (x - ship.0) / length, (y - ship.1) / length),
+                format_args!(
+                    "side={:+.0} dir={:.3},{:.3}",
+                    snapshot.dodge_side,
+                    (x - ship.0) / length,
+                    (y - ship.1) / length
+                ),
             );
         }
         if let (true, Some((x, y))) = (trace_steer, outcome.waypoint) {
@@ -948,7 +1047,9 @@ unsafe fn panic_waypoint_inner(creature: usize, now: f64, wanted: (f32, f32), sh
 /// raises the strength of the `0x66` and `0x67` commands to the configured boost, the way the
 /// player's Shift key does.
 unsafe extern "C" fn on_engine_commands(creature: *mut u8, command: *mut f32) {
-    guarded("engine commands", || engine_commands(creature as usize, command));
+    guarded("engine commands", || {
+        engine_commands(creature as usize, command)
+    });
 }
 
 /// Called only after an active hf_ai boost writes its commands, never for stock
@@ -994,7 +1095,8 @@ unsafe fn engine_commands(creature: usize, command: *mut f32) {
         ships.by_creature.get_mut(&creature).and_then(|ship| {
             let (barrel_roll, side) = panic_math::engine_mode(ship, now)?;
             let flight = ship.flight;
-            let trace_engine = runtime.config.log_panic && now - ship.trace_last_engine >= TRACE_PERIOD;
+            let trace_engine =
+                runtime.config.log_panic && now - ship.trace_last_engine >= TRACE_PERIOD;
             if trace_engine {
                 ship.trace_last_engine = now;
             }
@@ -1025,8 +1127,10 @@ unsafe fn engine_commands(creature: usize, command: *mut f32) {
     }
     if boost > 1.0 {
         if let Some(dir) = flight {
-            let allow_angle_override = native_command_direction(command)
-                .is_some_and(|native_dir| native_dir.0 * dir.0 + native_dir.1 * dir.1 >= ESCAPE_OPPOSE_MIN);
+            let allow_angle_override =
+                native_command_direction(command).is_some_and(|native_dir| {
+                    native_dir.0 * dir.0 + native_dir.1 * dir.1 >= ESCAPE_OPPOSE_MIN
+                });
             if allow_angle_override {
                 if let Some(changed) = write_escape(command, dir, boost) {
                     limit_boost_strength(creature, command);
@@ -1047,7 +1151,10 @@ unsafe fn engine_commands(creature: usize, command: *mut f32) {
             }
         }
         let mut changed = [(0.0f32, 0.0f32); 2];
-        for (slot, offset) in [COMMAND_STRENGTH, COMMAND_NEXT_STRENGTH].into_iter().enumerate() {
+        for (slot, offset) in [COMMAND_STRENGTH, COMMAND_NEXT_STRENGTH]
+            .into_iter()
+            .enumerate()
+        {
             let strength = command.byte_add(offset);
             let current = strength.read_unaligned();
             if let Some(boosted) = panic_math::boosted_strength(current, boost) {
@@ -1090,7 +1197,10 @@ unsafe fn native_command_direction(command: *const f32) -> Option<(f32, f32)> {
     let w1 = s1.max(0.0);
     let w2 = s2.max(0.0);
     let (fx, fy) = if w1 + w2 > 1.0e-3 {
-        (w1 * a1.sin() + w2 * a2.sin(), -w1 * a1.cos() - w2 * a2.cos())
+        (
+            w1 * a1.sin() + w2 * a2.sin(),
+            -w1 * a1.cos() - w2 * a2.cos(),
+        )
     } else {
         (a1.sin() + a2.sin(), -a1.cos() - a2.cos())
     };
@@ -1144,17 +1254,28 @@ unsafe fn write_engine_angles(command: *mut f32, first: f32, second: f32) {
 fn direction_angle(direction: (f32, f32)) -> Option<f32> {
     let (x, y) = crate::tactics_math::normalized(direction.0, direction.1)?;
     let angle = x.atan2(-y);
-    Some(if angle < 0.0 { angle + std::f32::consts::TAU } else { angle })
+    Some(if angle < 0.0 {
+        angle + std::f32::consts::TAU
+    } else {
+        angle
+    })
 }
 
 /// Dashes both engine banks along `direction` at `strength`: the player's Shift with the stick held.
 /// This bypasses the stock AI's velocity controller and its `s * 25 * TWR` speed target, which no
 /// command-strength raise can exceed. Returns the strengths before and after, `None` = direction unusable.
-unsafe fn write_escape(command: *mut f32, direction: (f32, f32), strength: f32) -> Option<[(f32, f32); 2]> {
+unsafe fn write_escape(
+    command: *mut f32,
+    direction: (f32, f32),
+    strength: f32,
+) -> Option<[(f32, f32); 2]> {
     let angle = direction_angle(direction)?;
     write_engine_angles(command, angle, angle);
     let mut changed = [(0.0f32, 0.0f32); 2];
-    for (slot, offset) in [COMMAND_STRENGTH, COMMAND_NEXT_STRENGTH].into_iter().enumerate() {
+    for (slot, offset) in [COMMAND_STRENGTH, COMMAND_NEXT_STRENGTH]
+        .into_iter()
+        .enumerate()
+    {
         let field = command.byte_add(offset);
         let current = field.read_unaligned();
         field.write_unaligned(strength);
@@ -1211,16 +1332,29 @@ unsafe fn release_all(runtime: &Runtime, begin: usize, end: usize) {
 /// (owner link, which the launch log showed to be right for both camps) decides; without it, a missile aimed at the other camp.
 unsafe fn friendly_stray(memory: &mut Region, creature: usize, body: usize, target: usize) -> bool {
     let side_of = |memory: &mut Region, node: usize| {
-        // only a ship (creature class bits 0x2f at +0x28) has a side at +0xad4; a plane or missile body gives garbage there
-        if node == 0 || !plausible(node) || memory.read::<u8>(node + native_layout::NODE_CODE).map_or(true, |class| class & 0x2f != 0x2f) {
+        // only a ship (creature class bits at +0x28) has a side at +0xad4; a plane or missile body gives garbage there
+        if node == 0 || !plausible(node) {
             return None;
         }
-        memory.read::<f32>(node + CREATURE_SIDE).and_then(valid_side)
+        let class = memory.read::<u8>(node + native_layout::NODE_CODE)?;
+        if !native_layout::is_creature_code(class) {
+            return None;
+        }
+        memory
+            .read::<f32>(node + CREATURE_SIDE)
+            .and_then(valid_side)
     };
-    let Some(own) = side_of(memory, creature) else { return false };
+    let Some(own) = side_of(memory, creature) else {
+        return false;
+    };
     // aimed at something that is not a ship (a plane: the K-13; another missile): it is not coming for this ship, whoever
     // launched it (decided first: the log showed a player-side K-13 at a plane passing an enemy ship)
-    if target != 0 && plausible(target) && memory.read::<u8>(target + native_layout::NODE_CODE).is_some_and(|class| class & 0x2f != 0x2f) {
+    if target != 0
+        && plausible(target)
+        && memory
+            .read::<u8>(target + native_layout::NODE_CODE)
+            .is_some_and(|class| !native_layout::is_creature_code(class))
+    {
         return true;
     }
     let owner = memory.read::<usize>(body + MISSILE_OWNER_LINK).unwrap_or(0);
@@ -1228,7 +1362,10 @@ unsafe fn friendly_stray(memory: &mut Region, creature: usize, body: usize, targ
         return launcher.signum() == own.signum();
     }
     // the K-13 (carrier planes' air-to-air missile) stores its owner's side x 100 at +0x248, no usable owner link
-    if let Some(marker) = memory.read::<f32>(body + 0x248).filter(|m| m.is_finite() && *m != 0.0 && m.abs() <= 10_000.0) {
+    if let Some(marker) = memory
+        .read::<f32>(body + BODY_SIDE_MARKER)
+        .filter(|m| m.is_finite() && *m != 0.0 && m.abs() <= 10_000.0)
+    {
         return marker.signum() == own.signum();
     }
     let aimed = side_of(memory, target).or_else(|| {
@@ -1249,15 +1386,32 @@ unsafe fn friendly_stray(memory: &mut Region, creature: usize, body: usize, targ
 unsafe fn threatened(runtime: &Runtime, creature: usize, ignored: &[usize]) -> ThreatScan {
     let mut memory = Region::new();
     let Some(count): Option<u32> = memory.read(runtime.body_count) else {
-        return ThreatScan { threat: None, any_in_range: false };
+        return ThreatScan {
+            threat: None,
+            any_in_range: false,
+        };
     };
     let range = runtime.config.trigger_range;
     let mut nearest: Option<Threat> = None;
     let mut any_in_range = false;
     let stray_enabled = runtime.config.stray_missiles && crate::maneuvers_allowed(creature);
-    let tracks = if stray_enabled { track_snapshot() } else { HashMap::new() };
-    let here = if stray_enabled { ship_position(creature) } else { (f32::NAN, f32::NAN) };
-    let size = if stray_enabled { memory.read::<f32>(creature + CREATURE_RADIUS).unwrap_or(0.0) } else { 0.0 };
+    let tracks = if stray_enabled {
+        track_snapshot()
+    } else {
+        HashMap::new()
+    };
+    let here = if stray_enabled {
+        ship_position(creature)
+    } else {
+        (f32::NAN, f32::NAN)
+    };
+    let size = if stray_enabled {
+        memory
+            .read::<f32>(creature + CREATURE_RADIUS)
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
 
     for index in 0..(count as usize).min(MAX_BODIES) {
         let Some(body) = memory.read::<usize>(runtime.bodies + index * 8) else {
@@ -1283,7 +1437,8 @@ unsafe fn threatened(runtime: &Runtime, creature: usize, ignored: &[usize]) -> T
 
         let target = memory.read::<usize>(body + BODY_TARGET).unwrap_or(0);
         let direct = target == creature;
-        let locked = target != 0 && (direct || memory.read::<usize>(target + NODE_OWNER) == Some(creature));
+        let locked =
+            target != 0 && (direct || memory.read::<usize>(target + NODE_OWNER) == Some(creature));
         let mut stray = false;
         if !locked {
             // not locked on this ship: only a stray whose flight path crosses the ship counts (never its own missiles)
@@ -1313,7 +1468,11 @@ unsafe fn threatened(runtime: &Runtime, creature: usize, ignored: &[usize]) -> T
         }
 
         let distance = (runtime.distance)(creature as *const u8, body as *const u8);
-        let limit = if stray { runtime.config.stray_missile_range } else { range };
+        let limit = if stray {
+            runtime.config.stray_missile_range
+        } else {
+            range
+        };
         if stray {
             let in_the_way = tracks.get(&body).is_some_and(|track| {
                 here.0.is_finite()
@@ -1336,14 +1495,19 @@ unsafe fn threatened(runtime: &Runtime, creature: usize, ignored: &[usize]) -> T
             if ignored.contains(&body) {
                 continue;
             }
-            if nearest.map_or(true, |best| distance < best.distance) {
+            if nearest.is_none_or(|best| distance < best.distance) {
                 let (Some(x), Some(y)) = (
                     memory.read::<f32>(body + BODY_POS_X),
                     memory.read::<f32>(body + BODY_POS_Y),
                 ) else {
                     continue;
                 };
-                nearest = Some(Threat { distance, position: (x, y), body, stray });
+                nearest = Some(Threat {
+                    distance,
+                    position: (x, y),
+                    body,
+                    stray,
+                });
 
                 if stray && !LOGGED_STRAY.swap(true, Ordering::Relaxed) {
                     log::info!("hf_ai ai_flares: first STRAY missile threat (not locked on this ship, its path crosses it): distance {distance:.0}, missile at {x:.0},{y:.0}");
@@ -1365,5 +1529,8 @@ unsafe fn threatened(runtime: &Runtime, creature: usize, ignored: &[usize]) -> T
         }
     }
 
-    ThreatScan { threat: nearest, any_in_range }
+    ThreatScan {
+        threat: nearest,
+        any_in_range,
+    }
 }

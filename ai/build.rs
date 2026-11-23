@@ -2,11 +2,16 @@
 //! version can be told apart in a tester's log.
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const SECONDS_PER_DAY: u64 = 86_400;
+
 fn main() {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
-    // civil-from-days (Howard Hinnant)
-    let z = days + 719_468;
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (days_since_epoch, seconds_of_day) = (secs / SECONDS_PER_DAY, secs % SECONDS_PER_DAY);
+    // civil-from-days (Howard Hinnant): days since 1970-01-01 -> year, month, day.
+    let z = days_since_epoch as i64 + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
@@ -17,9 +22,9 @@ fn main() {
     let year = yoe + era * 400 + i64::from(month <= 2);
     println!(
         "cargo:rustc-env=HF_AI_BUILD={year:04}{month:02}{day:02}-{:02}{:02}{:02}",
-        rem / 3_600,
-        rem % 3_600 / 60,
-        rem % 60
+        seconds_of_day / 3_600,
+        seconds_of_day % 3_600 / 60,
+        seconds_of_day % 60
     );
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src");

@@ -177,8 +177,8 @@ pub fn scan(
                         EVASION_EXTENSION
                     };
                     ship.maneuver_until = ship.maneuver_until.max(now + extension);
-                    ship.cooldown_until =
-                        ship.flare_burst_until.max(ship.maneuver_until) + f64::from(p.min_interval_seconds);
+                    ship.cooldown_until = ship.flare_burst_until.max(ship.maneuver_until)
+                        + f64::from(p.min_interval_seconds);
                 }
                 return ThreatEvent::ThreatContinues(found);
             }
@@ -188,9 +188,14 @@ pub fn scan(
             // dodge) would go here, between the threat and the reaction roll.
             if rand() < p.reaction_probability {
                 ship.missile_position = Some(found.position);
-                ship.flare_burst_until = if found.stray { 0.0 } else { now + f64::from(p.burst_seconds) };
+                ship.flare_burst_until = if found.stray {
+                    0.0
+                } else {
+                    now + f64::from(p.burst_seconds)
+                };
                 ship.barrel_roll = p.evade && rand() < p.barrel_roll_probability;
-                ship.panic_evasion = p.evade && !ship.barrel_roll && rand() < p.panic_evasion_probability;
+                ship.panic_evasion =
+                    p.evade && !ship.barrel_roll && rand() < p.panic_evasion_probability;
                 ship.maneuver_until = if !p.evade {
                     0.0
                 } else if ship.barrel_roll {
@@ -202,8 +207,8 @@ pub fn scan(
                 };
                 ship.flight = None;
                 ship.dodge_side = random_side(rand);
-                ship.cooldown_until =
-                    ship.flare_burst_until.max(ship.maneuver_until) + f64::from(p.min_interval_seconds);
+                ship.cooldown_until = ship.flare_burst_until.max(ship.maneuver_until)
+                    + f64::from(p.min_interval_seconds);
                 return ThreatEvent::PanicStarted(found);
             }
             if ship.ignored_threats.len() >= MAX_IGNORED_THREATS {
@@ -276,14 +281,27 @@ pub fn evade_waypoint(
 
     // Perpendicular to the line to the missile, plus a retreat from it. Of the two sides the HIGHER one wins when they
     // differ clearly (flares fall below the ship, ground is below it); `side` decides when they are about equal.
-    let candidate = |s: f32| normalized(-to_missile_y * s - to_missile_x * EVASION_RETREAT, to_missile_x * s - to_missile_y * EVASION_RETREAT);
+    let candidate = |s: f32| {
+        normalized(
+            -to_missile_y * s - to_missile_x * EVASION_RETREAT,
+            to_missile_x * s - to_missile_y * EVASION_RETREAT,
+        )
+    };
     let (preferred, other) = (candidate(side)?, candidate(-side)?);
-    let chosen = if other.1 < preferred.1 - UP_PREFERENCE_MARGIN { other } else { preferred };
+    let chosen = if other.1 < preferred.1 - UP_PREFERENCE_MARGIN {
+        other
+    } else {
+        preferred
+    };
     let (mut evade_x, mut evade_y) = (chosen.0, chosen.1);
     if ship.1 > NO_DESCENT_BELOW_Y && evade_y > 0.0 {
         // low: no downward component at all, keep the sideways part
         evade_y = 0.0;
-        evade_x = if evade_x.abs() > 1.0e-3 { evade_x.signum() } else { side };
+        evade_x = if evade_x.abs() > 1.0e-3 {
+            evade_x.signum()
+        } else {
+            side
+        };
     }
 
     let (mut x, mut y, _) = normalized(
@@ -293,7 +311,11 @@ pub fn evade_waypoint(
     if strength > 0.0 && ship.1 > NO_DESCENT_BELOW_Y && y > 0.0 {
         // the blend with a downward stock course can still point down: level out
         y = 0.0;
-        x = if x.abs() > 1.0e-3 { x.signum() } else { evade_x.signum() };
+        x = if x.abs() > 1.0e-3 {
+            x.signum()
+        } else {
+            evade_x.signum()
+        };
     }
     let course_length = course_length.max(EVASION_WAYPOINT_LENGTH);
 
@@ -350,7 +372,9 @@ pub fn evasive_waypoint(
             return none;
         };
         let length = normalized(waypoint_x - ship_x, waypoint_y - ship_y)
-            .map_or(EVASION_WAYPOINT_LENGTH, |(_, _, length)| length.max(EVASION_WAYPOINT_LENGTH));
+            .map_or(EVASION_WAYPOINT_LENGTH, |(_, _, length)| {
+                length.max(EVASION_WAYPOINT_LENGTH)
+            });
         EvasionOutcome {
             waypoint: Some((ship_x + flight_x * length, ship_y + flight_y * length)),
             new_flight,
@@ -365,7 +389,10 @@ pub fn evasive_waypoint(
         ) else {
             return none;
         };
-        EvasionOutcome { waypoint: Some(new_waypoint), new_flight: false }
+        EvasionOutcome {
+            waypoint: Some(new_waypoint),
+            new_flight: false,
+        }
     }
 }
 
