@@ -1,6 +1,8 @@
 # hf_perf — vanilla engine optimization and frame profiling
 
 Standalone **Steam 1.163 / Modloader v4** DLL. No dependency on ally/AI/QoL.
+Source lives on the `perf/native` branch alongside [hf_native](../native/README.md).
+Neither DLL is part of the player release pack.
 Current version **v0.6.2** contains:
 
 | Feature | Purpose |
@@ -15,11 +17,13 @@ Current version **v0.6.2** contains:
 **v0.6.1 core initialization was confirmed in game. v0.6.2 scan spans need runtime validation.**
 The user performs runtime testing; the agent does not launch or attach to the game.
 
-- [Frame-skip restoration and validation](../docs/frame-skip.md)
-- [KAZ optimization and exact native boundaries](../docs/kaz-fast-scan.md)
-- [Profiling configuration, CSV fields and analysis](../docs/frame-profiling.md)
-- [HUD spatial architecture](../docs/hud-spatial-queries.md)
-- [Earlier research/font baseline](../docs/vanilla-performance.md)
+Historical guides live in `docs/` on `perf/highfleet-benchmark`: `frame-skip.md`,
+`kaz-fast-scan.md`, `frame-profiling.md`, `hud-spatial-queries.md`, and
+`vanilla-performance.md`. For example:
+
+```bash
+git show perf/highfleet-benchmark:docs/frame-profiling.md
+```
 
 Build:
 
@@ -67,17 +71,17 @@ with `enabled:false`.
 An absolute Windows/Wine output path such as `Z:\\home\\...\\captures` is required.
 Restart after changes; never unload/inject during play.
 
-Analyze completed CSV from the repository root:
+Analyze a completed CSV from the `perf/highfleet-benchmark` checkout, which
+contains the analysis tool:
 
 ```bash
-python3 tools/hf_bench.py native --input captures/hf_perf_v0.5.2_*.csv \
+python3 tools/hf_bench.py native --input /path/to/completed-capture.csv \
   --label kaz-fast --scenario heavy-battle-v1 --conditions fixed-v1 \
   --output captures/kaz-fast.native.json
 ```
 
-Shell wildcard expansion is inappropriate if it selects multiple files; supply the
-one completed capture explicitly. See the profiling guide for warmup/duration,
-repeated comparison, and measurement limits.
+See the profiling guide for warmup, duration, repeated comparisons, and
+measurement limits.
 
 MIT, see [LICENSE](../LICENSE). Thanks to logdot for
 [Highfleet-Modloader](https://github.com/logdot/Highfleet-Modloader),

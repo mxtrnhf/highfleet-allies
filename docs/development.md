@@ -13,10 +13,9 @@ The command uses `cargo-xwin` to build Windows DLLs from Linux. On Windows, use
 `cargo build` with the same options instead. A successful build doesn't validate
 hooks or gameplay; verify those in Steam 1.163 before claiming in-game support.
 
-The separate experimental [`native/`](../native/README.md) DLL isn't part of the
-player pack and doesn't replace ally, AI, or QoL. See its
-[architecture notes](native-engine-dll-architecture.md) for build and validation
-scope.
+The experimental [hf_perf](../perf/README.md) and [hf_native](../native/README.md)
+DLLs live on this `perf/native` branch. They aren't part of the player pack and
+don't replace ally, AI, or QoL.
 
 ## Package and publish
 

@@ -326,7 +326,8 @@ with separately authorized regression coverage and controlled in-game A/B.
 
 ## Implementation record (`hf_native v0.1.0`, 2026-11-10)
 
-Built and integrated in [`native/`](../native/README.md) on `main`:
+Originally integrated in [`native/`](../native/README.md) on `main`; now
+maintained on `perf/native`:
 
 1. **`links` (`native/src/links.rs`):** stateless whole-body replacements for
    `RemoveNodeLink` (`0x140194fb0`), `Link_UnlinkFromNode` (`0x140194d20`), and

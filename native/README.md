@@ -1,8 +1,8 @@
 # hf_native v0.1.5 — experimental native-engine acceleration
 
-Independent Modloader v4 DLL for **HighFleet Steam 1.163**. Source lives on
-`highfleet-allies` main. This is a tester build, not a measured FPS claim or a
-component of the ordinary player release pack.
+Independent Modloader v4 DLL for **HighFleet Steam 1.163**. Source lives on the
+`perf/native` branch alongside [hf_perf](../perf/README.md). This is a tester build,
+not a measured FPS claim or a component of the ordinary player release pack.
 
 **No panels/read-model changes, AI tick skipping, slower decision cadence,
 physics reductions, or consumerless worker snapshots.** Existing hf_ally,
