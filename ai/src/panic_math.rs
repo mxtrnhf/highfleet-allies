@@ -11,8 +11,9 @@ pub const EVASION_EXTENSION: f64 = 1.0;
 pub const PANIC_EVASION_EXTENSION: f64 = 2.5;
 /// Share of retreat mixed into the sidestep (1.0 would be as much retreat as sidestep).
 pub const EVASION_RETREAT: f32 = 0.5;
-/// Waypoint distance used when the ship has no usable course (the AI normally uses 200).
-pub const EVASION_FALLBACK_LENGTH: f32 = 200.0;
+/// Waypoint distance for missile evasion: matches `tactics_math::WAYPOINT_LEN` (400) so `AiShipTick`'s
+/// `clamp(sqrt(distance + 0.1) / 20, 0, 1)` throttle saturates at full `25 * battle TWR` instead of 71%.
+pub const EVASION_WAYPOINT_LENGTH: f32 = 400.0;
 /// Engine commands weaker than this are not boosted.
 pub const MIN_BOOSTED_STRENGTH: f32 = 0.05;
 /// How often, in game seconds, a creature looks for threats.
@@ -270,7 +271,7 @@ pub fn evade_waypoint(
     strength: f32,
 ) -> Option<(f32, f32)> {
     let (course_x, course_y, course_length) = normalized(waypoint.0 - ship.0, waypoint.1 - ship.1)
-        .unwrap_or((0.0, 0.0, EVASION_FALLBACK_LENGTH));
+        .unwrap_or((0.0, 0.0, EVASION_WAYPOINT_LENGTH));
     let (to_missile_x, to_missile_y, _) = normalized(missile.0 - ship.0, missile.1 - ship.1)?;
 
     // Perpendicular to the line to the missile, plus a retreat from it. Of the two sides the HIGHER one wins when they
@@ -294,11 +295,7 @@ pub fn evade_waypoint(
         y = 0.0;
         x = if x.abs() > 1.0e-3 { x.signum() } else { evade_x.signum() };
     }
-    let course_length = if course_length > 1.0 {
-        course_length
-    } else {
-        EVASION_FALLBACK_LENGTH
-    };
+    let course_length = course_length.max(EVASION_WAYPOINT_LENGTH);
 
     Some((ship.0 + x * course_length, ship.1 + y * course_length))
 }
@@ -353,7 +350,7 @@ pub fn evasive_waypoint(
             return none;
         };
         let length = normalized(waypoint_x - ship_x, waypoint_y - ship_y)
-            .map_or(EVASION_FALLBACK_LENGTH, |(_, _, length)| length.max(1.0));
+            .map_or(EVASION_WAYPOINT_LENGTH, |(_, _, length)| length.max(EVASION_WAYPOINT_LENGTH));
         EvasionOutcome {
             waypoint: Some((ship_x + flight_x * length, ship_y + flight_y * length)),
             new_flight,

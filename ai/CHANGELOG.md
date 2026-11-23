@@ -1,5 +1,13 @@
 # hf_ai changelog
 
+## v1.2.11 — saturate throttle during common missile evasion
+
+- Raise `panic_math::EVASION_WAYPOINT_LENGTH` from 200 to 400 units (matching
+  `tactics_math::WAYPOINT_LEN`) so common missile evasion asks `AiShipTick` for
+  100% of `25 * battle TWR` instead of 71%, while preserving native obstacle
+  avoidance, gravity compensation, and `NO_DESCENT_BELOW_Y` floor protection.
+- Static inspection and cross-build only; in-game validation is pending.
+
 ## v1.2.10 — independent AI reload rates
 
 - Add separate `reload_rate_ally` and `reload_rate_ai` countdown multipliers,
