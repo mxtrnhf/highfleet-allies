@@ -11,7 +11,7 @@ use std::sync::{Mutex, OnceLock};
 use patchy::{PatchSession, ProcessModule, ReturnType, Trampoline};
 
 use crate::native_layout;
-use crate::plane_group_math::{Config, Group, STOCK_COOLDOWN};
+use crate::plane_group_math::{Config, Group, LAUNCH_WINDOW_SLACK_S, STOCK_COOLDOWN};
 
 const ARMED_RVA: usize = 0x65bde;
 // mov rcx,[rdi+0xa20], immediately after the AI's call to loadAmmoForAircraft.
@@ -47,18 +47,24 @@ struct Entry {
 fn context(carrier: usize) -> Option<(Key, f64)> {
     // SAFETY: each game-memory access is page-checked.
     unsafe {
-        if crate::rd::<i32>(AIRCRAFT_SELECTOR) != Some(4)
-            || crate::rd::<u8>(SCRIPTED_SCENARIO) != Some(0)
-            || crate::rd::<u8>(carrier + native_layout::CREATURE_AI_FLAG)? == 0
-            || crate::rd::<i32>(carrier + native_layout::NODE_STATE)? == 0
-        {
+        if crate::rd::<i32>(AIRCRAFT_SELECTOR) != Some(4) {
+            return None;
+        }
+        if crate::rd::<u8>(SCRIPTED_SCENARIO) != Some(0) {
+            return None;
+        }
+        // Eligible carriers are AI-controlled and still active in the level.
+        if crate::rd::<u8>(carrier + native_layout::CREATURE_AI_FLAG)? == 0 {
+            return None;
+        }
+        if crate::rd::<i32>(carrier + native_layout::NODE_STATE)? == 0 {
             return None;
         }
         let now = crate::rd::<f64>(crate::CLOCK).filter(|t| t.is_finite())?;
         Some((
             Key {
                 carrier,
-                node_id: crate::rd(carrier + 0x18)?,
+                node_id: crate::rd(carrier + native_layout::NODE_ID_WORD)?,
             },
             now,
         ))
@@ -82,7 +88,10 @@ fn armed(carrier: usize, plane: usize) {
     }
     let mut guard = GROUPS.lock().unwrap_or_else(|e| e.into_inner());
     let groups = guard.get_or_insert_with(HashMap::new);
-    groups.retain(|_, entry| now >= entry.last_seen && now - entry.last_seen <= f64::from(config.delay) + 1.0);
+    groups.retain(|_, entry| {
+        now >= entry.last_seen
+            && now - entry.last_seen <= f64::from(config.delay) + LAUNCH_WINDOW_SLACK_S
+    });
     if !groups.contains_key(&key) && groups.len() >= MAX_CARRIERS {
         return;
     }
@@ -151,6 +160,8 @@ pub unsafe fn prepare(
         (COOLDOWN_RVA, COOLDOWN_BYTES.as_slice()),
     ] {
         let address = module.resolve_rva(rva).map_err(|e| e.to_string())?;
+        // SAFETY: `address` is inside the loaded main module (pinned 1.163 executable); the
+        // compared slice is exactly the expected site pattern's length.
         if crate::rd::<u8>(address).is_none()
             || std::slice::from_raw_parts(address as *const u8, expected.len()) != expected
         {

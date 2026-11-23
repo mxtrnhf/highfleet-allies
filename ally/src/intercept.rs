@@ -19,7 +19,9 @@ use crate::native_layout::Body;
 
 /// `mov edx,0x8000000; mov rcx,rbx; call checkShipPartFlagActive` (13 bytes); the call is the last 5.
 const SITE: usize = 0x1_4006_280a;
-const SITE_BYTES: [u8; 13] = [0xba, 0x00, 0x00, 0x00, 0x08, 0x48, 0x8b, 0xcb, 0xe8, 0x59, 0x6c, 0xfe, 0xff];
+const SITE_BYTES: [u8; 13] = [
+    0xba, 0x00, 0x00, 0x00, 0x08, 0x48, 0x8b, 0xcb, 0xe8, 0x59, 0x6c, 0xfe, 0xff,
+];
 const CALL_SITE: usize = SITE + 8;
 const CHECK_FN: usize = 0x1_4004_9470;
 
@@ -30,6 +32,11 @@ const OFF_OID_LEN: usize = OFF_OID + 0x10;
 const OFF_OID_CAP: usize = OFF_OID + 0x18;
 /// No `m_oid` in OL.seria is anywhere near this long; anything longer is not a string we understand.
 const MAX_OID: usize = 96;
+/// MSVC `std::string` stores up to this many bytes inline; longer strings keep a heap pointer first.
+const OID_INLINE_CAPACITY: usize = 15;
+/// Enough distinct ids and ignore lines to fix a wrong config name from one test run.
+const MAX_SEEN_OIDS: usize = 12;
+const MAX_IGNORE_LINES: u32 = 40;
 
 static IGNORE: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
 static LAST_BODY: AtomicUsize = AtomicUsize::new(0);
@@ -39,13 +46,18 @@ static LOGGED: AtomicU32 = AtomicU32::new(0);
 static SEEN: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
 /// The `m_oid` bytes of a body, or `None` when the string looks wrong.
+///
+/// # Safety
+/// `body` and its native string buffer must remain live and readable on the game thread.
+/// The returned slice borrows bytes only until the end of this callback; no native call may
+/// change or free the buffer while the slice is used.
 unsafe fn oid_of<'a>(body: usize) -> Option<&'a [u8]> {
     let len = ((body + OFF_OID_LEN) as *const usize).read_unaligned();
     let cap = ((body + OFF_OID_CAP) as *const usize).read_unaligned();
     if len == 0 || len > MAX_OID || cap < len {
         return None;
     }
-    let data = if cap <= 15 {
+    let data = if cap <= OID_INLINE_CAPACITY {
         body + OFF_OID
     } else {
         let ptr = ((body + OFF_OID) as *const usize).read_unaligned();
@@ -63,24 +75,35 @@ unsafe extern "C" fn keep(body: usize) -> u8 {
     let Some(list) = IGNORE.get() else { return 1 };
     let Some(oid) = oid_of(body) else { return 1 };
     if let Ok(mut seen) = SEEN.try_lock() {
-        if seen.len() < 12 && !seen.iter().any(|o| o.as_slice() == oid) {
+        if seen.len() < MAX_SEEN_OIDS && !seen.iter().any(|o| o.as_slice() == oid) {
             seen.push(oid.to_vec());
-            log::info!("INTERCEPT candidate: strategic-launch body oid={}", String::from_utf8_lossy(oid));
+            log::info!(
+                "INTERCEPT candidate: strategic-launch body oid={}",
+                String::from_utf8_lossy(oid)
+            );
         }
     }
     if !list.iter().any(|ignored| ignored.as_slice() == oid) {
         return 1;
     }
     // one line per new body, not per ship per tick
-    if LAST_BODY.swap(body, Ordering::Relaxed) != body && LOGGED.fetch_add(1, Ordering::Relaxed) < 40 {
-        log::info!("INTERCEPT ignore: body={body:#x} oid={} is not a threat to the AI", String::from_utf8_lossy(oid));
+    let new_body = LAST_BODY.swap(body, Ordering::Relaxed) != body;
+    if new_body && LOGGED.fetch_add(1, Ordering::Relaxed) < MAX_IGNORE_LINES {
+        log::info!(
+            "INTERCEPT ignore: body={body:#x} oid={} is not a threat to the AI",
+            String::from_utf8_lossy(oid)
+        );
     }
     0
 }
 
 /// Installs the filter when `oids` is not empty. A non-empty list with a wrong site is an error the caller logs.
 pub unsafe fn install(session: &mut PatchSession, oids: &[String]) -> Result<(), String> {
-    let list: Vec<Vec<u8>> = oids.iter().map(|s| s.trim().as_bytes().to_vec()).filter(|b| !b.is_empty()).collect();
+    let list: Vec<Vec<u8>> = oids
+        .iter()
+        .map(|s| s.trim().as_bytes().to_vec())
+        .filter(|b| !b.is_empty())
+        .collect();
     if list.is_empty() {
         return Ok(());
     }
@@ -98,8 +121,13 @@ pub unsafe fn install(session: &mut PatchSession, oids: &[String]) -> Result<(),
     let mut trampoline = Trampoline::new();
     trampoline.bytes(&code);
     trampoline.relative_jump(CALL_SITE + 5);
-    session.detour_trampoline(CALL_SITE, 5, trampoline).map_err(|e| e.to_string())?;
-    log::info!("hf_ally: AI ignores these parts as interception targets: {}", oids.join(", "));
+    session
+        .detour_trampoline(CALL_SITE, 5, trampoline)
+        .map_err(|e| e.to_string())?;
+    log::info!(
+        "hf_ally: AI ignores these parts as interception targets: {}",
+        oids.join(", ")
+    );
     let _ = IGNORE.set(list);
     Ok(())
 }

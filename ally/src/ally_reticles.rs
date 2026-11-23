@@ -8,17 +8,18 @@
 //!
 //! This module wraps that call: after the game's own boxes, it repeats the same projection and draw for
 //! the target (`ally+0xb00`) of every living ally, tinted with the configured ally colour. The ally boxes
-//! default to 80% of the native 62 x 62 pixels; their size is configurable, and a scale of 0 hides them.
+//! default to 60% of the native 62 x 62 pixels (`ally_reticle_scale: 0.6`); their size is configurable,
+//! and a scale of 0 hides them.
 //!
 //! The same post-pass also hosts the debug overlay (`crate::debug_overlay`) so there is only one detour at
 //! this call site: either feature, or both, can use it.
 
 use std::mem::offset_of;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use patchy::{PatchSession, ReturnType, Trampoline};
 
-use crate::native_layout::Creature;
+use crate::native_layout::{Creature, NODE_CODE};
 
 /// `afterBattleStars??(player_ship)` draws the player's target/spawn boxes.
 const TARGET_BOX_PASS: usize = 0x1_4029_c5c0;
@@ -53,28 +54,32 @@ type RenderExFn = unsafe extern "win64" fn(usize, f32, f32, f32, f32, f32);
 static ALLY_COLOR: AtomicU32 = AtomicU32::new(0xff00_e4ff);
 static ALLY_RETICLE_SCALE: AtomicU32 = AtomicU32::new(0.8_f32.to_bits());
 /// This module also hosts the per-frame battle overlay hook when only the debug overlay is enabled.
-static SHOW_RETICLES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SHOW_RETICLES: AtomicBool = AtomicBool::new(false);
 
 unsafe fn rd<T: Copy>(address: usize) -> T {
     (address as *const T).read_unaligned()
 }
 
-unsafe fn draw_box(out: &mut [f32; 2], sprite: usize, color: u32) {
+unsafe fn draw_box(point: &mut [f32; 2], sprite: usize, color: u32) {
     let to_screen: WorldToScreenFn = std::mem::transmute(WORLD_TO_SCREEN);
     let floor_point: FloorPointFn = std::mem::transmute(FLOOR_POINT);
-    to_screen(out.as_mut_ptr(), 0, BOX_PROJECTION_ZOOM);
-    floor_point(out.as_mut_ptr());
+    to_screen(point.as_mut_ptr(), 0, BOX_PROJECTION_ZOOM);
+    floor_point(point.as_mut_ptr());
 
     let set_color: SetColorFn = std::mem::transmute(SET_SPRITE_COLOR);
     set_color(sprite, color, -1);
     // native box draw keeps the sprite scale at 1.0; the size comes from the RenderEx extents
-    (sprite as *mut f32).byte_add(SPRITE_SCALE).write_unaligned(1.0);
-    (sprite as *mut u32).byte_add(SPRITE_BLEND).write_unaligned(0);
+    (sprite as *mut f32)
+        .byte_add(SPRITE_SCALE)
+        .write_unaligned(1.0);
+    (sprite as *mut u32)
+        .byte_add(SPRITE_BLEND)
+        .write_unaligned(0);
 
     let render: RenderExFn = std::mem::transmute(RENDER_EX);
     // native call: rot 0, scaleY 0 = same as scaleX
     let scale = f32::from_bits(ALLY_RETICLE_SCALE.load(Ordering::Relaxed));
-    render(sprite, out[0], out[1], 0.0, scale, 0.0);
+    render(sprite, point[0], point[1], 0.0, scale, 0.0);
 }
 
 /// Runs after the game's own target and spawn boxes. The debug overlay uses the same per-frame seam even when
@@ -95,18 +100,23 @@ unsafe fn draw_ally_targets() {
         return;
     }
     let color = ALLY_COLOR.load(Ordering::Relaxed) | 0xff00_0000;
-    let Some(allies) = crate::battle::allies() else { return };
+    let Some(allies) = crate::battle::allies() else {
+        return;
+    };
 
     for &ally in allies.iter() {
-        if !crate::native::live_ship(ally)
-            || rd::<f32>(ally + crate::native::OFF_SIDE) <= 0.0
+        if !crate::native::live_ship(ally) {
+            continue;
+        }
+        // side > 0 without mode 1: a friendly AI ship, not the ship the player flies
+        if rd::<f32>(ally + crate::native::OFF_SIDE) <= 0.0
             || rd::<i32>(ally + crate::native::OFF_MODE_D70) == 1
         {
             continue;
         }
         let target = rd::<usize>(ally + crate::native::OFF_TARGET);
         // the cached target is a creature, not a part: it must have the creature class bits
-        if !crate::native::plausible(target) || rd::<u8>(target + 0x28) & 0x2f != 0x2f {
+        if !crate::native::plausible(target) || rd::<u8>(target + NODE_CODE) & 0x2f != 0x2f {
             continue;
         }
         // only mark foes; side > 0 would be a friendly ship

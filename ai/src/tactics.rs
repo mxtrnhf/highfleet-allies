@@ -16,7 +16,7 @@ const OFF_AI_FLAG: usize = native_layout::CREATURE_AI_FLAG; // u8: 0 = flown by 
 const OFF_MODE: usize = native_layout::CREATURE_MODE; // i32: 1 airborne combat, 3 landed, 0 takeoff (telemetry column `mode`; NOT +0xd70, that is the role)
 /// Player fire buttons, sampled read-only for hostile aim awareness.
 const OFF_FIRE0: usize = native_layout::CREATURE_TRIGGER_GUN_GROUP_0;
-const OFF_NODE_ID: usize = 0x18; // local identity word, not Node::id; not modeled by highfleet-rs
+const OFF_NODE_ID: usize = native_layout::NODE_ID_WORD; // local identity word, not Node::id; not modeled by highfleet-rs
 const OFF_ACTIVE: usize = native_layout::NODE_STATE; // i32
 const OFF_STATE: usize = native_layout::CREATURE_DRIVER_STATE; // i32 driver state, 6 / 7 = dead or gone
 const OFF_CODE: usize = native_layout::NODE_CODE;
@@ -46,6 +46,10 @@ const BOUNDS_ADDRESS: usize = 0x1_403c_2bc0;
 
 const REFRESH_S: f64 = 1.0;
 const MAX_ENTRIES: usize = 256;
+/// Keep-out barriers consider at most this many nearby hulls, nearest first.
+const MAX_NEARBY_OBSTACLES: usize = 3;
+/// Retreat border choice considers at most this many hostile hulls.
+const MAX_RETREAT_HOSTILES: usize = 8;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static PARAMS: OnceLock<TacticsParams> = OnceLock::new();
@@ -74,30 +78,51 @@ const BOOST_HOLD_S: f64 = 0.3;
 
 /// Boost factor and dash direction the engine-command hook applies to `creature` at `now` (`1.0` / `None` = none).
 pub fn dodge_boost_for(creature: usize, now: f64) -> (f32, Option<(f32, f32)>) {
-    let Ok(list) = BOOSTED.try_lock() else { return (1.0, None) };
+    let Ok(list) = BOOSTED.try_lock() else {
+        return (1.0, None);
+    };
     list.iter()
         .filter(|entry| entry.creature == creature && now <= entry.until)
         .fold((1.0, None), |best, entry| {
-            if entry.factor > best.0 { (entry.factor, entry.escape) } else { best }
+            if entry.factor > best.0 {
+                (entry.factor, entry.escape)
+            } else {
+                best
+            }
         })
 }
 
 /// Whether the engine hook must be installed for the dodge boost.
 pub fn wants_engine_boost() -> bool {
-    ENABLED.load(Ordering::Relaxed) && f32::from_bits(DIVE_BOOST.load(Ordering::Relaxed)).max(f32::from_bits(AIM_BOOST.load(Ordering::Relaxed))) > 1.0
+    ENABLED.load(Ordering::Relaxed)
+        && f32::from_bits(DIVE_BOOST.load(Ordering::Relaxed))
+            .max(f32::from_bits(AIM_BOOST.load(Ordering::Relaxed)))
+            > 1.0
 }
 
 /// Drops the chase boost of `creature` (the panic stage owns the engines from now on).
 fn clear_boost(creature: usize) {
-    let Ok(mut list) = BOOSTED.try_lock() else { return };
+    let Ok(mut list) = BOOSTED.try_lock() else {
+        return;
+    };
     list.retain(|entry| entry.creature != creature);
 }
 
 fn note_boost(creature: usize, now: f64, factor: f32, escape: Option<(f32, f32)>) {
-    let Ok(mut list) = BOOSTED.try_lock() else { return };
-    list.retain(|entry| entry.creature != creature && entry.until >= now - 5.0 && entry.until <= now + 5.0);
+    let Ok(mut list) = BOOSTED.try_lock() else {
+        return;
+    };
+    list.retain(|entry| {
+        entry.creature != creature && entry.until >= now - 5.0 && entry.until <= now + 5.0
+    });
     if factor > 1.0 {
-        list.push(Boost { creature, noted_at: now, until: now + BOOST_HOLD_S, factor, escape });
+        list.push(Boost {
+            creature,
+            noted_at: now,
+            until: now + BOOST_HOLD_S,
+            factor,
+            escape,
+        });
     }
 }
 
@@ -105,8 +130,14 @@ fn note_boost(creature: usize, now: f64, factor: f32, escape: Option<(f32, f32)>
 /// `decide` and can override the tactic's waypoint (missile evasion), so the engine hook must dash along the
 /// final choice, not the tactic's.
 pub fn set_escape(creature: usize, now: f64, escape: Option<(f32, f32)>) {
-    let Ok(mut list) = BOOSTED.try_lock() else { return };
-    if let Some(entry) = list.iter_mut().rev().find(|entry| entry.creature == creature && entry.noted_at == now) {
+    let Ok(mut list) = BOOSTED.try_lock() else {
+        return;
+    };
+    if let Some(entry) = list
+        .iter_mut()
+        .rev()
+        .find(|entry| entry.creature == creature && entry.noted_at == now)
+    {
         entry.escape = escape;
     }
 }
@@ -117,7 +148,6 @@ struct Entry {
     rng: Rng,
     boosting: bool,
 }
-
 
 #[derive(Clone, Copy)]
 struct LiveShip {
@@ -149,9 +179,21 @@ pub fn init(config: &TacticsConfig) {
     let params = config.params();
     let _ = PARAMS.set(params);
     ENABLED.store(params.enabled, Ordering::Relaxed);
-    let boost = if params.dive_enabled { params.dive_boost } else { 1.0 };
+    let boost = if params.dive_enabled {
+        params.dive_boost
+    } else {
+        1.0
+    };
     DIVE_BOOST.store(boost.to_bits(), Ordering::Relaxed);
-    AIM_BOOST.store((if params.aim_enabled { params.aim_boost } else { 1.0 }).to_bits(), Ordering::Relaxed);
+    AIM_BOOST.store(
+        (if params.aim_enabled {
+            params.aim_boost
+        } else {
+            1.0
+        })
+        .to_bits(),
+        Ordering::Relaxed,
+    );
     if params.enabled {
         log::info!(
             "hf_ai: tactics ON (allies {}; dive {} chance {} cone {} deg range {} dwell {} s boost {})",
@@ -185,20 +227,26 @@ fn live_ship(p: usize) -> bool {
     // SAFETY: page-checked reads.
     unsafe {
         plausible(p)
-            && rd::<u8>(p + OFF_CODE).is_some_and(|c| c & 0x2f == 0x2f)
+            && rd::<u8>(p + OFF_CODE).is_some_and(native_layout::is_creature_code)
             && rd::<i32>(p + OFF_ACTIVE).is_some_and(|a| a != 0)
             && rd::<i32>(p + OFF_STATE).is_some_and(|s| !matches!(s, 6 | 7))
     }
 }
 
 unsafe fn gun_group_shooting(begin_off: usize, end_off: usize, creature: usize) -> bool {
-    let (Some(begin), Some(end)) = (rd::<usize>(creature + begin_off), rd::<usize>(creature + end_off)) else {
+    let (Some(begin), Some(end)) = (
+        rd::<usize>(creature + begin_off),
+        rd::<usize>(creature + end_off),
+    ) else {
         return false;
     };
     if begin == 0 || end <= begin {
         return false;
     }
-    for entry in (begin..end).step_by(GUN_ENTRY_STRIDE).take(MAX_GUNS_PER_GROUP) {
+    for entry in (begin..end)
+        .step_by(GUN_ENTRY_STRIDE)
+        .take(MAX_GUNS_PER_GROUP)
+    {
         let Some(gun) = rd::<usize>(entry + GUN_ENTRY_PTR).filter(|&g| plausible(g)) else {
             continue;
         };
@@ -208,7 +256,12 @@ unsafe fn gun_group_shooting(begin_off: usize, end_off: usize, creature: usize) 
         let loaded = rd::<f32>(gun + GUN_LOADED).unwrap_or(0.0);
         let block = rd::<f32>(gun + GUN_BLOCK_TIMER).unwrap_or(1.0);
         let latch = rd::<[u8; 2]>(gun + GUN_LATCH).unwrap_or([0, 0]);
-        if loaded.is_finite() && loaded >= 1.0 && block.is_finite() && block <= 0.0 && (latch[0] != 0 || latch[1] != 0) {
+        if loaded.is_finite()
+            && loaded >= 1.0
+            && block.is_finite()
+            && block <= 0.0
+            && (latch[0] != 0 || latch[1] != 0)
+        {
             return true;
         }
     }
@@ -226,7 +279,8 @@ unsafe fn refresh_live_ships(world: &mut World, now: f64) {
     }
     world.next_ship_scan = now + SHIP_SCAN_INTERVAL_S;
     world.live_ships.clear();
-    let (Some(begin), Some(end)) = (rd::<usize>(CREATURES_BEGIN), rd::<usize>(CREATURES_END)) else {
+    let (Some(begin), Some(end)) = (rd::<usize>(CREATURES_BEGIN), rd::<usize>(CREATURES_END))
+    else {
         return;
     };
     if begin == 0 || end <= begin {
@@ -236,10 +290,15 @@ unsafe fn refresh_live_ships(world: &mut World, now: f64) {
         let Some(creature) = rd::<usize>(slot + CREATURE_PTR_OFF).filter(|&c| live_ship(c)) else {
             continue;
         };
-        let Some(side) = rd::<f32>(creature + crate::OFF_SIDE).filter(|s| s.is_finite() && *s != 0.0) else {
+        let Some(side) =
+            rd::<f32>(creature + crate::OFF_SIDE).filter(|s| s.is_finite() && *s != 0.0)
+        else {
             continue;
         };
-        let (Some(x), Some(y)) = (rd::<f32>(creature + crate::OFF_POS_X), rd::<f32>(creature + crate::OFF_POS_Y)) else {
+        let (Some(x), Some(y)) = (
+            rd::<f32>(creature + crate::OFF_POS_X),
+            rd::<f32>(creature + crate::OFF_POS_Y),
+        ) else {
             continue;
         };
         if !(x.is_finite() && y.is_finite()) {
@@ -252,16 +311,23 @@ unsafe fn refresh_live_ships(world: &mut World, now: f64) {
             continue;
         };
         let (aim_dir, shooting) = if ai_flag == 0 {
-            let firing_now = rd::<[u8; 2]>(creature + OFF_FIRE0).is_some_and(|f| f[0] != 0 || f[1] != 0);
+            let firing_now =
+                rd::<[u8; 2]>(creature + OFF_FIRE0).is_some_and(|f| f[0] != 0 || f[1] != 0);
             if firing_now {
                 world.player_last_fire = now;
             }
             let dir = rd::<[f32; 2]>(AIM_ADDRESS)
                 .filter(|[ax, ay]| ax.is_finite() && ay.is_finite() && ax.hypot(*ay) >= MIN_AIM_LEN)
                 .and_then(|[ax, ay]| tm::normalized(ax, ay));
-            (dir, firing_now || (world.player_last_fire > 0.0 && now - world.player_last_fire <= PLAYER_FIRE_HOLD_S))
+            (
+                dir,
+                firing_now
+                    || (world.player_last_fire > 0.0
+                        && now - world.player_last_fire <= PLAYER_FIRE_HOLD_S),
+            )
         } else {
-            let dir = rd::<[f32; 2]>(creature + OFF_AI_AIM).and_then(|[ax, ay]| tm::normalized(ax, ay));
+            let dir =
+                rd::<[f32; 2]>(creature + OFF_AI_AIM).and_then(|[ax, ay]| tm::normalized(ax, ay));
             (dir, ai_ship_shooting(creature))
         };
         world.live_ships.push(LiveShip {
@@ -285,8 +351,15 @@ fn collect_nearby_obstacles(
     ship_radius: f32,
     ship_vel: (f32, f32),
     ship_twr: Option<f32>,
-) -> ([tm::Obstacle; 3], usize) {
-    let mut best = [(f32::INFINITY, tm::Obstacle { pos: (0.0, 0.0), radius: 0.0, safe_gap: 0.0 }); 3];
+) -> ([tm::Obstacle; MAX_NEARBY_OBSTACLES], usize) {
+    let mut best = [(
+        f32::INFINITY,
+        tm::Obstacle {
+            pos: (0.0, 0.0),
+            radius: 0.0,
+            safe_gap: 0.0,
+        },
+    ); MAX_NEARBY_OBSTACLES];
     for other in live_ships {
         if other.creature == creature || Some(other.creature) == dive_target {
             continue;
@@ -303,7 +376,11 @@ fn collect_nearby_obstacles(
         if d_gap >= safe_gap {
             continue;
         }
-        let obs = tm::Obstacle { pos: other.pos, radius: hull_sum, safe_gap };
+        let obs = tm::Obstacle {
+            pos: other.pos,
+            radius: hull_sum,
+            safe_gap,
+        };
         if d_gap < best[2].0 {
             best[2] = (d_gap, obs);
             best.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -314,14 +391,28 @@ fn collect_nearby_obstacles(
 }
 
 /// Picks the closest hostile shooter whose aim ray crosses `ship` within `p.aim_range` and `p.aim_tolerance`.
-fn pick_hostile_aim(live_ships: &[LiveShip], creature: usize, side: f32, ship: (f32, f32), p: &TacticsParams) -> Option<tm::AimInput> {
+fn pick_hostile_aim(
+    live_ships: &[LiveShip],
+    creature: usize,
+    side: f32,
+    ship: (f32, f32),
+    p: &TacticsParams,
+) -> Option<tm::AimInput> {
     live_ships
         .iter()
-        .filter(|s| s.creature != creature && s.side.signum() != side.signum() && (!p.aim_require_fire || s.shooting))
+        .filter(|s| {
+            s.creature != creature
+                && s.side.signum() != side.signum()
+                && (!p.aim_require_fire || s.shooting)
+        })
         .filter_map(|s| {
             let dir = s.aim_dir?;
-            let cand = tm::AimInput { player: s.pos, dir };
-            tm::aim_ray_hits(&cand, ship, p).then(|| ((s.pos.0 - ship.0).hypot(s.pos.1 - ship.1), cand))
+            let cand = tm::AimInput {
+                shooter: s.pos,
+                dir,
+            };
+            tm::aim_ray_hits(&cand, ship, p)
+                .then(|| ((s.pos.0 - ship.0).hypot(s.pos.1 - ship.1), cand))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, cand)| cand)
@@ -335,7 +426,9 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
     if !ctx.now.is_finite() || !live_ship(ctx.creature) {
         return (None, State::Stock);
     }
-    let Some(p) = PARAMS.get() else { return (None, State::Stock) };
+    let Some(p) = PARAMS.get() else {
+        return (None, State::Stock);
+    };
     // SAFETY: page-checked reads.
     let (ai_flag, mode, order_role, driver_state) = unsafe {
         (
@@ -348,7 +441,8 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
     if ai_flag.unwrap_or(0) == 0 || mode != Some(1) {
         return (None, State::Stock);
     }
-    let retreating = ctx.side.is_finite() && ctx.side > 0.0 && order_role == Some(2) && driver_state == Some(2);
+    let retreating =
+        ctx.side.is_finite() && ctx.side > 0.0 && order_role == Some(2) && driver_state == Some(2);
     let twr_ok = crate::maneuvers_allowed(ctx.creature);
     if !retreating && !twr_ok {
         return (None, State::Stock);
@@ -360,10 +454,13 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
     if !(ctx.ship.0.is_finite() && ctx.ship.1.is_finite()) {
         return (None, State::Stock);
     }
-    let target = ctx.target.zip(ctx.target_creature)
-        .filter(|(pos, ship)| pos.0.is_finite() && pos.1.is_finite() && *ship != ctx.creature && live_ship(*ship));
+    let target = ctx.target.zip(ctx.target_creature).filter(|(pos, ship)| {
+        pos.0.is_finite() && pos.1.is_finite() && *ship != ctx.creature && live_ship(*ship)
+    });
     // SAFETY: page-checked scalar identity, matching plane_group's native node identity.
-    let Some(node_id) = (unsafe { rd::<u32>(ctx.creature + OFF_NODE_ID) }) else { return (None, State::Stock) };
+    let Some(node_id) = (unsafe { rd::<u32>(ctx.creature + OFF_NODE_ID) }) else {
+        return (None, State::Stock);
+    };
     // The panic query takes the ai_flares lock; it is called before ours and the two are never held together.
     let is_panicking = panicking();
     if is_panicking {
@@ -396,7 +493,9 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
     world.last_now = now;
     if now - world.last_prune > tm::STALE_AFTER {
         world.last_prune = now;
-        world.ships.retain(|_, e| now - e.st.last_seen <= tm::STALE_AFTER);
+        world
+            .ships
+            .retain(|_, e| now - e.st.last_seen <= tm::STALE_AFTER);
     }
     if now >= world.next_bounds_read {
         // re-read every second: a new arena may come without a clock reset
@@ -407,16 +506,25 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
         world.bounds = fresh;
         if changed || !world.bounds_logged {
             world.bounds_logged = true;
-            log::info!("hf_ai: tactics arena bounds {:?} (raw read, None = unusable, tactics stay stock)", world.bounds);
+            log::info!(
+                "hf_ai: tactics arena bounds {:?} (raw read, None = unusable, tactics stay stock)",
+                world.bounds
+            );
         }
     }
-    let Some(bounds) = world.bounds else { return (None, State::Stock) };
+    let Some(bounds) = world.bounds else {
+        return (None, State::Stock);
+    };
 
     if p.aim_enabled || p.dive_enabled || retreating {
         unsafe { refresh_live_ships(world, now) };
     }
 
-    if world.ships.get(&ctx.creature).is_some_and(|entry| entry.node_id != node_id) {
+    if world
+        .ships
+        .get(&ctx.creature)
+        .is_some_and(|entry| entry.node_id != node_id)
+    {
         world.ships.remove(&ctx.creature);
     }
     if !world.ships.contains_key(&ctx.creature) {
@@ -431,10 +539,20 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
             ^ now.to_bits();
         let rng = Rng::new(seed);
         let st = ShipState::new(now);
-        world.ships.insert(ctx.creature, Entry { node_id, st, rng, boosting: false });
+        world.ships.insert(
+            ctx.creature,
+            Entry {
+                node_id,
+                st,
+                rng,
+                boosting: false,
+            },
+        );
     }
     let live_ships = &world.live_ships;
-    let Some(entry) = world.ships.get_mut(&ctx.creature) else { return (None, State::Stock) };
+    let Some(entry) = world.ships.get_mut(&ctx.creature) else {
+        return (None, State::Stock);
+    };
     let window_open = p.aim_enabled && entry.st.aim_clock.update(now, p, &mut entry.rng);
     let aim = if p.aim_enabled && window_open {
         pick_hostile_aim(live_ships, ctx.creature, ctx.side, ctx.ship, p)
@@ -469,7 +587,7 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
         entry.st.ship_vel,
         ship_twr,
     );
-    let mut hostile_buf = [((0.0_f32, 0.0_f32), 0.0_f32); 8];
+    let mut hostile_buf = [((0.0_f32, 0.0_f32), 0.0_f32); MAX_RETREAT_HOSTILES];
     let mut hostile_len = 0usize;
     if retreating {
         for other in live_ships {
@@ -502,11 +620,13 @@ pub fn decide(ctx: &Ctx, panicking: impl FnOnce() -> bool) -> (Option<(f32, f32)
         },
         &mut entry.rng,
     );
-    let waypoint = step.waypoint.filter(|(x, y)| x.is_finite() && y.is_finite());
+    let waypoint = step
+        .waypoint
+        .filter(|(x, y)| x.is_finite() && y.is_finite());
     let requested_factor = match step.state {
         State::DiveDodge => f32::from_bits(DIVE_BOOST.load(Ordering::Relaxed)),
         State::Aim => f32::from_bits(AIM_BOOST.load(Ordering::Relaxed)),
-        State::Retreat => if twr_ok { 2.0 } else { 1.0 },
+        State::Retreat if twr_ok => 2.0,
         _ => 1.0,
     };
     let scaled_factor = 1.0 + (requested_factor - 1.0) * step.boost_scale.clamp(0.0, 1.0);

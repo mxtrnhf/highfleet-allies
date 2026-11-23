@@ -9,6 +9,9 @@ use crate::native::{live_ship, plausible, read, GetProfileFn, GET_PROFILE, OFF_A
 
 const PROFILE_PLAYERS: usize = 0x50;
 const PROFILE_PLAYER_STRIDE: usize = 0x18;
+/// Profile slot 1: the ship a second human player flies (slot 0 is the first player).
+const SECOND_PLAYER_SLOT: usize = 1;
+const SECOND_PLAYER_ENTRY: usize = PROFILE_PLAYERS + SECOND_PLAYER_SLOT * PROFILE_PLAYER_STRIDE;
 
 /// The raw pointer in profile player slot 1 (0 when the slot is empty or the profile is not readable).
 pub unsafe fn raw() -> usize {
@@ -17,13 +20,17 @@ pub unsafe fn raw() -> usize {
     if !plausible(profile) {
         return 0;
     }
-    read::<usize>(profile + PROFILE_PLAYERS + PROFILE_PLAYER_STRIDE)
+    read::<usize>(profile + SECOND_PLAYER_ENTRY)
 }
 
 /// The live player-side ship in profile slot 1, if any.
 pub unsafe fn ship() -> Option<usize> {
     let ship = raw();
-    (plausible(ship) && live_ship(ship) && read::<f32>(ship + OFF_SIDE) > 0.0).then_some(ship)
+    if !plausible(ship) || !live_ship(ship) {
+        return None;
+    }
+    let side = read::<f32>(ship + OFF_SIDE);
+    (side > 0.0).then_some(ship)
 }
 
 /// A ship a human is flying (never a number-key switch target).

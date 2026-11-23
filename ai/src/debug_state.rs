@@ -10,6 +10,7 @@
 //! * `tactics` is the last `tactics_math::State` decision for the ship;
 //! * `flares` is the active `ai_flares` mode (burst / evade / panic / roll); value 5 is reserved for
 //!   the retired curtain mode so the shared layout stays compatible with older hf_ally builds.
+//!
 //! hf_ally shows the flare mode first, because it overrides tactics while it is active.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -38,7 +39,10 @@ pub const FLARES_EVADE: u8 = 2;
 pub const FLARES_PANIC: u8 = 3;
 pub const FLARES_ROLL: u8 = 4;
 /// Retired curtain mode; the value stays reserved for the shared hf_ally ABI.
-#[expect(dead_code, reason = "value 5 is reserved for the shared hf_ally debug ABI")]
+#[expect(
+    dead_code,
+    reason = "value 5 is reserved for the shared hf_ally debug ABI"
+)]
 pub const FLARES_CURTAIN: u8 = 5;
 
 #[repr(C)]
@@ -159,7 +163,9 @@ unsafe fn touch(creature: usize, clock: f64, update: impl FnOnce(*mut Entry)) {
     if region().is_none() {
         return;
     }
-    let Some(entry) = entry_for(creature) else { return };
+    let Some(entry) = entry_for(creature) else {
+        return;
+    };
     update(entry);
     (*entry).clock = clock;
     let header = VIEW.load(Ordering::Relaxed) as *mut Header;
@@ -181,7 +187,9 @@ pub fn set_flares(creature: usize, clock: f64, mode: u8) {
 
 /// Drops every entry when a new battle is detected; stale clocks would also hide them, but this is immediate.
 pub fn clear() {
-    let Some(region) = (unsafe { region() }) else { return };
+    let Some(region) = (unsafe { region() }) else {
+        return;
+    };
     // SAFETY: the whole Region is mapped and writable.
     unsafe {
         let base = (region as *mut u8).add(std::mem::size_of::<Header>());

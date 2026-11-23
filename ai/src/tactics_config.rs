@@ -100,7 +100,13 @@ impl TacticsConfig {
     /// Every value limited to its accepted range; non-finite numbers fall back to the default.
     pub fn sanitized(&self) -> Self {
         let d = Self::default();
-        let pick = |v: f32, fallback: f32, lo: f32, hi: f32| if v.is_finite() { v.clamp(lo, hi) } else { fallback };
+        let pick = |v: f32, fallback: f32, lo: f32, hi: f32| {
+            if v.is_finite() {
+                v.clamp(lo, hi)
+            } else {
+                fallback
+            }
+        };
         let dive_min_s = pick(self.dive_min_s, d.dive_min_s, 0.2, 30.0);
         let aim_window_s = pick(self.aim_window_s, d.aim_window_s, 0.1, 30.0);
         let aim_gap_min_s = pick(self.aim_gap_min_s, d.aim_gap_min_s, aim_window_s, 120.0);
@@ -123,7 +129,12 @@ impl TacticsConfig {
             dive_under: self.dive_under,
             dive_over: self.dive_over,
             dive_boost: pick(self.dive_boost, d.dive_boost, 1.0, 4.0),
-            dive_wrongfoot_speed: pick(self.dive_wrongfoot_speed, d.dive_wrongfoot_speed, 0.0, 1000.0),
+            dive_wrongfoot_speed: pick(
+                self.dive_wrongfoot_speed,
+                d.dive_wrongfoot_speed,
+                0.0,
+                1000.0,
+            ),
             dive_level_weight: pick(self.dive_level_weight, d.dive_level_weight, 0.0, 3.0),
             aim_enabled: self.aim_enabled,
             aim_chance: pick(self.aim_chance, d.aim_chance, 0.0, 1.0),

@@ -196,9 +196,24 @@ impl AiFlaresConfig {
                 MAX_SECONDS,
             ),
             stray_missiles: self.stray_missiles,
-            stray_missile_radius: pick(self.stray_missile_radius, default.stray_missile_radius, 10.0, 1000.0),
-            stray_missile_eta_s: pick(self.stray_missile_eta_s, default.stray_missile_eta_s, 0.2, 20.0),
-            stray_missile_range: pick(self.stray_missile_range, default.stray_missile_range, 100.0, MAX_TRIGGER_RANGE * 2.0),
+            stray_missile_radius: pick(
+                self.stray_missile_radius,
+                default.stray_missile_radius,
+                10.0,
+                1000.0,
+            ),
+            stray_missile_eta_s: pick(
+                self.stray_missile_eta_s,
+                default.stray_missile_eta_s,
+                0.2,
+                20.0,
+            ),
+            stray_missile_range: pick(
+                self.stray_missile_range,
+                default.stray_missile_range,
+                100.0,
+                MAX_TRIGGER_RANGE * 2.0,
+            ),
         }
     }
 }

@@ -12,14 +12,17 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
+use crate::native::{ACTIVE_DIALOG, FRAME_DT, IN_COMBAT};
 use crate::native_layout::Link;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static HELD_KEYS: AtomicU8 = AtomicU8::new(0b111);
 const KEYS: [i32; 3] = [0x31, 0x32, 0x09]; // 1, 2, TAB
-const IN_COMBAT: usize = 0x1_47fc_6fb7;
-const FRAME_DT: usize = 0x1_403c_126c;
-const ACTIVE_DIALOG: usize = 0x1_43a1_3e08;
+/// Key bits of the two panel slots (`KEYS[0]`, `KEYS[1]`); the remaining bit is the roster cycle.
+const PANEL_KEYS: u8 = 0b011;
+/// One-shot input flags at `OFF_FLAGS`: six bytes, index 2 is the bomb release.
+const INPUT_FLAG_COUNT: usize = 6;
+const INPUT_FLAG_BOMB_RELEASE: usize = 2;
 const OFF_BOOST: usize = 0xba8;
 const OFF_BOMB_HELD: usize = 0xce8;
 /// Native AI ship vector (`CVec<Link>`): SomethingAITask visits only entries here.
@@ -219,14 +222,15 @@ unsafe fn transfer_input(previous: usize, selected: usize) {
     // SAFETY: Called on the game thread with two distinct current live roster members. Only verified
     // scalar input fields are borrowed; no owning native values/references are constructed. The
     // native Input_KeyDown/Up routines own these fields (0x1401896a0 / 0x14018a530).
-    for index in 0..6 {
+    for index in 0..INPUT_FLAG_COUNT {
         let offset = crate::native::OFF_FLAGS + index;
         let held = crate::native::read::<u8>(previous + offset);
         (previous as *mut u8).add(offset).write(0);
         // Bomb release is a one-shot command; never carry it across a handoff.
+        let carry = index != INPUT_FLAG_BOMB_RELEASE;
         (selected as *mut u8)
             .add(offset)
-            .write(if index == 2 { 0 } else { held });
+            .write(if carry { held } else { 0 });
     }
     let boost = crate::native::read::<f32>(previous + OFF_BOOST);
     (previous as *mut f32)
@@ -240,10 +244,11 @@ unsafe fn transfer_input(previous: usize, selected: usize) {
 }
 
 unsafe fn handoff(previous: usize, selected: usize) {
-    if previous == selected
-        || !available(selected)
-        || crate::native::read::<u8>(selected + crate::native::OFF_AI_FLAG) == 0
-    {
+    if previous == selected || !available(selected) {
+        return;
+    }
+    // A ship with the AI flag cleared is the one a human flies: the player keeps its own controls.
+    if crate::native::read::<u8>(selected + crate::native::OFF_AI_FLAG) == 0 {
         return;
     }
     let get_profile: crate::native::GetProfileFn = std::mem::transmute(crate::native::GET_PROFILE);
@@ -309,6 +314,8 @@ pub unsafe fn tick(ships: &[usize]) {
     let mut foreground_process = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &mut foreground_process);
     let dt = crate::native::read::<f32>(FRAME_DT);
+    // No input is taken while a pre-combat screen is open, the game is not focused, combat is not
+    // running, the frame delta is unusable, or a modal dialog is up.
     if crate::precombat::is_open()
         || foreground_process != GetCurrentProcessId()
         || crate::native::read::<u8>(IN_COMBAT) == 0
@@ -320,14 +327,16 @@ pub unsafe fn tick(ships: &[usize]) {
     }
     let previous =
         crate::native::read::<usize>(crate::native::CONTROLLED_LINKS + offset_of!(Link, target));
-    if !ships.contains(&previous)
-        || !available(previous)
-        || crate::native::read::<i32>(previous + crate::native::OFF_MODE_D70) != 1
+    if !ships.contains(&previous) || !available(previous) {
+        return;
+    }
+    // Only the ship a human currently flies (mode 1, AI flag clear) can hand control over.
+    if crate::native::read::<i32>(previous + crate::native::OFF_MODE_D70) != 1
         || crate::native::read::<u8>(previous + crate::native::OFF_AI_FLAG) != 0
     {
         return;
     }
-    let selected = if pressed & 0b011 != 0 {
+    let selected = if pressed & PANEL_KEYS != 0 {
         let slot = if pressed & 1 != 0 { 0 } else { 1 };
         crate::ally_panels::displayed_ship(slot)
     } else {

@@ -50,6 +50,13 @@ pub(crate) const CLOCK: usize = 0x1_43a1_19c0;
 /// Battle result code, `i32`; read by the summary and the diagnostics watchdog.
 pub(crate) const BATTLE_RESULT: usize = 0x1_47fc_7004;
 
+/// Nonzero `u8` while combat input is active.
+pub(crate) const IN_COMBAT: usize = 0x1_47fc_6fb7;
+/// Native `f32` frame delta, used to reject input during paused or invalid frames.
+pub(crate) const FRAME_DT: usize = 0x1_403c_126c;
+/// Active modal dialog pointer; null when battle input is available.
+pub(crate) const ACTIVE_DIALOG: usize = 0x1_43a1_3e08;
+
 /// Reserve list of ships waiting to deploy (`std::list`: sentinel at +0, size at +8).
 pub(crate) const RESERVE: usize = 0x1_47fc_73b0;
 
@@ -174,20 +181,22 @@ pub(crate) unsafe fn read<T: Copy>(address: usize) -> T {
 /// writes, and `stride` must be nonzero. This computes a difference only: it does not bound the
 /// count or validate either pointer or the pointed-to vector.
 pub(crate) unsafe fn count(begin: usize, end: usize, stride: usize) -> usize {
-    let (b, e): (usize, usize) = (read(begin), read(end));
-    if e >= b {
-        (e - b) / stride
-    } else {
-        0
+    let (start, end): (usize, usize) = (read(begin), read(end));
+    if end < start {
+        return 0;
     }
+
+    (end - start) / stride
 }
 
 /// A pointer that can be a live game object: user-space, 8-aligned, not a small integer.
 ///
 /// This is a cheap range/alignment heuristic, not proof of mapping, ownership, identity or
 /// lifetime. Revalidate with the native class/state fields before any write.
-pub(crate) fn plausible(p: usize) -> bool {
-    p >= 0x10000 && p < 0x7fff_ffff_0000 && p % 8 == 0
+pub(crate) fn plausible(address: usize) -> bool {
+    const GAME_OBJECT_ALIGNMENT: usize = 8;
+
+    (0x10000..0x7fff_ffff_0000).contains(&address) && address.is_multiple_of(GAME_OBJECT_ALIGNMENT)
 }
 
 /// A creature that is still part of the battle at this instant: plausible pointer, creature
@@ -195,14 +204,21 @@ pub(crate) fn plausible(p: usize) -> bool {
 ///
 /// # Safety
 ///
-/// If `p` passes `plausible`, the caller must independently establish a current, readable native
+/// If `ship` passes `plausible`, the caller must independently establish a current, readable native
 /// creature whose fields remain valid for these game-thread reads. Implausible values return false
 /// without dereferencing. This is not an identity/lifetime check for a cached address.
-pub(crate) unsafe fn live_ship(p: usize) -> bool {
-    plausible(p)
-        && read::<u8>(p + OFF_CODE) & 0x2f == 0x2f
-        && read::<i32>(p + OFF_ACTIVE) != 0
-        && !matches!(read::<i32>(p + OFF_STATE), 6 | 7)
+pub(crate) unsafe fn live_ship(ship: usize) -> bool {
+    const CREATURE_CODE_MASK: u8 = 0x2f;
+
+    if !plausible(ship) {
+        return false;
+    }
+
+    if read::<u8>(ship + OFF_CODE) & CREATURE_CODE_MASK != CREATURE_CODE_MASK {
+        return false;
+    }
+
+    read::<i32>(ship + OFF_ACTIVE) != 0 && !matches!(read::<i32>(ship + OFF_STATE), 6 | 7)
 }
 
 /// The current battle roster entries (creature pointers).
@@ -213,12 +229,18 @@ pub(crate) unsafe fn live_ship(p: usize) -> bool {
 /// `usize` values, not the creatures: every pointer is game-owned and may be freed or reused
 /// after any native call. Never drop/free through these values; revalidate before writing.
 pub(crate) unsafe fn roster() -> Vec<usize> {
-    let (b, e): (usize, usize) = (read(ROSTER_BEGIN), read(ROSTER_END));
-    if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
+    let (begin, end): (usize, usize) = (read(ROSTER_BEGIN), read(ROSTER_END));
+    if begin < 0x10000 || end < begin {
         return Vec::new();
     }
-    (0..(e - b) / LINK_STRIDE)
-        .map(|i| read::<usize>(b + i * LINK_STRIDE + 8))
-        .filter(|p| *p != 0)
+
+    let entries = (end - begin) / LINK_STRIDE;
+    if entries > SHIP_LIST_LIMIT {
+        return Vec::new();
+    }
+
+    (0..entries)
+        .map(|index| read::<usize>(begin + index * LINK_STRIDE + offset_of!(Link, target)))
+        .filter(|ship| *ship != 0)
         .collect()
 }

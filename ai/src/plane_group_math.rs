@@ -2,7 +2,11 @@
 
 pub const DEFAULT_GROUP_SIZE: i32 = 3;
 pub const DEFAULT_DELAY: f32 = 0.5;
+/// The stock AI's post-launch cooldown, in game seconds; also the fallback when no group marker is pending.
 pub const STOCK_COOLDOWN: f32 = 6.0;
+/// A launch counts as continuing the same group while it follows the previous one by at most the group
+/// delay plus this much slack (game seconds).
+pub const LAUNCH_WINDOW_SLACK_S: f64 = 1.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
@@ -33,9 +37,9 @@ pub struct Group {
 impl Group {
     pub fn record_launch(&mut self, now: f64, config: Config) {
         let continuing = self.remaining > 0
-            && self
-                .last_launch
-                .is_some_and(|last| now >= last && now - last <= f64::from(config.delay) + 1.0);
+            && self.last_launch.is_some_and(|last| {
+                now >= last && now - last <= f64::from(config.delay) + LAUNCH_WINDOW_SLACK_S
+            });
         self.remaining = if continuing {
             self.remaining - 1
         } else {

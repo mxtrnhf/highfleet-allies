@@ -15,8 +15,8 @@ const MAGIC: u32 = 0x4846_4149; // "HFAI"
 const VERSION: u32 = 1;
 const CAPACITY: usize = 256;
 /// How old an entry may be before the overlay ignores it (the game clock is in seconds).
-const STALE_S: f64 = 2.0;
-const RETRY_MS: u64 = 2000;
+const MAX_ENTRY_AGE_SECONDS: f64 = 2.0;
+const OPEN_RETRY_MS: u64 = 2000;
 
 pub const TACTICS_STOCK: u8 = 0;
 pub const TACTICS_PANIC: u8 = 1;
@@ -69,9 +69,10 @@ unsafe fn view() -> Option<usize> {
         return Some(mapped);
     }
     let now = crate::time::now_ms();
-    if now.wrapping_sub(LAST_OPEN_MS.load(Ordering::Relaxed)) < RETRY_MS {
+    if now.wrapping_sub(LAST_OPEN_MS.load(Ordering::Relaxed)) < OPEN_RETRY_MS {
         return None;
     }
+
     LAST_OPEN_MS.store(now, Ordering::Relaxed);
     let name = wide_name();
     // SAFETY: the name is NUL-terminated UTF-16; FILE_MAP_READ only asks for read access.
@@ -93,19 +94,25 @@ unsafe fn view() -> Option<usize> {
 
 /// State published by hf_ai for one ship. `None` when hf_ai is absent, the mapping is not ready, or the
 /// entry is stale.
+///
+/// # Safety
+/// Call from the game-thread overlay, with no concurrent publisher write to the
+/// fields read here. The read-only mapping stays alive for the lookup.
 pub unsafe fn lookup(creature: usize, clock: f64) -> Option<(u8, u8)> {
     let mapped = view()?;
     let header = mapped as *const Header;
     if (*header).magic != MAGIC || (*header).version != VERSION {
         return None;
     }
-    let base = (mapped as *const u8).add(std::mem::size_of::<Header>());
+
+    let entries = (mapped as *const u8).add(std::mem::size_of::<Header>());
     for index in 0..CAPACITY {
-        let entry = base.add(index * std::mem::size_of::<Entry>()) as *const Entry;
+        let entry = entries.add(index * std::mem::size_of::<Entry>()) as *const Entry;
         if (*entry).creature != creature as u64 {
             continue;
         }
-        if (clock - (*entry).clock).abs() > STALE_S {
+        let entry_age_seconds = (clock - (*entry).clock).abs();
+        if entry_age_seconds > MAX_ENTRY_AGE_SECONDS {
             return None;
         }
         return Some(((*entry).tactics, (*entry).flares));

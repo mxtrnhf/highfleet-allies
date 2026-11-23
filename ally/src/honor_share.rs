@@ -37,7 +37,11 @@ static TOTALS: Mutex<(f32, f32)> = Mutex::new((0.0, 0.0));
 
 /// Clamps `ally_honor_share` to 0..=1; non-finite values fall back to 0.5. Returns the value used.
 pub fn set_share(share: f32) -> f32 {
-    let effective = if share.is_finite() { share.clamp(0.0, 1.0) } else { 0.5 };
+    let effective = if share.is_finite() {
+        share.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
     SHARE.store(effective.to_bits(), Ordering::Relaxed);
     effective
 }
@@ -60,13 +64,17 @@ pub fn totals() -> (f32, f32) {
 }
 
 /// Verifies the exact battle-manager award sequence before the detour is prepared.
-pub fn verify_native() -> Result<(), String> {
+///
+/// # Safety
+/// Call during serialized startup with the supported image mapped at its expected base.
+/// All three instruction spans must stay readable and unmodified while borrowed.
+pub unsafe fn verify_native() -> Result<(), String> {
     for (name, address, expected) in [
         ("honor add", HONOR_ADD, &HONOR_ADD_BYTES[..]),
         ("honor store", HONOR_STORE, &HONOR_STORE_BYTES[..]),
         ("honor resume", HONOR_RESUME, &HONOR_RESUME_BYTES[..]),
     ] {
-        let found = unsafe { std::slice::from_raw_parts(address as *const u8, expected.len()) };
+        let found = std::slice::from_raw_parts(address as *const u8, expected.len());
         if found != expected {
             return Err(format!("{name} at {address:#x} has unexpected bytes {found:02x?}, expected {expected:02x?}"));
         }
@@ -93,7 +101,9 @@ pub unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
     );
     trampoline.bytes(&HONOR_STORE_BYTES);
     trampoline.absolute_jump(HONOR_RESUME);
-    session.detour_trampoline(HONOR_STORE, HONOR_STORE_BYTES.len(), trampoline).map_err(|e| e.to_string())?;
+    session
+        .detour_trampoline(HONOR_STORE, HONOR_STORE_BYTES.len(), trampoline)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -104,12 +114,16 @@ unsafe extern "C" fn on_award(player: usize, new_total_bits: u32) {
     if share <= 0.0 || !battle::armed() || !plausible(player) {
         return;
     }
+
     let new_total = f32::from_bits(new_total_bits);
     let earned = new_total - read::<f32>(player + OFF_BATTLE_HONOR);
     if !earned.is_finite() || earned <= 0.0 {
         return;
     }
-    let Some(allies) = battle::try_allies() else { return };
+
+    let Some(allies) = battle::try_allies() else {
+        return;
+    };
     let mut credited = 0u32;
     for (index, &ally) in allies.iter().enumerate() {
         // A handoff can leave the current player in the list for one frame; never double-credit.
@@ -119,10 +133,13 @@ unsafe extern "C" fn on_award(player: usize, new_total_bits: u32) {
         let current = read::<f32>(ally + OFF_BATTLE_HONOR);
         let next = current + earned * share;
         if current.is_finite() && next.is_finite() {
-            (ally as *mut f32).byte_add(OFF_BATTLE_HONOR).write_unaligned(next);
+            (ally as *mut f32)
+                .byte_add(OFF_BATTLE_HONOR)
+                .write_unaligned(next);
             credited += 1;
         }
     }
+
     if let Ok(mut totals) = TOTALS.try_lock() {
         totals.0 += earned;
         totals.1 += earned * share * credited as f32;

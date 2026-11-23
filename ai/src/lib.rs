@@ -46,17 +46,29 @@ highfleet_mod_api::export_logger!();
 
 const IMAGE_BASE: usize = 0x1_4000_0000;
 const CONFIG_PATH: &str = "Modloader/config/hf_ai.json";
+/// Windows page size, used to tell whether a read crosses a page boundary.
+const PAGE_SIZE: usize = 4096;
+/// Addresses below this are null-page guard space, never game data.
+const MIN_MAPPED_ADDRESS: usize = 0x1_0000;
+/// Upper bound of the user-mode address space this mod accepts as a game pointer.
+const MAX_GAME_ADDRESS: usize = 0x7fff_ffff_0000;
+/// Game pointers are read as 8-byte-aligned fields.
+const GAME_POINTER_ALIGNMENT: usize = 8;
 
 static GAME_IS_STEAM_1_163: AtomicBool = AtomicBool::new(false);
 
 const STEER_RVA: usize = 0x64a8d;
 const STEER_RESUME_RVA: usize = 0x64a96;
 /// `movss [r14+0xbf0], xmm9` (the replaced instruction) and the `subss xmm9, xmm12` after it.
-const STEER_BYTES: [u8; 14] = [0xf3, 0x45, 0x0f, 0x11, 0x8e, 0xf0, 0x0b, 0x00, 0x00, 0xf3, 0x45, 0x0f, 0x5c, 0xcc];
+const STEER_BYTES: [u8; 14] = [
+    0xf3, 0x45, 0x0f, 0x11, 0x8e, 0xf0, 0x0b, 0x00, 0x00, 0xf3, 0x45, 0x0f, 0x5c, 0xcc,
+];
 const STEER_STOLEN_LEN: usize = 9;
 /// The AI tick's own first bytes (the hook site must be inside this function).
 const TICK_RVA: usize = 0x62f90;
-const TICK_PROLOGUE: [u8; 12] = [0x48, 0x8b, 0xc4, 0x55, 0x53, 0x41, 0x56, 0x48, 0x8d, 0xa8, 0xa8, 0xfe];
+const TICK_PROLOGUE: [u8; 12] = [
+    0x48, 0x8b, 0xc4, 0x55, 0x53, 0x41, 0x56, 0x48, 0x8d, 0xa8, 0xa8, 0xfe,
+];
 
 const CLOCK: usize = 0x1_43a1_19c0; // f64 game clock
 const OFF_SIDE: usize = native_layout::CREATURE_SIDE; // f32: negative = enemy, positive = player's side
@@ -67,7 +79,12 @@ const OFF_OWNER: usize = native_layout::NODE_OWNER;
 const OFF_CODE: usize = native_layout::NODE_CODE;
 
 /// Scratch space shared with the steering trampoline: waypoint x, y and ship x, y.
-static STEER_BUFFER: [AtomicU32; 4] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
+static STEER_BUFFER: [AtomicU32; 4] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+];
 
 /// What the tactic layer gets to look at when the stock AI has picked a waypoint.
 struct Ctx {
@@ -83,26 +100,44 @@ struct Ctx {
     target_creature: Option<usize>,
 }
 
-/// Page-checked read (same test as `hf_ally`'s `diag::rd`): `None` when the memory is not mapped and readable.
+/// Reads non-owning native data with first- and last-page readability checks.
+///
+/// # Safety
+/// `T` must be nonzero-sized and no larger than a page. The caller must establish object
+/// identity, lifetime, a valid representation of `T`, and no racing writes. The page checks
+/// do not establish those conditions.
 unsafe fn rd<T: Copy>(address: usize) -> Option<T> {
     let end = address.checked_add(std::mem::size_of::<T>())?;
-    if address < 0x1_0000 || !readable(address) || (end - 1) / 4096 != address / 4096 && !readable(end - 1) {
+    let start_is_null_page = address < MIN_MAPPED_ADDRESS;
+    if start_is_null_page || !readable(address) {
         return None;
     }
+    let read_crosses_page = (end - 1) / PAGE_SIZE != address / PAGE_SIZE;
+    if read_crosses_page && !readable(end - 1) {
+        return None;
+    }
+    // SAFETY: The caller establishes validity and lifetime; the touched pages were
+    // checked above, and the scalar load does not require native alignment.
     Some((address as *const T).read_unaligned())
 }
 
 unsafe fn readable(address: usize) -> bool {
     let mut info: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
-    if VirtualQuery(address as *const std::ffi::c_void, &mut info, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 {
+    if VirtualQuery(
+        address as *const std::ffi::c_void,
+        &mut info,
+        std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+    ) == 0
+    {
         return false;
     }
     // MEM_COMMIT, and not PAGE_NOACCESS (0x01) / PAGE_GUARD (0x100)
     info.State == 0x1000 && info.Protect & 0x101 == 0 && info.Protect != 0
 }
 
-fn plausible(p: usize) -> bool {
-    p >= 0x10000 && p < 0x7fff_ffff_0000 && p % 8 == 0
+fn plausible(address: usize) -> bool {
+    (MIN_MAPPED_ADDRESS..MAX_GAME_ADDRESS).contains(&address)
+        && address.is_multiple_of(GAME_POINTER_ALIGNMENT)
 }
 
 /// The creature behind a target node (the node is a ship or one of its parts) and its position.
@@ -110,11 +145,16 @@ unsafe fn target_info(node: usize) -> Option<(usize, (f32, f32))> {
     if !plausible(node) {
         return None;
     }
-    let ship = if rd::<u8>(node + OFF_CODE)? & 0x2f == 0x2f {
+    let node_code = rd::<u8>(node + OFF_CODE)?;
+    let ship = if native_layout::is_creature_code(node_code) {
         node
     } else {
         let owner: usize = rd(node + OFF_OWNER)?;
-        if !plausible(owner) || rd::<u8>(owner + OFF_CODE)? & 0x2f != 0x2f {
+        if !plausible(owner) {
+            return None;
+        }
+        let owner_code = rd::<u8>(owner + OFF_CODE)?;
+        if !native_layout::is_creature_code(owner_code) {
             return None;
         }
         owner
@@ -127,7 +167,9 @@ unsafe fn target_info(node: usize) -> Option<(usize, (f32, f32))> {
 /// tactics while a ship is evading) -> the waypoint goes back to the tick.
 unsafe extern "C" fn on_steering(creature: usize) {
     // A Rust panic must never unwind into the game.
-    if catch_unwind(AssertUnwindSafe(|| apply_steering_overrides(creature))).is_err() && !LOGGED_STEER_PANIC.swap(true, Ordering::Relaxed) {
+    if catch_unwind(AssertUnwindSafe(|| apply_steering_overrides(creature))).is_err()
+        && !LOGGED_STEER_PANIC.swap(true, Ordering::Relaxed)
+    {
         log::error!("hf_ai: a panic was caught in the steering hook and ignored");
     }
 }
@@ -172,20 +214,23 @@ fn maneuvers_allowed(creature: usize) -> bool {
     twr_math::allows(strategic_twr(creature), cutoff)
 }
 
-
 unsafe fn apply_steering_overrides(creature: usize) {
     let load = |index: usize| f32::from_bits(STEER_BUFFER[index].load(Ordering::Relaxed));
     let (wanted, ship) = ((load(0), load(1)), (load(2), load(3)));
     let Some(now) = rd::<f64>(CLOCK) else { return };
-    let info = rd(creature + OFF_TARGET).and_then(|node| target_info(node));
+    let resolved_target = rd(creature + OFF_TARGET).and_then(|node| target_info(node));
+    let (target_position, target_creature) = match resolved_target {
+        Some((ship, position)) => (Some(position), Some(ship)),
+        None => (None, None),
+    };
     let ctx = Ctx {
         now,
         creature,
         side: rd(creature + OFF_SIDE).unwrap_or(0.0),
         ship,
         wanted,
-        target: info.map(|(_, position)| position),
-        target_creature: info.map(|(creature, _)| creature),
+        target: target_position,
+        target_creature,
     };
     let (tactic, tactic_state) = tactics::decide(&ctx, || ai_flares::panicking(creature, now));
     let tactics_code = match tactic_state {
@@ -203,7 +248,8 @@ unsafe fn apply_steering_overrides(creature: usize) {
         _ => wanted,
     };
     // (returns None at once when ai_flares is off: its runtime is never created then)
-    let panic = ai_flares::panic_waypoint(creature, now, tactic_waypoint, ship).filter(|(x, y)| x.is_finite() && y.is_finite());
+    let panic = ai_flares::panic_waypoint(creature, now, tactic_waypoint, ship)
+        .filter(|(x, y)| x.is_finite() && y.is_finite());
     let chosen = panic.or(tactic);
     let mut stored = None;
     if let Some((x, y)) = chosen {
@@ -254,10 +300,14 @@ fn steer_result_handling() -> Vec<u8> {
 unsafe fn steering_site_ok(module: ProcessModule) -> Result<bool, String> {
     let matches = |rva: usize, expected: &[u8]| -> Result<bool, String> {
         let address = module.resolve_rva(rva).map_err(|e| e.to_string())?;
+        // SAFETY: the site RVAs address the loaded main module (Modloader only loads for the
+        // pinned 1.163 executable); `expected` is a fixed byte pattern of that site's length.
         Ok(std::slice::from_raw_parts(address as *const u8, expected.len()) == expected)
     };
     if !matches(TICK_RVA, &TICK_PROLOGUE)? {
-        log::error!("hf_ai: the AI tick at {TICK_RVA:#x} is not what was analysed, no steering hook");
+        log::error!(
+            "hf_ai: the AI tick at {TICK_RVA:#x} is not what was analysed, no steering hook"
+        );
         return Ok(false);
     }
     if !matches(STEER_RVA, &STEER_BYTES)? {
@@ -271,14 +321,30 @@ unsafe fn steering_site_ok(module: ProcessModule) -> Result<bool, String> {
 }
 
 /// Prepares the steering detour in `session` (installed by the caller).
-unsafe fn prepare_steering_hook(session: &mut PatchSession, module: ProcessModule) -> Result<(), String> {
+unsafe fn prepare_steering_hook(
+    session: &mut PatchSession,
+    module: ProcessModule,
+) -> Result<(), String> {
     let mut trampoline = Trampoline::new();
-    trampoline.preserved_call(on_steering as *const (), &steer_argument_setup(), &steer_result_handling(), ReturnType::None);
+    trampoline.preserved_call(
+        on_steering as *const (),
+        &steer_argument_setup(),
+        &steer_result_handling(),
+        ReturnType::None,
+    );
     // replay the replaced store of the (possibly changed) waypoint
     trampoline.bytes(&STEER_BYTES[..STEER_STOLEN_LEN]);
-    trampoline.absolute_jump(module.resolve_rva(STEER_RESUME_RVA).map_err(|e| e.to_string())?);
+    trampoline.absolute_jump(
+        module
+            .resolve_rva(STEER_RESUME_RVA)
+            .map_err(|e| e.to_string())?,
+    );
     session
-        .detour_trampoline(module.resolve_rva(STEER_RVA).map_err(|e| e.to_string())?, STEER_STOLEN_LEN, trampoline)
+        .detour_trampoline(
+            module.resolve_rva(STEER_RVA).map_err(|e| e.to_string())?,
+            STEER_STOLEN_LEN,
+            trampoline,
+        )
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
@@ -365,7 +431,6 @@ impl Default for Config {
     }
 }
 
-
 /// Warns about the QoL mod setup that hf_ai relies on: logdot's `highfleet-qol` carries the 1.163 flare crash fix (a
 /// proximity-fused missile meeting a flare whose link is gone), and hf_ai drops far more flares than the stock game.
 /// Checked from the files (mod load order is alphabetical, so the QoL DLL may not be loaded yet when hf_ai starts).
@@ -382,16 +447,49 @@ fn check_qol(config: &Config) {
         log::warn!("hf_ai: no QoL mod in Modloader/mods. Install logdot's highfleet-qol: it has the flare crash fix, and hf_ai's flares make that crash much more likely without it");
         return;
     }
-    let Ok(text) = std::fs::read_to_string("Modloader/config/qol.json") else { return };
-    let Ok(qol) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+    let Ok(text) = std::fs::read_to_string("Modloader/config/qol.json") else {
+        return;
+    };
+    let Ok(qol) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
     if qol.get("enable_flare_crash_fix").and_then(|v| v.as_bool()) == Some(false) {
         log::warn!("hf_ai: qol.json has enable_flare_crash_fix false: turn it on, hf_ai's flares can crash the game without it");
     }
-    if config.ai_missile_dump_chance > 0.0 && qol.get("ai_missile_dump_chance").and_then(|v| v.as_f64()).unwrap_or(0.0) > 0.0 {
+    if config.ai_missile_dump_chance > 0.0
+        && qol
+            .get("ai_missile_dump_chance")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+            > 0.0
+    {
         log::warn!("hf_ai: qol.json ai_missile_dump_chance is above 0 as well: set it to 0, hf_ai does the missile dump");
     }
-    if qol.get("ai_flares").and_then(|v| v.get("enabled")).and_then(|v| v.as_bool()) == Some(true) && config.ai_flares.enabled {
+    if qol
+        .get("ai_flares")
+        .and_then(|v| v.get("enabled"))
+        .and_then(|v| v.as_bool())
+        == Some(true)
+        && config.ai_flares.enabled
+    {
         log::warn!("hf_ai: qol.json ai_flares.enabled is true as well: set it to false, both patch the same sites");
+    }
+}
+
+/// Reads `hf_ai.json`, parsing errors fall back to defaults, and a missing file is written out as defaults.
+fn load_config() -> Config {
+    match std::fs::read_to_string(CONFIG_PATH) {
+        Ok(text) => parse_config(&text).unwrap_or_else(|error| {
+            log::error!("hf_ai: bad {CONFIG_PATH}: {error}; using defaults");
+            Config::default()
+        }),
+        Err(_) => {
+            let config = Config::default();
+            if let Ok(text) = serde_json::to_string_pretty(&config) {
+                let _ = std::fs::write(CONFIG_PATH, text);
+            }
+            config
+        }
     }
 }
 
@@ -404,7 +502,11 @@ unsafe extern "C" fn version(version: *const c_char) -> bool {
 
 #[no_mangle]
 unsafe extern "C" fn init() -> bool {
-    log::info!("hf_ai v{} (build {})", env!("CARGO_PKG_VERSION"), env!("HF_AI_BUILD"));
+    log::info!(
+        "hf_ai v{} (build {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("HF_AI_BUILD")
+    );
     if !GAME_IS_STEAM_1_163.load(Ordering::Relaxed) {
         log::error!("hf_ai: needs Steam 1.163, not starting");
         return false;
@@ -413,36 +515,27 @@ unsafe extern "C" fn init() -> bool {
         log::error!("hf_ai: unexpected image base, not starting");
         return false;
     }
-    let config: Config = match std::fs::read_to_string(CONFIG_PATH) {
-        Ok(text) => parse_config(&text).unwrap_or_else(|error| {
-            log::error!("hf_ai: bad {CONFIG_PATH}: {error}; using defaults");
-            Config::default()
-        }),
-        Err(_) => {
-            let config = Config::default();
-            if let Ok(text) = serde_json::to_string_pretty(&config) {
-                let _ = std::fs::write(CONFIG_PATH, text);
-            }
-            config
-        }
-    };
+    let config = load_config();
     if !config.enabled {
         log::info!("hf_ai: disabled in {CONFIG_PATH}");
         return true;
     }
     check_qol(&config);
     debug_state::init();
+
     let cutoff = twr_math::sanitize_cutoff(config.twr_cutoff);
     TWR_CUTOFF.store(cutoff.to_bits(), Ordering::Relaxed);
     log::info!("hf_ai: maneuver strategic/Shipworks TWR cutoff {cutoff}");
-    let limit = twr_math::sanitize_cutoff(config.twr_limit);
-    let deceleration = twr_math::sanitize_cutoff(config.twr_deceleration).min(1.0);
-    TWR_LIMIT.store(limit.to_bits(), Ordering::Relaxed);
-    TWR_DECELERATION.store(deceleration.to_bits(), Ordering::Relaxed);
+
+    let twr_limit = twr_math::sanitize_cutoff(config.twr_limit);
+    let boost_multiplier = twr_math::sanitize_cutoff(config.twr_deceleration).min(1.0);
+    TWR_LIMIT.store(twr_limit.to_bits(), Ordering::Relaxed);
+    TWR_DECELERATION.store(boost_multiplier.to_bits(), Ordering::Relaxed);
     log::info!(
-        "hf_ai: hf_ai boost-only TWR limit {limit}, strength multiplier {deceleration} (0 disables)"
+        "hf_ai: hf_ai boost-only TWR limit {twr_limit}, strength multiplier {boost_multiplier} (0 disables)"
     );
     tactics::init(&config.tactics);
+
     let module = match ProcessModule::main() {
         Ok(module) => module,
         Err(error) => {
@@ -459,7 +552,7 @@ unsafe extern "C" fn init() -> bool {
     };
     // One session for every site, so nothing is half installed. Preparing the ai_flares sites may fail (a code
     // mismatch is not an error, it just leaves ai_flares off); then the steering hook is prepared alone.
-    let prepare = |with_flares: bool| -> Result<PatchSession, String> {
+    let prepare_session = |with_flares: bool| -> Result<PatchSession, String> {
         let mut session = PatchSession::new();
         if steering_ok {
             prepare_steering_hook(&mut session, module)?;
@@ -475,23 +568,32 @@ unsafe extern "C" fn init() -> bool {
             .map_err(|e| e.to_string())?;
         }
         plane_group::prepare(
-            &mut session, module, config.plane_group_per_launch,
+            &mut session,
+            module,
+            config.plane_group_per_launch,
             config.plane_group_launch_delay_seconds,
         )?;
-        reload_rate::prepare(&mut session, module, config.reload_rate_ally, config.reload_rate_ai)?;
+        reload_rate::prepare(
+            &mut session,
+            module,
+            config.reload_rate_ally,
+            config.reload_rate_ai,
+        )?;
         let boost_wanted = tactics::wants_engine_boost()
             || (with_flares && ai_flares::wants_engine_boost(&config.ai_flares));
         let boost = if boost_wanted {
-            ai_flares::prepare_boost_hook(&mut session, module, steering_ok).map_err(|e| e.to_string())?
+            ai_flares::prepare_boost_hook(&mut session, module, steering_ok)
+                .map_err(|e| e.to_string())?
         } else {
             false
         };
         if with_flares {
-            ai_flares::patch_ai_flares(&mut session, &config.ai_flares, steering_ok, boost).map_err(|e| e.to_string())?;
+            ai_flares::patch_ai_flares(&mut session, &config.ai_flares, steering_ok, boost)
+                .map_err(|e| e.to_string())?;
         }
         Ok(session)
     };
-    let session = match prepare(config.ai_flares.enabled) {
+    let session = match prepare_session(config.ai_flares.enabled) {
         Ok(session) => session,
         Err(error) => {
             log::error!("hf_ai: preparing the hooks failed: {error}");
@@ -499,7 +601,7 @@ unsafe extern "C" fn init() -> bool {
                 return false;
             }
             log::error!("hf_ai: retrying with the steering hook only (ai_flares off)");
-            match prepare(false) {
+            match prepare_session(false) {
                 Ok(session) => session,
                 Err(error) => {
                     log::error!("hf_ai: preparing the steering hook failed: {error}");
@@ -516,7 +618,11 @@ unsafe extern "C" fn init() -> bool {
         log::info!(
             "hf_ai: steering hook installed (tactics {}; ai_flares {})",
             if config.tactics.enabled { "on" } else { "off" },
-            if config.ai_flares.enabled { "requested, see the ai_flares lines above" } else { "off" }
+            if config.ai_flares.enabled {
+                "requested, see the ai_flares lines above"
+            } else {
+                "off"
+            }
         );
     }
     if !config.ai_flares.enabled {

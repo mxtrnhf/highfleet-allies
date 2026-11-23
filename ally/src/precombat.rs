@@ -390,8 +390,17 @@ static TICK_LOGS: AtomicU32 = AtomicU32::new(0);
 static TICKS_SEEN: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
 /// The plane-armament button is only drawn when its hook is installed.
 static PLANE_BUTTONS: AtomicBool = AtomicBool::new(false);
-/// Text beside each plane button, drawn from the render seam: (slot, x, y in GUI units, size, text with a NUL).
-static PLANE_LABELS: Mutex<Vec<(usize, f32, f32, f32, Vec<u8>)>> = Mutex::new(Vec::new());
+/// Text drawn beside a plane button from the render seam.
+#[derive(Clone)]
+struct PlaneLabel {
+    slot: usize,
+    position: [f32; 2],
+    size: f32,
+    /// Native text argument, including its terminating NUL.
+    text: Vec<u8>,
+}
+
+static PLANE_LABELS: Mutex<Vec<PlaneLabel>> = Mutex::new(Vec::new());
 /// One button per card and plane type (`plane_loadouts::MAX_CRAFTS` types): index = craft * 9 + (card slot - 1); the click handler splits the number again.
 const LOADOUT_NAMES: [&[u8]; 54] = [
     b"PLANE_ARM_1\0",
@@ -663,6 +672,18 @@ unsafe fn gui_reusable(gui: usize, name: &[u8]) -> bool {
     gui_live_in_root(gui)
 }
 
+/// True when `gui` is in the scan's GUI list, still carries `name` and is currently shown
+/// (active 2). Used to switch our own stale elements off; it never authorises reuse, which needs
+/// the registry/root checks of [`gui_reusable`].
+///
+/// # Safety
+/// Use the current game-thread scan with no intervening GUI mutations; `name` must include its NUL.
+unsafe fn listed_shown(listed: &[usize], gui: usize, name: &[u8]) -> bool {
+    listed.contains(&gui)
+        && cstr(gui + GUI_NAME).as_bytes() == &name[..name.len() - 1]
+        && read::<i32>(gui + OFF_ACTIVE) == 2
+}
+
 /// Calls the element's vtable slot +0x88 (`GUI::Load`): resolves the element's own media names and loads the
 /// resources of every sprite in its list, then recurses into children. Only call on a newly constructed GUI
 /// or a current registry member validated by `get_or_make`, on the game thread outside rendering.
@@ -743,7 +764,7 @@ unsafe fn paint_button(gui: usize, name: &[u8]) -> bool {
         toggle_line("ALLY GUI paint refused: invalid native sprite vector".to_string());
         return false;
     };
-    let count = (end - begin) / 8;
+    let count = (end - begin) / GUI_SPRITE_SLOT_SIZE;
     if count == 1 {
         let sprite: usize = read(begin);
         if !plausible(sprite) {
@@ -755,7 +776,7 @@ unsafe fn paint_button(gui: usize, name: &[u8]) -> bool {
     } else {
         if count > 1 {
             // Validate the complete bounded pointer array before the native destructor walk.
-            for address in (begin..end).step_by(8) {
+            for address in (begin..end).step_by(GUI_SPRITE_SLOT_SIZE) {
                 let sprite: usize = read(address);
                 if !plausible(sprite) || !plausible(read::<usize>(sprite)) {
                     toggle_line("ALLY GUI paint refused: invalid native sprite entry".to_string());
@@ -1044,11 +1065,16 @@ unsafe fn card_ships_from(listed: &[usize]) -> Vec<(f32, usize)> {
 /// Sets (or removes) the text beside the plane button of `slot`.
 fn set_plane_label(slot: usize, label: Option<(f32, f32, f32, String)>) {
     if let Ok(mut labels) = PLANE_LABELS.lock() {
-        labels.retain(|l| l.0 != slot);
+        labels.retain(|label| label.slot != slot);
         if let Some((x, y, size, text)) = label {
             let mut bytes: Vec<u8> = text.bytes().filter(|b| b.is_ascii() && *b != 0).collect();
             bytes.push(0);
-            labels.push((slot, x, y, size, bytes));
+            labels.push(PlaneLabel {
+                slot,
+                position: [x, y],
+                size,
+                text: bytes,
+            });
         }
     }
 }
@@ -1056,10 +1082,9 @@ fn set_plane_label(slot: usize, label: Option<(f32, f32, f32, String)>) {
 /// Moves the text beside a plane button; the text itself is kept.
 fn move_plane_label(slot: usize, x: f32, y: f32, size: f32) {
     if let Ok(mut labels) = PLANE_LABELS.lock() {
-        if let Some(label) = labels.iter_mut().find(|label| label.0 == slot) {
-            label.1 = x;
-            label.2 = y;
-            label.3 = size;
+        if let Some(label) = labels.iter_mut().find(|label| label.slot == slot) {
+            label.position = [x, y];
+            label.size = size;
         }
     }
 }
@@ -1110,10 +1135,7 @@ unsafe fn place_loadout(
     let Some(ship) = shown else {
         set_plane_label(slot, None);
         let kept = kept_slot.load(Ordering::Relaxed);
-        if listed.contains(&kept)
-            && cstr(kept + GUI_NAME).as_bytes() == &name[..name.len() - 1]
-            && read::<i32>(kept + OFF_ACTIVE) == 2
-        {
+        if listed_shown(listed, kept, name) {
             set_gui_active(kept, false);
         }
         return false;
@@ -1160,25 +1182,29 @@ unsafe fn place_loadout(
     true
 }
 
+/// FNV-1a parameters: the 64-bit offset basis and prime the layout signatures mix with.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x100_0000_01b3;
+
 /// A signature of the card positions alone (no ship links): a change here means the cards are moving.
 fn layout_signature(cards: &[(f32, f32, f32, f32)]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ cards.len() as u64;
-    for c in cards {
-        h = (h ^ c.0.to_bits() as u64).wrapping_mul(0x100_0000_01b3);
+    let mut signature = FNV_OFFSET_BASIS ^ cards.len() as u64;
+    for card in cards {
+        signature = (signature ^ card.0.to_bits() as u64).wrapping_mul(FNV_PRIME);
     }
-    h
+    signature
 }
 
 /// A signature of the card layout and the ships behind the cards: two cards swapping places keep the same x
 /// positions, so the ship links count too when the plane buttons (which belong to the ship) are shown.
 fn card_signature(cards: &[(f32, f32, f32, f32)], ships: &[(f32, usize)]) -> u64 {
-    let mut h = layout_signature(cards);
+    let mut signature = layout_signature(cards);
     if PLANE_BUTTONS.load(Ordering::Relaxed) {
         for (_, ship) in ships {
-            h = (h ^ *ship as u64).wrapping_mul(0x100_0000_01b3);
+            signature = (signature ^ *ship as u64).wrapping_mul(FNV_PRIME);
         }
     }
-    h
+    signature
 }
 
 /// Cards that all report one spot have not been laid out yet. Until they are, the grid read off the screenshots
@@ -1187,6 +1213,7 @@ fn cards_stacked(cards: &[(f32, f32, f32, f32)]) -> bool {
     cards.len() > 1 && cards.iter().all(|c| (c.0 - cards[0].0).abs() < 1.0)
 }
 
+/// Stand-in card layout read off the screenshots: used until the game's cards report their own spots.
 fn grid_cards(cards: &[(f32, f32, f32, f32)]) -> Vec<(f32, f32, f32, f32)> {
     cards
         .iter()
@@ -1281,10 +1308,7 @@ unsafe fn ensure_toggles() {
             // not prove the slot is absent, so nothing is hidden from a partial list.
             if scan.complete {
                 let kept = TOGGLE_GUIS[slot - 2].load(Ordering::Relaxed);
-                if scan.elements.contains(&kept)
-                    && cstr(kept + GUI_NAME) == format!("ALLY_TOGGLE_{slot}")
-                    && read::<i32>(kept + OFF_ACTIVE) == 2
-                {
+                if listed_shown(&scan.elements, kept, TOGGLE_NAMES[slot - 2]) {
                     set_gui_active(kept, false);
                 }
             }
@@ -1507,7 +1531,7 @@ unsafe fn screen_gone(scan: &CardScan) -> bool {
 /// it exists the text would stay bright, so it is not drawn.
 unsafe fn esc_menu_open() -> bool {
     let find: FindFn = std::mem::transmute(GUI_FIND);
-    find(b"QUIT_BLACK\0".as_ptr()) != 0
+    find(c"QUIT_BLACK".as_ptr().cast()) != 0
 }
 
 /// Why one of our elements is not in its expected visible state. `None` = it is shown and its newest sprite is loaded.
@@ -1572,10 +1596,7 @@ unsafe fn gui_health(scan: &CardScan, cards: &[(f32, f32, f32, f32)]) -> Vec<Str
     // kept buttons for slots that no longer have a card must not stay visible
     for slot in (expected_slots.max(1) + 1)..=9 {
         let gui = TOGGLE_GUIS[slot - 2].load(Ordering::Relaxed);
-        if scan.elements.contains(&gui)
-            && cstr(gui + GUI_NAME) == format!("ALLY_TOGGLE_{slot}")
-            && read::<i32>(gui + OFF_ACTIVE) == 2
-        {
+        if listed_shown(&scan.elements, gui, TOGGLE_NAMES[slot - 2]) {
             issues.push(format!("ALLY_TOGGLE_{slot}: still visible without a card"));
         }
     }
@@ -1593,11 +1614,7 @@ unsafe fn gui_health(scan: &CardScan, cards: &[(f32, f32, f32, f32)]) -> Vec<Str
                 let wanted = ship.is_some_and(|s| loadout_wanted(s, craft));
                 let problem = if wanted {
                     gui_problem(gui, LOADOUT_NAMES[number - 1], &scan.elements)
-                } else if scan.elements.contains(&gui)
-                    && cstr(gui + GUI_NAME).as_bytes()
-                        == &LOADOUT_NAMES[number - 1][..LOADOUT_NAMES[number - 1].len() - 1]
-                    && read::<i32>(gui + OFF_ACTIVE) == 2
-                {
+                } else if listed_shown(&scan.elements, gui, LOADOUT_NAMES[number - 1]) {
                     Some("still visible without a plane")
                 } else {
                     None
@@ -1741,23 +1758,24 @@ unsafe extern "C" fn draw_marker() {
 /// it never shows up). Later rebuilds (ship swaps) have no cover. Returns true = do not draw. State changes are logged.
 unsafe fn doors_closed() -> bool {
     let find: FindFn = std::mem::transmute(GUI_FIND);
-    let desk = find(b"ROLL_DESK\0".as_ptr());
+    let desk = find(c"ROLL_DESK".as_ptr().cast());
     let since_entry = now_ms().wrapping_sub(ENTRY_MS.load(Ordering::Relaxed));
     if desk != 0 {
         ROLL_SEEN.store(true, Ordering::Relaxed);
     }
     let hold = desk != 0 || (!ROLL_SEEN.load(Ordering::Relaxed) && since_entry < ROLL_TIMEOUT_MS);
-    let y = if desk == 0 {
+    let desk_y = if desk == 0 {
         f32::NEG_INFINITY
     } else {
         read::<f32>(desk + offset_of!(Body, position_y))
     };
-    let state = (hold as u32) | (((y / 50.0) as i32 as u32) << 1);
+    // change detector for the log line only: hold flag plus y in 50-unit steps
+    let state = (hold as u32) | (((desk_y / 50.0) as i32 as u32) << 1);
     if state != DOOR_STATE.swap(state, Ordering::Relaxed)
         && DOOR_LOGS.fetch_add(1, Ordering::Relaxed) < 400
     {
         toggle_line(format!(
-            "ALLY roller cover: ROLL_DESK y={y:.0} label held back={hold} t+{since_entry}ms"
+            "ALLY roller cover: ROLL_DESK y={desk_y:.0} label held back={hold} t+{since_entry}ms"
         ));
     }
     hold
@@ -1767,6 +1785,21 @@ static ROLL_SEEN: AtomicBool = AtomicBool::new(false);
 const ROLL_TIMEOUT_MS: u64 = 6000;
 static DOOR_STATE: AtomicU32 = AtomicU32::new(0);
 static DOOR_LOGS: AtomicU32 = AtomicU32::new(0);
+
+/// The game's shared HUD font object for `name`, when the media manager and the font exist. The font
+/// is a shared native object: callers save and restore its style around their own draw.
+///
+/// # Safety
+/// Call at the verified draw seam on the game thread, while its media manager and fonts are live.
+unsafe fn hud_font(name: &std::ffi::CStr) -> Option<*mut u8> {
+    let manager: *mut u8 = read(MEDIA_RES);
+    if manager.is_null() {
+        return None;
+    }
+    let get_font: GetFontFn = std::mem::transmute(GET_FONT);
+    let font = get_font(manager, name.as_ptr());
+    (!font.is_null()).then_some(font)
+}
 
 /// The plane buttons' labels, drawn the same way as the slot-1 text and under the same gates.
 unsafe fn draw_plane_labels() {
@@ -1781,15 +1814,9 @@ unsafe fn draw_plane_labels() {
     if labels.is_empty() {
         return;
     }
-    let manager: *mut u8 = read(MEDIA_RES);
-    if manager.is_null() {
+    let Some(font) = hud_font(LABEL_FONT) else {
         return;
-    }
-    let get_font: GetFontFn = std::mem::transmute(GET_FONT);
-    let font = get_font(manager, LABEL_FONT.as_ptr());
-    if font.is_null() {
-        return;
-    }
+    };
     let base = font as usize;
     let (old_scale, old_color, old_blend): (f32, u32, i32) = (
         read(base + 0x100c),
@@ -1799,19 +1826,19 @@ unsafe fn draw_plane_labels() {
     let style: StyleFn = std::mem::transmute(STYLE_FONT);
     style(LABEL_FONT.as_ptr(), 1.0, 2, LABEL_COLOR);
     let render: RenderTextFn = std::mem::transmute(FONT_RENDER);
-    for (_, bx, by, size, text) in labels {
+    for label in labels {
         // right of the round button, vertically centred on it
         // whole pixels only: a bitmap font drawn between pixels is blurred
         let (x, y) = (
-            (960.0 + bx + size * 0.5 + 6.0).round(),
-            (540.0 + by - 8.0).round(),
+            (960.0 + label.position[0] + label.size * 0.5 + 6.0).round(),
+            (540.0 + label.position[1] - 8.0).round(),
         );
         render(
             font,
             x,
             y,
             0,
-            text.as_ptr() as *const _,
+            label.text.as_ptr() as *const _,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             0,
@@ -1843,15 +1870,9 @@ pub(crate) unsafe fn draw_marker_text() {
     if text.len() <= 1 {
         return;
     }
-    let manager: *mut u8 = read(MEDIA_RES);
-    if manager.is_null() {
+    let Some(font) = hud_font(MARKER_FONT) else {
         return;
-    }
-    let get_font: GetFontFn = std::mem::transmute(GET_FONT);
-    let font = get_font(manager, MARKER_FONT.as_ptr());
-    if font.is_null() {
-        return;
-    }
+    };
     let base = font as usize;
     let (old_scale, old_color, old_blend): (f32, u32, i32) = (
         read(base + 0x100c),
@@ -1945,10 +1966,7 @@ pub(super) unsafe fn hide(why: &str) {
     let mut hidden = 0;
     for (i, name) in TOGGLE_NAMES.iter().enumerate() {
         let gui = TOGGLE_GUIS[i].load(Ordering::Relaxed);
-        if scan.elements.contains(&gui)
-            && cstr(gui + GUI_NAME).as_bytes() == &name[..name.len() - 1]
-            && read::<i32>(gui + OFF_ACTIVE) == 2
-        {
+        if listed_shown(&scan.elements, gui, name) {
             set_gui_active(gui, false);
             hidden += 1;
         }
@@ -1975,20 +1993,20 @@ unsafe fn inspect_gui(trigger: &str) {
         if node == 0 || node == head {
             break;
         }
-        let e: usize = read(node + 0x10);
-        if e != 0 && read::<i32>(e + OFF_ACTIVE) != 0 {
+        let element: usize = read(node + 0x10);
+        if element != 0 && read::<i32>(element + OFF_ACTIVE) != 0 {
             lines.push(format!(
                 "{}[{}] act={} pos=({:.0},{:.0}) size={:.0}x{:.0} vt={:#x} c00={} link={:#x}",
-                cstr(e + GUI_NAME),
-                cstr(e + 8),
-                read::<i32>(e + OFF_ACTIVE),
-                read::<f32>(e + offset_of!(Body, position_x)),
-                read::<f32>(e + offset_of!(Body, position_y)),
-                read::<f32>(e + 0x218),
-                read::<f32>(e + 0x21c),
-                read::<usize>(e).wrapping_sub(IMAGE_BASE),
-                read::<i32>(e + offset_of!(Gui, gui_i1)),
-                read::<usize>(e + GUI_LINK_TARGET),
+                cstr(element + GUI_NAME),
+                cstr(element + 8),
+                read::<i32>(element + OFF_ACTIVE),
+                read::<f32>(element + offset_of!(Body, position_x)),
+                read::<f32>(element + offset_of!(Body, position_y)),
+                read::<f32>(element + 0x218),
+                read::<f32>(element + 0x21c),
+                read::<usize>(element).wrapping_sub(IMAGE_BASE),
+                read::<i32>(element + offset_of!(Gui, gui_i1)),
+                read::<usize>(element + GUI_LINK_TARGET),
             ));
         }
         node = read(node);
@@ -2071,10 +2089,10 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
                     set_gui_active(gui, false);
                 }
                 if let Ok(mut labels) = PLANE_LABELS.lock() {
-                    if let Some(l) = labels.iter_mut().find(|l| l.0 == slot) {
+                    if let Some(label) = labels.iter_mut().find(|label| label.slot == slot) {
                         let mut bytes = plane_loadouts::label_for(craft, next).into_bytes();
                         bytes.push(0);
-                        l.4 = bytes;
+                        label.text = bytes;
                     }
                 }
                 toggle_line(format!(

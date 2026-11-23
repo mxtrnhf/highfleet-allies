@@ -14,7 +14,7 @@ use patchy::{PatchSession, ProcessModule, ReturnType, Trampoline};
 
 use crate::diag;
 use crate::native::{
-    count, read, CLOCK, CONTROLLED_LINK, CREATURES_BEGIN, CREATURES_END, IMAGE_BASE,
+    count, read, CLOCK, CONTROLLED_LINK, CREATURES_BEGIN, CREATURES_END, IMAGE_BASE, LINK_STRIDE,
     OFF_AGGRESSION, OFF_AI_FLAG, OFF_MODE, OFF_SIDE, OFF_STATE, OFF_TARGET, SCENE_FLAGS,
     SCENE_SELECTOR,
 };
@@ -31,6 +31,8 @@ const SPAWN_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74
 /// The pending level name, a game `std::string` (MSVC layout: buffer or pointer at +0, size at
 /// +0x10, capacity at +0x18); written by the level loader `0x14025afd0` through `CopyString`.
 const LEVEL_NAME: usize = 0x1_403c_1390;
+const LEVEL_NAME_INLINE_CAPACITY: usize = 0xf;
+const LEVEL_NAME_LOG_LIMIT: usize = 64;
 
 /// Vector of creatures the AI task runs (same entry layout): begin / end.
 const AI_BEGIN: usize = 0x1_43fa_a608;
@@ -151,13 +153,19 @@ pub(crate) unsafe fn scene() -> String {
 }
 
 /// The pending level name, read defensively.
+///
+/// # Safety
+/// Call on the game thread while the native string is initialized and not being changed.
+/// A non-inline buffer must remain alive and readable for the reported size; the bounds below
+/// limit the borrow but do not establish mapping or lifetime.
 unsafe fn level_name() -> String {
     let capacity: usize = read(LEVEL_NAME + 0x18);
     let size: usize = read(LEVEL_NAME + 0x10);
-    if size == 0 || size > capacity || size > 64 {
+    if size == 0 || size > capacity || size > LEVEL_NAME_LOG_LIMIT {
         return String::from("?");
     }
-    let data = if capacity > 0xf {
+
+    let data = if capacity > LEVEL_NAME_INLINE_CAPACITY {
         read::<usize>(LEVEL_NAME)
     } else {
         LEVEL_NAME
@@ -165,6 +173,7 @@ unsafe fn level_name() -> String {
     if data == 0 {
         return String::from("?");
     }
+    // SAFETY: The buffer stays borrowed only until the name has been copied for the log.
     String::from_utf8_lossy(std::slice::from_raw_parts(data as *const u8, size)).into_owned()
 }
 
@@ -251,19 +260,21 @@ unsafe extern "C" fn on_creature(creature: *const u8, removing: u8) {
         return;
     }
     let base = creature as usize;
-    let sig = (
+
+    let signature = (
         base,
         removing,
         read::<f32>(base + OFF_SIDE).to_bits(),
         read::<f32>(base + OFF_AGGRESSION).to_bits(),
-        count(CREATURES_BEGIN, CREATURES_END, 0x18),
+        count(CREATURES_BEGIN, CREATURES_END, LINK_STRIDE),
     );
     if let Ok(mut last) = LAST_SIG.lock() {
-        if (last.0, last.1, last.2, last.3, last.4) == sig {
+        if *last == signature {
             return; // the same creature added again with nothing changed: not worth a line
         }
-        *last = sig;
+        *last = signature;
     }
+
     let Some(level) = next_line() else { return };
     let controlled: usize = read(CONTROLLED_LINK + 8);
     log::info!(
@@ -282,8 +293,8 @@ unsafe extern "C" fn on_creature(creature: *const u8, removing: u8) {
         read::<i32>(base + OFF_ORDER),
         read::<usize>(base + OFF_TARGET),
         controlled == base,
-        count(CREATURES_BEGIN, CREATURES_END, 0x18),
-        count(AI_BEGIN, AI_END, 0x18),
+        count(CREATURES_BEGIN, CREATURES_END, LINK_STRIDE),
+        count(AI_BEGIN, AI_END, LINK_STRIDE),
         count(NEG_BEGIN, NEG_END, 8),
         count(ZERO_BEGIN, ZERO_END, 8),
         count(POS_BEGIN, POS_END, 8),

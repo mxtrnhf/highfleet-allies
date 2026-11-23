@@ -43,9 +43,10 @@ const ENG_SUFFIX: &[u8] = b"_eng";
 static RADIO_SOUNDS: AtomicBool = AtomicBool::new(false);
 /// Pre-combat ALLY and plane-loadout button clicks (independent of `ally_sounds`).
 static BUTTON_SOUNDS: AtomicBool = AtomicBool::new(false);
-/// The game keeps the pointer it is given (sound object +0x88) and, every frame, multiplies the sound's volume by
-/// the float behind it (the stock radio stores the call's result, 1.0, there): 1.0f here, or the sound is silent.
-static SFX_STATUS: [AtomicU32; 8] = [const { AtomicU32::new(0x3f80_0000) }; 8];
+const UNIT_VOLUME_BITS: u32 = 1.0f32.to_bits();
+/// The game retains the status pointer (sound object +0x88) and uses its float as a
+/// volume multiplier each frame. The slots must outlive the native call.
+static SFX_STATUS: [AtomicU32; 8] = [const { AtomicU32::new(UNIT_VOLUME_BITS) }; 8];
 static SFX_NEXT: AtomicU32 = AtomicU32::new(0);
 
 const SND_DANGER: &[u8] = b"mission_danger_01\0";
@@ -71,14 +72,14 @@ const BUTTON_VOLUME: f32 = 30.0;
 /// Reads the fixed `PLAY_SFX` code address; callers must be on the game process after the module is loaded.
 pub(crate) unsafe fn verify() -> bool {
     let found = std::slice::from_raw_parts(PLAY_SFX as *const u8, PLAY_SFX_PROLOGUE.len());
-    if found == PLAY_SFX_PROLOGUE {
-        true
-    } else {
+    if found != PLAY_SFX_PROLOGUE {
         log::warn!(
             "hf_ally: playSFXSound_ bytes differ ({found:02x?}), ally and button sounds off"
         );
-        false
+        return false;
     }
+
+    true
 }
 
 /// Applies the verified runtime switches: ally radio lines follow `ally_sounds`; button clicks are
@@ -89,14 +90,20 @@ pub(crate) fn configure(radio: bool, buttons: bool) {
 }
 
 /// Plays one sound by its `sound.res` name (NUL-terminated); `what` is for the log.
+///
+/// # Safety
+/// Call on the game thread after [`verify`] accepts the supported image, while its GUI root
+/// remains live. `name` must contain one NUL-terminated resource name.
 unsafe fn play_sfx(name: &[u8], volume: f32, what: &str) {
     let node: usize = read(GUI_ROOT);
     if node == 0 {
         log::info!("ALLY sound ({what}) skipped: no global node yet");
         return;
     }
-    let slot = &SFX_STATUS[SFX_NEXT.fetch_add(1, Ordering::Relaxed) as usize % SFX_STATUS.len()];
-    slot.store(0x3f80_0000, Ordering::Relaxed);
+
+    let slot_index = SFX_NEXT.fetch_add(1, Ordering::Relaxed) as usize % SFX_STATUS.len();
+    let slot = &SFX_STATUS[slot_index];
+    slot.store(UNIT_VOLUME_BITS, Ordering::Relaxed);
     let play: PlaySfxFn = std::mem::transmute(PLAY_SFX);
     let result = play(
         SFX_KIND_STOCK,
@@ -113,6 +120,7 @@ unsafe fn play_sfx(name: &[u8], volume: f32, what: &str) {
         0.0,
         1,
     );
+
     log::info!(
         "ALLY sound ({what}) {} -> {result}",
         String::from_utf8_lossy(&name[..name.len() - 1])

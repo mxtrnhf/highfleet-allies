@@ -128,8 +128,11 @@ const RENDER_BODY_LAYERS: usize = 0x3c;
 const RENDER_BODY_LIMIT: usize = 40_000;
 const RENDER_BODY_STRIDE: usize = 0x18;
 
-const PANEL_WIDTH: f32 = 350.0;
-const PANEL_HEIGHT: f32 = 300.0;
+// Texture allocation takes whole pixels; the sprite constructor takes the same size as floats.
+const PANEL_PIXEL_WIDTH: u32 = 350;
+const PANEL_PIXEL_HEIGHT: u32 = 300;
+const PANEL_WIDTH: f32 = PANEL_PIXEL_WIDTH as f32;
+const PANEL_HEIGHT: f32 = PANEL_PIXEL_HEIGHT as f32;
 /// Half width and half height = a quarter of the panel area.
 const ALLY_SCALE: f32 = 0.5;
 /// Panels sit immediately right of the player's own panel, in a column from `H - 300`.
@@ -146,8 +149,7 @@ type LayerZFn = unsafe extern "win64" fn(u32) -> f32;
 type CreateTextureFn = unsafe extern "win64" fn(usize, u32, u32, u32, u32) -> usize;
 type CreateDepthFn = unsafe extern "win64" fn(usize, u32, u32) -> usize;
 type AllocFn = unsafe extern "win64" fn(u32) -> usize;
-type SpriteCtorFn =
-    unsafe extern "win64" fn(usize, usize, f32, f32, f32, f32, f32, f32, f32, f32);
+type SpriteCtorFn = unsafe extern "win64" fn(usize, usize, f32, f32, f32, f32, f32, f32, f32, f32);
 type InheritedStageFn = unsafe extern "C" fn(usize, i32) -> i32;
 
 #[derive(Clone, Copy)]
@@ -172,28 +174,34 @@ unsafe fn rd<T: Copy>(address: usize) -> T {
 unsafe fn living_allies() -> [usize; MAX_PANELS] {
     let mut slots = [0usize; MAX_PANELS];
     let roster = crate::native::roster();
-    let Some(allies) = crate::battle::allies() else { return slots };
+    let Some(allies) = crate::battle::allies() else {
+        return slots;
+    };
     let mut used = 0;
+
     // A second human player's ship (profile slot 1), when there is one, takes the first small
     // panel; the allies follow. Without a second player `ship()` is None and nothing changes.
     if let Some(second) = crate::second_player::ship() {
         slots[0] = second;
         used = 1;
     }
+
     for &ally in allies.iter() {
         if used == MAX_PANELS {
             break;
         }
-        // side > 0 keeps this to the player's own ships; mode 1 is the ship the player flies.
-        // State 2 is the AI strike/retreat state; its ship is leaving and must not keep a panel.
-        // `slots.contains` keeps the second player's ship from taking a second panel.
-        if slots.contains(&ally)
-            || !roster.contains(&ally)
-            || !crate::native::live_ship(ally)
-            || rd::<f32>(ally + crate::native::OFF_SIDE) <= 0.0
+        // `slots.contains` keeps the second player's ship from taking a second panel
+        if slots.contains(&ally) || !roster.contains(&ally) || !crate::native::live_ship(ally) {
+            continue;
+        }
+        // side > 0 keeps this to the player's own ships; mode 1 is the ship the player flies
+        if rd::<f32>(ally + crate::native::OFF_SIDE) <= 0.0
             || rd::<i32>(ally + crate::native::OFF_MODE_D70) == 1
-            || !matches!(rd::<i32>(ally + crate::native::OFF_STATE), 0 | 1)
         {
+            continue;
+        }
+        // State 2 is the AI strike/retreat state; its ship is leaving and must not keep a panel.
+        if !matches!(rd::<i32>(ally + crate::native::OFF_STATE), 0 | 1) {
             continue;
         }
         slots[used] = ally;
@@ -245,7 +253,9 @@ unsafe fn ensure_panels() -> bool {
     if PANEL_CREATE_FAILED.load(Ordering::Relaxed) {
         return false;
     }
-    let Ok(mut panels) = PANELS.lock() else { return false };
+    let Ok(mut panels) = PANELS.lock() else {
+        return false;
+    };
     if panels[0].is_some() {
         return true;
     }
@@ -261,8 +271,14 @@ unsafe fn ensure_panels() -> bool {
     let ctor: SpriteCtorFn = std::mem::transmute(SPRITE_CTOR);
 
     for slot in 0..MAX_PANELS {
-        let surface_a = create(engine, 350, 300, TEXTURE_FORMAT, RENDER_TARGET);
-        let surface_b = create_depth(engine, 350, 300);
+        let surface_a = create(
+            engine,
+            PANEL_PIXEL_WIDTH,
+            PANEL_PIXEL_HEIGHT,
+            TEXTURE_FORMAT,
+            RENDER_TARGET,
+        );
+        let surface_b = create_depth(engine, PANEL_PIXEL_WIDTH, PANEL_PIXEL_HEIGHT);
         let object = alloc(SPRITE_SIZE);
         if surface_a == 0 || surface_b == 0 || object == 0 {
             PANEL_CREATE_FAILED.store(true, Ordering::Relaxed);
@@ -271,8 +287,24 @@ unsafe fn ensure_panels() -> bool {
             );
             return false;
         }
-        ctor(object, surface_a, 0.0, 0.0, 350.0, 300.0, 0.0, 0.0, 0.0, 0.0);
-        panels[slot] = Some(NativePanel { surface_a, surface_b, sprite: object, rendered_ship: 0 });
+        ctor(
+            object,
+            surface_a,
+            0.0,
+            0.0,
+            PANEL_WIDTH,
+            PANEL_HEIGHT,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        );
+        panels[slot] = Some(NativePanel {
+            surface_a,
+            surface_b,
+            sprite: object,
+            rendered_ship: 0,
+        });
     }
     log::info!("hf_ally: ally ship panel targets created");
     true
@@ -302,7 +334,8 @@ struct PanelParts {
 unsafe fn collect_panel_parts(allies: &[usize; MAX_PANELS]) -> [PanelParts; MAX_PANELS] {
     let mut panels: [PanelParts; MAX_PANELS] = std::array::from_fn(|_| PanelParts::default());
     let mut owners = HashMap::new();
-    let mut panel_slot = |part: usize| -> Option<usize> {
+    // The slot of the ally that owns `part`, or None for a part of another ship.
+    let mut slot_of_part = |part: usize| -> Option<usize> {
         if !crate::native::plausible(part) {
             return None;
         }
@@ -329,7 +362,7 @@ unsafe fn collect_panel_parts(allies: &[usize; MAX_PANELS]) -> [PanelParts; MAX_
                 continue;
             }
             let part = rd::<usize>(marker + HUD_MARKER_OWNER);
-            let Some(slot) = panel_slot(part) else {
+            let Some(slot) = slot_of_part(part) else {
                 continue;
             };
             let part_index = rd::<i32>(marker + HUD_MARKER_INDEX);
@@ -350,7 +383,7 @@ unsafe fn collect_panel_parts(allies: &[usize; MAX_PANELS]) -> [PanelParts; MAX_
         let base = RENDER_BODY_GRID + layer * RENDER_BODY_LIMIT * RENDER_BODY_STRIDE;
         for index in 0..count as usize {
             let part = rd::<usize>(base + index * RENDER_BODY_STRIDE);
-            let Some(slot) = panel_slot(part) else {
+            let Some(slot) = slot_of_part(part) else {
                 continue;
             };
             if panels[slot].body_set.insert(part) {
@@ -368,12 +401,14 @@ unsafe fn collect_panel_parts(allies: &[usize; MAX_PANELS]) -> [PanelParts; MAX_
             continue;
         }
         let bytes = end - begin;
-        if !bytes.is_multiple_of(crate::native::LINK_STRIDE) || bytes / crate::native::LINK_STRIDE > PART_LIST_LIMIT {
+        if !bytes.is_multiple_of(crate::native::LINK_STRIDE)
+            || bytes / crate::native::LINK_STRIDE > PART_LIST_LIMIT
+        {
             continue;
         }
         for entry in (begin..end).step_by(crate::native::LINK_STRIDE) {
             let part = rd::<usize>(entry + offset_of!(Link, target));
-            if panel_slot(part) == Some(slot) && panels[slot].body_set.insert(part) {
+            if slot_of_part(part) == Some(slot) && panels[slot].body_set.insert(part) {
                 panels[slot].bodies.push(part);
             }
         }
@@ -404,7 +439,11 @@ unsafe fn sprite_marker_layers(
     let top = (sprite_stage + base).clamp(0, HUD_MARKER_LAYER_MAX);
     let mut layer = top;
     if rd::<u8>(sprite + OFF_SPRITE_FLAGS) & 1 != 0 {
-        let range_start = if base > HUD_MARKER_DEEP_LAYER { HUD_MARKER_DEEP_START } else { 0 };
+        let range_start = if base > HUD_MARKER_DEEP_LAYER {
+            HUD_MARKER_DEEP_START
+        } else {
+            0
+        };
         let bottom = sprite_stage - floor * 4 + base;
         layer = if bottom >= range_start {
             bottom.min(HUD_MARKER_LAYER_MAX)
@@ -483,7 +522,7 @@ unsafe fn insert_layer_markers(ally: usize, parts: &PanelParts) -> Option<Tempor
             continue;
         }
         let stage = inherited_stage(part);
-        let mut used = false;
+        let mut part_has_records = false;
         for index in 0..sprite_bytes / 8 {
             if parts.existing_markers.contains(&(part, index)) {
                 continue;
@@ -500,10 +539,10 @@ unsafe fn insert_layer_markers(ally: usize, parts: &PanelParts) -> Option<Tempor
             }
             for (layer, scale) in sprite_marker_layers(part, sprite, stage) {
                 per_layer[layer].push(marker_record(part, index, scale));
-                used = true;
+                part_has_records = true;
             }
         }
-        if used {
+        if part_has_records {
             parts_used += 1;
         }
     }
@@ -531,7 +570,11 @@ unsafe fn insert_layer_markers(ally: usize, parts: &PanelParts) -> Option<Tempor
         let base = HUD_MARKERS + layer * HUD_MARKER_LIMIT * HUD_MARKER_STRIDE;
         for (offset, record) in records.iter().enumerate() {
             let destination = base + (count + offset) * HUD_MARKER_STRIDE;
-            std::ptr::copy_nonoverlapping(record.as_ptr(), destination as *mut u8, HUD_MARKER_STRIDE);
+            std::ptr::copy_nonoverlapping(
+                record.as_ptr(),
+                destination as *mut u8,
+                HUD_MARKER_STRIDE,
+            );
         }
         (HUD_MARKER_COUNTS as *mut i32)
             .byte_add(layer * 4)
@@ -558,7 +601,9 @@ unsafe fn insert_layer_markers(ally: usize, parts: &PanelParts) -> Option<Tempor
 /// Hide the temporary part markers again; the native panel has already consumed them.
 unsafe fn restore_temporary_markers(temporary: TemporaryMarkers) {
     for (layer, count) in temporary.layers {
-        (HUD_MARKER_COUNTS as *mut i32).byte_add(layer * 4).write_unaligned(count);
+        (HUD_MARKER_COUNTS as *mut i32)
+            .byte_add(layer * 4)
+            .write_unaligned(count);
     }
 }
 
@@ -573,11 +618,15 @@ unsafe extern "C" fn render_allies() {
     if allies[0] == 0 {
         return;
     }
-    let Some(player) = player_creature() else { return };
+    let Some(player) = player_creature() else {
+        return;
+    };
     if !ensure_panels() {
         return;
     }
-    let Ok(mut panels) = PANELS.lock() else { return };
+    let Ok(mut panels) = PANELS.lock() else {
+        return;
+    };
 
     let panel: PanelFn = std::mem::transmute(PANEL);
     let set_link: crate::native::SetLinkFn = std::mem::transmute(crate::native::SET_LINK);
@@ -591,7 +640,9 @@ unsafe extern "C" fn render_allies() {
         if ally == 0 {
             break;
         }
-        let Some(native) = panels[slot].as_mut() else { continue };
+        let Some(native) = panels[slot].as_mut() else {
+            continue;
+        };
         // Use the native link operation: a raw +0xb00 write leaves the link registered on the old
         // target's link list and its saved id stale.
         let temporary = insert_layer_markers(ally, &parts[slot]);
@@ -616,7 +667,9 @@ unsafe extern "C" fn render_allies() {
 /// Composite the targets prepared last frame, where the stock panel sprites are drawn.
 unsafe extern "C" fn composite_allies() {
     // A hidden HUD must not leave keyboard-selectable panels from a previous frame.
-    let Ok(mut displayed) = DISPLAYED_SHIPS.lock() else { return };
+    let Ok(mut displayed) = DISPLAYED_SHIPS.lock() else {
+        return;
+    };
     *displayed = [0; MAX_PANELS];
     if rd::<u8>(HUD_ENABLED) == 0
         || rd::<usize>(PANEL_SUPPRESSED) != 0
@@ -628,7 +681,11 @@ unsafe extern "C" fn composite_allies() {
     let Ok(panels) = PANELS.lock() else { return };
 
     let frame_height = rd::<i32>(FRAME_HEIGHT);
-    let frame_height = if frame_height > 0 { frame_height as f32 } else { 1080.0 };
+    let frame_height = if frame_height > 0 {
+        frame_height as f32
+    } else {
+        1080.0
+    };
     let layer_z: LayerZFn = std::mem::transmute(LAYER_Z);
     let set_z: SetZFn = std::mem::transmute(SET_SPRITE_Z);
     let set_color: SetColorFn = std::mem::transmute(SET_SPRITE_COLOR);
@@ -645,7 +702,9 @@ unsafe extern "C" fn composite_allies() {
         let y = frame_height - PANEL_HEIGHT + slot as f32 * ALLY_SLOT_STEP;
         set_color(sprite, 0xffff_ffff, -1);
         set_z(sprite, layer_z(3), -1);
-        (sprite as *mut u32).byte_add(SPRITE_BLEND).write_unaligned(BLEND_PANEL);
+        (sprite as *mut u32)
+            .byte_add(SPRITE_BLEND)
+            .write_unaligned(BLEND_PANEL);
         render(sprite, ALLY_X, y, 0.0, ALLY_SCALE, ALLY_SCALE);
         if !crate::second_player::is_player_flown(ally) {
             displayed[slot] = ally;
@@ -669,7 +728,9 @@ pub unsafe fn install(session: &mut PatchSession) {
     render_trampoline.preserved_call(render_allies as *const (), &[], &[], ReturnType::None);
     render_trampoline.absolute_call(PANEL as *const ());
     render_trampoline.relative_jump(RENDER_RESUME);
-    if let Err(error) = session.detour_trampoline(RENDER_SITE, RENDER_SITE_BYTES.len(), render_trampoline) {
+    if let Err(error) =
+        session.detour_trampoline(RENDER_SITE, RENDER_SITE_BYTES.len(), render_trampoline)
+    {
         log::warn!("hf_ally: ally ship panel render hook failed: {error}");
         return;
     }

@@ -65,7 +65,10 @@ pub unsafe fn install_dead_node_hooks(session: &mut PatchSession) -> Result<(), 
 
 unsafe extern "C" fn on_dead_node(node: usize) {
     let _ = std::panic::catch_unwind(|| {
-        if plausible(node) && rd::<usize>(node + offset_of!(Node, master) + offset_of!(Link, target)).unwrap_or(0) != 0 {
+        if plausible(node)
+            && rd::<usize>(node + offset_of!(Node, master) + offset_of!(Link, target)).unwrap_or(0)
+                != 0
+        {
             report_dead(
                 "node",
                 node,

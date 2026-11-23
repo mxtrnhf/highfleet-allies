@@ -41,6 +41,9 @@ const OFF_WAYPOINT_Y: usize = offset_of!(Creature, waypoint_y);
 static TRACK_ALLY: AtomicUsize = AtomicUsize::new(0);
 static TRACK_NEXT: AtomicU64 = AtomicU64::new(0);
 static TRACK_END: AtomicU64 = AtomicU64::new(0);
+/// Length of the `ALLY track` window and the spacing of its lines, in game seconds.
+const TRACK_WINDOW_S: f64 = 60.0;
+const TRACK_LINE_INTERVAL_S: f64 = 1.0;
 
 /// Per-ship activity counters for the ally/enemy comparison.
 #[derive(Default)]
@@ -95,29 +98,32 @@ pub(crate) fn reset() {
 pub(crate) unsafe fn start_tracking(ally: usize) {
     TRACK_ALLY.store(ally, Ordering::Relaxed);
     TRACK_NEXT.store(0, Ordering::Relaxed);
-    TRACK_END.store((read::<f64>(CLOCK) + 60.0).to_bits(), Ordering::Relaxed);
+    TRACK_END.store(
+        (read::<f64>(CLOCK) + TRACK_WINDOW_S).to_bits(),
+        Ordering::Relaxed,
+    );
 }
 
 /// (entries, sum of loaded rounds, sum of reserve rounds, entries off cooldown) of a part list.
 unsafe fn part_list(ship: usize, list: (usize, usize)) -> (usize, f32, i64, usize) {
-    let (b, e): (usize, usize) = (read(ship + list.0), read(ship + list.1));
-    if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
+    let (begin, end): (usize, usize) = (read(ship + list.0), read(ship + list.1));
+    if begin < 0x10000 || end < begin || (end - begin) / LINK_STRIDE > SHIP_LIST_LIMIT {
         return (0, 0.0, 0, 0);
     }
-    let (mut n, mut loaded, mut reserve, mut ready) = (0, 0.0f32, 0i64, 0);
-    for a in (b..e).step_by(LINK_STRIDE) {
-        let part: usize = read(a + 8);
+    let (mut entries, mut loaded, mut reserve, mut ready) = (0, 0.0f32, 0i64, 0);
+    for entry in (begin..end).step_by(LINK_STRIDE) {
+        let part: usize = read(entry + 8);
         if part == 0 {
             continue;
         }
-        n += 1;
+        entries += 1;
         loaded += read::<f32>(part + OFF_PART_LOADED);
         reserve += read::<i32>(part + OFF_PART_RESERVE) as i64;
         if read::<f32>(part + OFF_PART_COOLDOWN) <= 0.0 {
             ready += 1;
         }
     }
-    (n, loaded, reserve, ready)
+    (entries, loaded, reserve, ready)
 }
 
 /// Zenith launcher and gun entry counts, for the `ALLY loadout` line.
@@ -182,12 +188,13 @@ impl Probe {
         } else {
             -1.0
         };
-        let (zn, zl, zr, zready) = part_list(ship, OFF_ZENITH);
-        let (gn, gl, gr, gready) = part_list(ship, OFF_GUNS);
+        let (zenith_parts, zenith_loaded, zenith_reserve, zenith_ready) =
+            part_list(ship, OFF_ZENITH);
+        let (gun_parts, gun_loaded, gun_reserve, gun_ready) = part_list(ship, OFF_GUNS);
         let flags: [u8; 5] = read(ship + OFF_FLAGS);
         format!(
             "ALLY probe {tag} t={:.0} c={ship:#x} pos=({:.0},{:.0}) speed={speed:.0} state={} mode={} target={target:#x} target_dist={target_dist:.0} aggr={:.2} retarget={:.1} \
-             flags={flags:?} d60={:.1} launch_cnt={} | zenith n={zn} loaded={zl:.0} reserve={zr} ready={zready} launches={} | guns n={gn} loaded={gl:.0} reserve={gr} ready={gready} shots={}",
+             flags={flags:?} d60={:.1} launch_cnt={} | zenith n={zenith_parts} loaded={zenith_loaded:.0} reserve={zenith_reserve} ready={zenith_ready} launches={} | guns n={gun_parts} loaded={gun_loaded:.0} reserve={gun_reserve} ready={gun_ready} shots={}",
             now - self.t0,
             pos.0,
             pos.1,
@@ -272,12 +279,19 @@ unsafe fn nearest_enemy(from: usize, creatures: &ProbeCreatures) -> usize {
     let (fx, fy) = (read::<f32>(from + OFF_POS_X), read::<f32>(from + OFF_POS_Y));
     let mut best = (usize::MAX as f32, 0usize);
     for p in creatures.iter() {
-        if !plausible(p)
-            || !diag::rd::<u8>(p + OFF_CODE).is_some_and(|class| class & 0x2f == 0x2f)
-            || !diag::rd::<i32>(p + OFF_ACTIVE).is_some_and(|active| active != 0)
-            || !diag::rd::<i32>(p + OFF_STATE).is_some_and(|state| !matches!(state, 6 | 7))
-            || !diag::rd::<f32>(p + OFF_SIDE).is_some_and(|side| side < 0.0)
-        {
+        if !plausible(p) {
+            continue;
+        }
+        if !diag::rd::<u8>(p + OFF_CODE).is_some_and(|class| class & 0x2f == 0x2f) {
+            continue;
+        }
+        if !diag::rd::<i32>(p + OFF_ACTIVE).is_some_and(|active| active != 0) {
+            continue;
+        }
+        if !diag::rd::<i32>(p + OFF_STATE).is_some_and(|state| !matches!(state, 6 | 7)) {
+            continue;
+        }
+        if !diag::rd::<f32>(p + OFF_SIDE).is_some_and(|side| side < 0.0) {
             continue;
         }
         let d =
@@ -325,6 +339,8 @@ pub(crate) unsafe fn tick(ships: &[usize]) {
             let enemy = nearest_enemy(ally, &creatures);
             e.reset(enemy, now);
         }
+
+        // Sample every frame, but only emit the probe lines once per interval.
         a.count();
         e.count();
         if now >= f64::from_bits(TRACK_NEXT.load(Ordering::Relaxed)) {
@@ -337,7 +353,7 @@ pub(crate) unsafe fn tick(ships: &[usize]) {
     if now < f64::from_bits(TRACK_NEXT.load(Ordering::Relaxed)) {
         return;
     }
-    TRACK_NEXT.store((now + 1.0).to_bits(), Ordering::Relaxed);
+    TRACK_NEXT.store((now + TRACK_LINE_INTERVAL_S).to_bits(), Ordering::Relaxed);
     let player = ships
         .iter()
         .copied()

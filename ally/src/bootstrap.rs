@@ -34,19 +34,22 @@ pub(crate) unsafe fn version(version: *const c_char) -> bool {
 /// No game callbacks may run concurrently with native byte verification and permanent patching.
 pub(crate) unsafe fn init() -> bool {
     let path = crate::config::PATH;
-    let config: Config = crate::config::load();
-    let supported = GAME_IS_STEAM_1_163.load(Ordering::Relaxed);
-    let image_ok = GetModuleHandleA(std::ptr::null()) as usize == IMAGE_BASE;
-    // debug_log is the runtime switch; set it before install so the legacy cargo feature cannot force it
-    diag::set_debug(supported && image_ok && config.enabled && config.logging.debug_log);
-    // the first line of this mod in every log: testers must be able to show which build they run
+    let config = crate::config::load();
+    let supported_version = GAME_IS_STEAM_1_163.load(Ordering::Relaxed);
+    let expected_image_base = GetModuleHandleA(std::ptr::null()) as usize == IMAGE_BASE;
+
+    // Always announce the build first, including on startup paths that install no gameplay hooks.
+    let debug_enabled =
+        supported_version && expected_image_base && config.enabled && config.logging.debug_log;
+    diag::set_debug(debug_enabled);
     log::info!("{}", diag::banner());
     diag::install();
-    if !supported {
+
+    if !supported_version {
         log::error!("hf_ally: needs Steam 1.163, not starting");
         return false;
     }
-    if !image_ok {
+    if !expected_image_base {
         log::error!("hf_ally: unexpected image base, not starting");
         return false;
     }
@@ -59,6 +62,7 @@ pub(crate) unsafe fn init() -> bool {
             "hf_ally: debug_log on: megalog, watchdog and crash dump (large files, see ally.json)"
         );
     }
+
     precombat::configure_marker(&config.marker_text);
     ally_ammo::set_enabled(config.ally_ai_ammo);
     missile_guard::set_autofire(config.ally_zenith_autofire);
@@ -107,6 +111,7 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     shipworks::install(&mut session, config.crash_button)?;
     ally_ammo::install_refund(&mut session, config.ally_ai_ammo)?;
     battle::install_prize_guard(&mut session, config.spare_prizes)?;
+
     let guard_missiles = config.ally_bombers || !config.ally_zenith_autofire;
     if guard_missiles {
         missile_guard::install(&mut session)?;
@@ -114,36 +119,17 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     if config.ally_bombers {
         bomber::install(&mut session)?;
     }
-    // the filter applies to every AI ship, the enemy's included
+    // The filter applies to AI ships on either side.
     if let Err(error) = intercept::install(&mut session, &config.intercept_ignore_oids) {
         log::warn!("hf_ally: {error}");
     }
     enemy_waves::install(&mut session, config.enemy_group_size);
-    if config.plane_loadouts {
-        match plane_loadouts::install(&mut session) {
-            Ok(()) => {
-                precombat::set_plane_buttons(true);
-                plane_loadouts::install_aa(&mut session);
-                plane_loadouts::install_no_rocket_draw(&mut session);
-                plane_loadouts::install_test_stock(&mut session);
-                plane_loadouts::install_aa_limits(
-                    &mut session,
-                    config.plane_aa_range,
-                    config.plane_aa_angle,
-                );
-                plane_loadouts::AA_DELAY_S.store(
-                    config.plane_aa_delay.clamp(0.0, 60.0).to_bits(),
-                    Ordering::Relaxed,
-                );
-                plane_loadouts::AA_SPEED.store(config.plane_aa_speed.to_bits(), Ordering::Relaxed);
-            }
-            Err(error) => log::warn!("hf_ally: {error}"),
-        }
-    }
+    prepare_plane_loadouts(&mut session, config);
     plane_loadouts::ATTACK_DELAY_S.store(
         config.plane_attack_delay.clamp(0.0, 120.0).to_bits(),
         Ordering::Relaxed,
     );
+
     let ally_damage_color = match parse_hex_color(&config.ally_damage_color) {
         Some(color) => color,
         None => {
@@ -170,10 +156,11 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
     }
     plane_loadouts::EXTRA_GUNPOD.store(config.extra_gunpod, Ordering::Relaxed);
     plane_loadouts::K13_ON.store(config.plane_k13, Ordering::Relaxed);
+
     // Wingman deployment and battle-manager hooks; always installed when the mod is enabled.
-    let battle = battle::verify_battle_hooks(&module)?;
+    let battle_hooks = battle::verify_battle_hooks(&module)?;
     ship_switch::configure(config.ship_switching)?;
-    battle::install_battle_hook(&mut session, battle)?;
+    battle::install_battle_hook(&mut session, battle_hooks)?;
     if honor_share::share() > 0.0 {
         honor_share::verify_native()?;
         // SAFETY: the 1.163 site bytes were just checked; this is mod initialization.
@@ -184,4 +171,30 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
         );
     }
     session.install_permanently().map_err(|e| e.to_string())
+}
+
+/// Stages the optional plane-loadout hooks. The buttons and supplemental hooks require
+/// the main loadout installer to succeed, but its failure does not abort mod startup.
+///
+/// # Safety
+/// Use the same serialized, verified Steam 1.163 initialization as [`prepare`].
+unsafe fn prepare_plane_loadouts(session: &mut PatchSession, config: &Config) {
+    if !config.plane_loadouts {
+        return;
+    }
+    if let Err(error) = plane_loadouts::install(session) {
+        log::warn!("hf_ally: {error}");
+        return;
+    }
+
+    precombat::set_plane_buttons(true);
+    plane_loadouts::install_aa(session);
+    plane_loadouts::install_no_rocket_draw(session);
+    plane_loadouts::install_test_stock(session);
+    plane_loadouts::install_aa_limits(session, config.plane_aa_range, config.plane_aa_angle);
+    plane_loadouts::AA_DELAY_S.store(
+        config.plane_aa_delay.clamp(0.0, 60.0).to_bits(),
+        Ordering::Relaxed,
+    );
+    plane_loadouts::AA_SPEED.store(config.plane_aa_speed.to_bits(), Ordering::Relaxed);
 }

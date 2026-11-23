@@ -16,10 +16,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use patchy::{PatchSession, ReturnType, Trampoline};
 
-use crate::diag::rd;
-use crate::native_layout::{Creature, Link, Node};
-use crate::native::{plausible, CLOCK};
 use crate::battle;
+use crate::diag::rd;
+use crate::native::{plausible, CLOCK};
+use crate::native_layout::{Creature, Link, Node};
 
 /// `mov [rsp+0x10],rbx` (5 bytes, whole instruction).
 const MISSILE_LAUNCH: usize = 0x1_4002_ff60;
@@ -48,11 +48,13 @@ pub fn set_autofire(allowed: bool) {
 /// roughly once-per-second retries cannot flood the log.
 unsafe fn log_blocked(ship: usize) {
     let Some(now) = rd::<f64>(CLOCK) else { return };
-    let first = !BLOCK_LOGGED.swap(true, Ordering::Relaxed);
+    let first_line = !BLOCK_LOGGED.swap(true, Ordering::Relaxed);
     let last = f64::from_bits(LAST_BLOCK_LOG.load(Ordering::Relaxed));
-    if !first && (!now.is_finite() || now - last < LOG_INTERVAL_S) {
+    // With no usable clock, keep just the first line instead of logging every retry.
+    if !first_line && (!now.is_finite() || now - last < LOG_INTERVAL_S) {
         return;
     }
+
     LAST_BLOCK_LOG.store(now.to_bits(), Ordering::Relaxed);
     log::info!("ALLY zenith: c={ship:#x} AI launch held (ally_zenith_autofire off)");
 }
@@ -103,7 +105,11 @@ pub unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     log::info!(
         "hf_ally: zenith launch guard installed (AI autofire {})",
-        if AUTOFIRE.load(Ordering::Relaxed) { "on" } else { "off" }
+        if AUTOFIRE.load(Ordering::Relaxed) {
+            "on"
+        } else {
+            "off"
+        }
     );
     Ok(())
 }
