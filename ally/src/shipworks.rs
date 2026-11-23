@@ -59,6 +59,8 @@ const ENEMY_STATUS_NAME: &[u8] = b"SW_ENEMY_STAT\0";
 const BUTTON_GAP: f32 = 12.0;
 const ROW_HEIGHT: f32 = 24.0;
 const LIST_WIDTH: f32 = 480.0;
+/// Gap between the button row and the first row of the lists (GUI units).
+const LIST_TOP_GAP: f32 = 24.0;
 const CLICK_DEBOUNCE_MS: u64 = 120;
 /// ARGB; red-dish hue marks the enemy list against the ally list's native colour.
 const ENEMY_TEXT_COLOR: u32 = 0xffff_5050;
@@ -105,6 +107,8 @@ const ENEMY_FLEET_SETUP: [u8; 26] = [
 /// After the level loader's prologue, before it copies the requested path. This avoids the
 /// entry hook used by Map Mode Extended; RCX still holds the path and RSP is 16-byte aligned.
 const LEVEL_SEAM: usize = 0x1_4025_aff4;
+/// Bound on the level path read at the loader seam; a longer name is not one of ours.
+const LEVEL_PATH_LIMIT: usize = 64;
 const LEVEL_BYTES: [u8; 10] = [
     0x41, 0x0f, 0xb6, 0xf8, // MOVZX EDI, R8B
     0x0f, 0xb6, 0xf2, // MOVZX ESI, DL
@@ -131,6 +135,8 @@ const ENEMY_LIST: usize = 0x1_43a1_59c0;
 const LINK_NODE_STRIDE: usize = 0x18;
 const _: () = assert!(LINK_NODE_STRIDE == size_of::<Link>());
 const LINK_TARGET: usize = offset_of!(Link, target);
+/// End-pointer slot of a native `{begin, end, capacity}` vector header.
+const VECTOR_END: usize = 8;
 const LINK_COPY: usize = 0x1_4019_4b80;
 const LINK_COPY_BYTES: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20];
 /// Verified by design::verify; unregisters a Link at its actual storage address.
@@ -394,16 +400,19 @@ pub(crate) unsafe fn tick() {
     if ![x, y, width, height].iter().all(|v| v.is_finite()) || width <= 0.0 || height <= 0.0 {
         return;
     }
+    // The four buttons stand in one row at the template's height, each one button width further right.
+    let button_size = [width, height];
+    let button = |position: [f32; 2]| ControlGeometry {
+        position,
+        dimensions: button_size,
+    };
     show_control(
         ADD_NAME,
         &ADD_GUI,
         &scan.elements,
         template,
         c"ADD",
-        ControlGeometry {
-            position: [x, y],
-            dimensions: [width, height],
-        },
+        button([x, y]),
         BUTTON_STYLE,
     );
     show_control(
@@ -412,10 +421,7 @@ pub(crate) unsafe fn tick() {
         &scan.elements,
         template,
         c"ADD ENEMY",
-        ControlGeometry {
-            position: [x + width + BUTTON_GAP, y],
-            dimensions: [width, height],
-        },
+        button([x + width + BUTTON_GAP, y]),
         BUTTON_STYLE,
     );
     show_control(
@@ -424,10 +430,7 @@ pub(crate) unsafe fn tick() {
         &scan.elements,
         template,
         c"CLEAR",
-        ControlGeometry {
-            position: [x + 2.0 * (width + BUTTON_GAP), y],
-            dimensions: [width, height],
-        },
+        button([x + 2.0 * (width + BUTTON_GAP), y]),
         BUTTON_STYLE,
     );
     if CRASH_BUTTON.load(Ordering::Relaxed) {
@@ -437,27 +440,26 @@ pub(crate) unsafe fn tick() {
             &scan.elements,
             template,
             c"CRASH",
-            ControlGeometry {
-                position: [x + 3.0 * (width + BUTTON_GAP), y],
-                dimensions: [width, height],
-            },
+            button([x + 3.0 * (width + BUTTON_GAP), y]),
             BUTTON_STYLE,
         );
     }
+
+    // One list column below the buttons: ally rows, ally status, enemy rows, enemy status.
     let left = x - width * 0.5;
-    let list_top = y + height * 0.5 + 24.0;
+    let list_top = y + height * 0.5 + LIST_TOP_GAP;
+    let row = |index: usize| ControlGeometry {
+        position: [left, list_top + index as f32 * ROW_HEIGHT],
+        dimensions: [LIST_WIDTH, ROW_HEIGHT],
+    };
     for (index, entry) in state.entries.iter().enumerate() {
-        let position = [left, list_top + index as f32 * ROW_HEIGHT];
         show_control(
             ROW_NAMES[index],
             &ROW_GUIS[index],
             &scan.elements,
             template,
             &entry.name,
-            ControlGeometry {
-                position,
-                dimensions: [LIST_WIDTH, ROW_HEIGHT],
-            },
+            row(index),
             ROW_STYLE,
         );
     }
@@ -466,17 +468,13 @@ pub(crate) unsafe fn tick() {
     }
     let mut next_row = state.entries.len();
     if let Some(status) = &state.status {
-        let position = [left, list_top + next_row as f32 * ROW_HEIGHT];
         show_control(
             STATUS_NAME,
             &STATUS_GUI,
             &scan.elements,
             template,
             status,
-            ControlGeometry {
-                position,
-                dimensions: [LIST_WIDTH, ROW_HEIGHT],
-            },
+            row(next_row),
             ROW_STYLE,
         );
         next_row += 1;
@@ -484,17 +482,13 @@ pub(crate) unsafe fn tick() {
         hide_member(STATUS_GUI.load(Ordering::Relaxed), &scan.elements);
     }
     for (index, entry) in state.enemy_entries.iter().enumerate() {
-        let position = [left, list_top + (next_row + index) as f32 * ROW_HEIGHT];
         show_control(
             ENEMY_ROW_NAMES[index],
             &ENEMY_ROW_GUIS[index],
             &scan.elements,
             template,
             &entry.name,
-            ControlGeometry {
-                position,
-                dimensions: [LIST_WIDTH, ROW_HEIGHT],
-            },
+            row(next_row + index),
             ENEMY_ROW_STYLE,
         );
     }
@@ -503,17 +497,13 @@ pub(crate) unsafe fn tick() {
     }
     next_row += state.enemy_entries.len();
     if let Some(status) = &state.enemy_status {
-        let position = [left, list_top + next_row as f32 * ROW_HEIGHT];
         show_control(
             ENEMY_STATUS_NAME,
             &ENEMY_STATUS_GUI,
             &scan.elements,
             template,
             status,
-            ControlGeometry {
-                position,
-                dimensions: [LIST_WIDTH, ROW_HEIGHT],
-            },
+            row(next_row),
             ENEMY_ROW_STYLE,
         );
     } else {
@@ -565,7 +555,7 @@ unsafe fn create_control(
     style: ControlStyle,
 ) -> *mut u8 {
     let empty = c"";
-    let backgrounds = [
+    let background_names = [
         offset_of!(Gui, backname),
         offset_of!(Gui, backname_focus),
         offset_of!(Gui, backname_use),
@@ -582,9 +572,12 @@ unsafe fn create_control(
     } else {
         Some(c"flash_large_shadow".into())
     };
-    let (Some(back), Some(focus), Some(pressed), Some(font)) =
-        (&backgrounds[0], &backgrounds[1], &backgrounds[2], font)
-    else {
+    let (Some(back), Some(focus), Some(pressed), Some(font)) = (
+        &background_names[0],
+        &background_names[1],
+        &background_names[2],
+        font,
+    ) else {
         return std::ptr::null_mut();
     };
     let pointer = precombat::allocate_gui();
@@ -843,7 +836,7 @@ unsafe fn retain_enemy_fleets(excluded: usize) {
     let Some(begin) = diag::rd::<usize>(ENEMY_LIST) else {
         return;
     };
-    let Some(end) = diag::rd::<usize>(ENEMY_LIST + 8) else {
+    let Some(end) = diag::rd::<usize>(ENEMY_LIST + VECTOR_END) else {
         return;
     };
     if begin == 0 || end < begin {
@@ -884,12 +877,46 @@ unsafe fn retain_enemy_fleets(excluded: usize) {
         unlink(tail);
         tail += LINK_NODE_STRIDE;
     }
-    write::<usize>(ENEMY_LIST + 8, kept);
+    write::<usize>(ENEMY_LIST + VECTOR_END, kept);
     log::info!(
         "hf_ally: removed {} dead/excluded enemy fleet links; {} live fleets remain",
         (end - kept) / LINK_NODE_STRIDE,
         (kept - begin) / LINK_NODE_STRIDE,
     );
+}
+
+/// One-line description of the escadras of a native pointer vector: `count` cells of `stride` bytes,
+/// the escadra pointer at `value_offset` in each cell, `stored` marked with `*`. Only pointer values
+/// are compared; every read is page-checked and count-bounded.
+///
+/// # Safety
+/// Call on the game thread with a live native vector's begin/end values, a nonzero `stride`,
+/// and a pointer field within each cell. Reads go through `diag::rd`.
+unsafe fn describe_escadras(
+    begin: usize,
+    end: usize,
+    stride: usize,
+    value_offset: usize,
+    stored: usize,
+) -> (usize, String) {
+    let mut description = String::new();
+    if begin == 0 || end < begin {
+        return (0, description);
+    }
+    let count = (end - begin) / stride;
+    if count > LIST_ENTRY_LIMIT {
+        return (0, description);
+    }
+    for index in 0..count {
+        let fleet = diag::rd::<usize>(begin + index * stride + value_offset).unwrap_or(0);
+        let ships = diag::rd::<usize>(fleet.wrapping_add(ESCADRA_SHIP_COUNT)).unwrap_or(0);
+        let _ = write!(
+            description,
+            " {fleet:#x}({}{ships})",
+            if fleet == stored { "*" } else { "" },
+        );
+    }
+    (count, description)
 }
 
 /// One-line bounded dump of where enemy escadras currently live: the stored test escadra, the
@@ -905,49 +932,20 @@ unsafe fn dump_enemy_state(tag: &str) {
         .unwrap_or(0);
     let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(GET_PROFILE);
     let profile = get_profile();
-    let (pbegin, pend) = (
-        diag::rd::<usize>(profile.wrapping_add(PROFILE_ESCADRAS)).unwrap_or(0),
-        diag::rd::<usize>(profile.wrapping_add(PROFILE_ESCADRAS + 8)).unwrap_or(0),
-    );
-    let mut profile_entries = String::new();
-    let pcount = if pbegin != 0 && pend >= pbegin && (pend - pbegin) / 8 <= LIST_ENTRY_LIMIT {
-        for index in 0..(pend - pbegin) / 8 {
-            let fleet = diag::rd::<usize>(pbegin + index * 8).unwrap_or(0);
-            let ships = diag::rd::<usize>(fleet.wrapping_add(ESCADRA_SHIP_COUNT)).unwrap_or(0);
-            let _ = write!(
-                profile_entries,
-                " {fleet:#x}({}{ships})",
-                if fleet == stored { "*" } else { "" },
-            );
-        }
-        (pend - pbegin) / 8
-    } else {
-        0
-    };
-    let (lbegin, lend) = (
-        diag::rd::<usize>(ENEMY_LIST).unwrap_or(0),
-        diag::rd::<usize>(ENEMY_LIST + 8).unwrap_or(0),
-    );
-    let mut list_entries = String::new();
-    let lcount = if lbegin != 0
-        && lend >= lbegin
-        && (lend - lbegin) / LINK_NODE_STRIDE <= LIST_ENTRY_LIMIT
-    {
-        for index in 0..(lend - lbegin) / LINK_NODE_STRIDE {
-            let fleet = diag::rd::<usize>(lbegin + index * LINK_NODE_STRIDE + 8).unwrap_or(0);
-            let ships = diag::rd::<usize>(fleet.wrapping_add(ESCADRA_SHIP_COUNT)).unwrap_or(0);
-            let _ = write!(
-                list_entries,
-                " {fleet:#x}({}{ships})",
-                if fleet == stored { "*" } else { "" },
-            );
-        }
-        (lend - lbegin) / LINK_NODE_STRIDE
-    } else {
-        0
-    };
+
+    let profile_begin = diag::rd::<usize>(profile.wrapping_add(PROFILE_ESCADRAS)).unwrap_or(0);
+    let profile_end =
+        diag::rd::<usize>(profile.wrapping_add(PROFILE_ESCADRAS + VECTOR_END)).unwrap_or(0);
+    let (profile_count, profile_entries) =
+        describe_escadras(profile_begin, profile_end, size_of::<usize>(), 0, stored);
+
+    let list_begin = diag::rd::<usize>(ENEMY_LIST).unwrap_or(0);
+    let list_end = diag::rd::<usize>(ENEMY_LIST + VECTOR_END).unwrap_or(0);
+    let (list_count, list_entries) =
+        describe_escadras(list_begin, list_end, LINK_NODE_STRIDE, LINK_TARGET, stored);
+
     log::info!(
-        "hf_ally: enemy state {tag}: stored={stored:#x} profile[{pcount}]{profile_entries} list[{lcount}]{list_entries}"
+        "hf_ally: enemy state {tag}: stored={stored:#x} profile[{profile_count}]{profile_entries} list[{list_count}]{list_entries}"
     );
 }
 
@@ -971,35 +969,45 @@ unsafe fn prune_enemy_escadra() {
     if let Ok(mut state) = SESSION.try_lock() {
         state.enemy_escadra = 0;
     }
+
     let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(GET_PROFILE);
     let profile = get_profile();
-    let (pbegin, pend) = (
-        diag::rd::<usize>(profile.wrapping_add(PROFILE_ESCADRAS)).unwrap_or(0),
-        diag::rd::<usize>(profile.wrapping_add(PROFILE_ESCADRAS + 8)).unwrap_or(0),
-    );
-    let pbytes = pend.wrapping_sub(pbegin);
-    if pbegin != 0
-        && pend >= pbegin
-        && pbytes.is_multiple_of(8)
-        && pbytes <= ESCADRA_VECTOR_LIMIT
-        && diag::readable_span(pbegin, pbytes)
-    {
-        let mut cell = pbegin;
-        while cell < pend {
-            if read::<usize>(cell) == escadra {
-                let mut source = cell + 8;
-                while source < pend {
-                    write::<usize>(source - 8, read::<usize>(source));
-                    source += 8;
-                }
-                write::<usize>(profile + PROFILE_ESCADRAS + 8, pend - 8);
-                log::info!("hf_ally: pruned previous test enemy escadra {escadra:#x} from the profile escadra vector");
-                break;
-            }
-            cell += 8;
-        }
-    }
+    prune_profile_escadra(profile, escadra);
     retain_enemy_fleets(escadra);
+}
+
+/// Drop `escadra` from the profile's escadra vector and close the gap by moving the remaining
+/// 8-byte cells. The vector header and the cell range are validated first.
+///
+/// # Safety
+/// Game thread only. Only the vector's own bounds and pointer values are read or written.
+unsafe fn prune_profile_escadra(profile: usize, escadra: usize) {
+    let begin = diag::rd::<usize>(profile.wrapping_add(PROFILE_ESCADRAS)).unwrap_or(0);
+    let end = diag::rd::<usize>(profile.wrapping_add(PROFILE_ESCADRAS + VECTOR_END)).unwrap_or(0);
+    let bytes = end.wrapping_sub(begin);
+    if begin == 0
+        || end < begin
+        || !bytes.is_multiple_of(8)
+        || bytes > ESCADRA_VECTOR_LIMIT
+        || !diag::readable_span(begin, bytes)
+    {
+        return;
+    }
+    let mut cell = begin;
+    while cell < end {
+        if read::<usize>(cell) != escadra {
+            cell += 8;
+            continue;
+        }
+        let mut source = cell + 8;
+        while source < end {
+            write::<usize>(source - 8, read::<usize>(source));
+            source += 8;
+        }
+        write::<usize>(profile + PROFILE_ESCADRAS + VECTOR_END, end - 8);
+        log::info!("hf_ally: pruned previous test enemy escadra {escadra:#x} from the profile escadra vector");
+        return;
+    }
 }
 
 /// Replaces the FIGHT call that builds the enemy Escadra from generated ship names.
@@ -1102,19 +1110,19 @@ unsafe extern "C" fn on_enemy_append(escadra: usize) {
 
 unsafe extern "C" fn on_level(path: usize) {
     let _hook = diag::scope("Shipworks level");
-    let mut bytes = Vec::new();
-    for index in 0..64 {
+    let mut level_path = Vec::new();
+    for index in 0..LEVEL_PATH_LIMIT {
         let Some(byte) = diag::rd::<u8>(path + index) else {
             return;
         };
         if byte == 0 {
             break;
         }
-        bytes.push(byte);
+        level_path.push(byte);
     }
     // A test/landing trip and its return are still the same Shipworks session.
-    if bytes == b"Combat.seria"
-        || (bytes == b"City_generated.seria" && read::<u8>(TEST_FIGHT_FLAG) != 0)
+    if level_path == b"Combat.seria"
+        || (level_path == b"City_generated.seria" && read::<u8>(TEST_FIGHT_FLAG) != 0)
     {
         return;
     }
@@ -1124,7 +1132,7 @@ unsafe extern "C" fn on_level(path: usize) {
     if let Some(mask) = state.saved_mask.take() {
         precombat::replace_selected_mask(mask);
     }
-    if bytes == b"Editor.seria" {
+    if level_path == b"Editor.seria" {
         return;
     }
     clear_roster(&mut state);

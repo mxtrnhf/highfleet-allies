@@ -56,9 +56,9 @@ const FONT_OFFSET_Y: f32 = -46.0;
 const FONT_LINE_SPACING: f32 = 14.0;
 
 /// The rings use the game's friendly cyan / hostile red / neutral lime.
-const FRIENDLY_RGB: u32 = 0x00e4_ff;
-const HOSTILE_RGB: u32 = 0xdd27_27;
-const NEUTRAL_RGB: u32 = 0xa8fc_00;
+const FRIENDLY_RGB: u32 = 0x0000_e4ff;
+const HOSTILE_RGB: u32 = 0x00dd_2727;
+const NEUTRAL_RGB: u32 = 0x00a8_fc00;
 /// One world unit projected by this distance gives the world-to-screen scale.
 const SCALE_REFERENCE_WORLD: f32 = 100.0;
 /// Ring pixel-size bounds: nothing below 3 or above 4000 screen pixels is drawn.
@@ -192,6 +192,40 @@ pub unsafe fn install_pointer(session: &mut PatchSession) {
 
 unsafe fn rd<T: Copy>(address: usize) -> T {
     (address as *const T).read_unaligned()
+}
+
+/// True for a finite, strictly positive value: the accepted range of every physics input below.
+fn finite_positive(value: f32) -> bool {
+    value.is_finite() && value > 0.0
+}
+
+/// The live creature pointers of this frame in native vector order, capped at [`MAX_SHIPS`].
+///
+/// # Safety
+/// Use the current game-thread draw callback, while the native creature vector and each admitted
+/// ship are live. The entry cap does not check whether their pages remain mapped.
+unsafe fn live_ships() -> Option<([usize; MAX_SHIPS], usize)> {
+    let begin = rd::<usize>(crate::native::CREATURES_BEGIN);
+    let end = rd::<usize>(crate::native::CREATURES_END);
+    if begin == 0 || end <= begin {
+        return None;
+    }
+
+    let entries = ((end - begin) / crate::native::LINK_STRIDE)
+        .min(crate::native::CREATURE_LIST_LIMIT)
+        .min(MAX_SHIPS);
+    let mut live = [0usize; MAX_SHIPS];
+    let mut count = 0;
+    for index in 0..entries {
+        let entry = begin + index * crate::native::LINK_STRIDE;
+        let ship = rd::<usize>(entry + offset_of!(Link, target));
+        if !crate::native::live_ship(ship) {
+            continue;
+        }
+        live[count] = ship;
+        count += 1;
+    }
+    Some((live, count))
 }
 
 /// Short label for an hf_ai tactics decision.
@@ -459,7 +493,7 @@ unsafe fn first_gun(ship: usize) -> Option<usize> {
         let end = rd::<usize>(ship + group + size_of::<usize>());
         if !crate::native::plausible(begin)
             || end <= begin
-            || (end - begin) % size_of::<Link>() != 0
+            || !(end - begin).is_multiple_of(size_of::<Link>())
         {
             continue;
         }
@@ -495,7 +529,10 @@ unsafe fn gun_ballistics(gun: usize) -> Option<(f32, f32, f32)> {
     let ammo_size = size_of::<Ammo>();
     let begin = rd::<usize>(AMMO_LIST);
     let end = rd::<usize>(AMMO_LIST + size_of::<usize>());
-    if !crate::native::plausible(begin) || end <= begin || (end - begin) % ammo_size != 0 {
+    if !crate::native::plausible(begin) || end <= begin {
+        return None;
+    }
+    if !(end - begin).is_multiple_of(ammo_size) {
         return None;
     }
     let count = (end - begin) / ammo_size;
@@ -511,8 +548,10 @@ unsafe fn gun_ballistics(gun: usize) -> Option<(f32, f32, f32)> {
     // canister and quadratic-drag AP cannot be predicted by the linear ballistic model.
     let caliber = rd::<i32>(record + offset_of!(Ammo, caliber));
     let logic = rd::<i32>(record + offset_of!(Ammo, logic));
-    if !matches!(caliber, 5 | 10 | 15 | 20 | 25 | 30 | 40)
-        || !matches!(logic, 0 | 100 | 160)
+    let supported_caliber = matches!(caliber, 5 | 10 | 15 | 20 | 25 | 30 | 40);
+    let linear_ballistics = matches!(logic, 0 | 100 | 160);
+    if !supported_caliber
+        || !linear_ballistics
         || rd::<f32>(record + offset_of!(Ammo, ap_drag)) != 0.0
     {
         return None;
@@ -538,15 +577,10 @@ unsafe fn gun_ballistics(gun: usize) -> Option<(f32, f32, f32)> {
     }
     let min_factor = rd::<f32>(LAUNCH_SPEED_MIN);
     let max_factor = rd::<f32>(LAUNCH_SPEED_MAX);
-    if !speed.is_finite()
-        || speed <= 0.0
-        || !lifespan.is_finite()
-        || lifespan <= 0.0
-        || !min_factor.is_finite()
-        || min_factor <= 0.0
-        || !max_factor.is_finite()
-        || max_factor < min_factor
-    {
+    if !finite_positive(speed) || !finite_positive(lifespan) {
+        return None;
+    }
+    if !finite_positive(min_factor) || !max_factor.is_finite() || max_factor < min_factor {
         return None;
     }
     let mean_speed = speed * (min_factor * 0.5 + max_factor * 0.5);
@@ -593,13 +627,17 @@ unsafe fn player_guns(player: usize) -> Option<PlayerGuns> {
     if max_muzzle_speed + velocity[0].hypot(velocity[1]) >= 2000.0 {
         return None;
     }
-    if !world[0].is_finite()
-        || !world[1].is_finite()
-        || !velocity[0].is_finite()
-        || !velocity[1].is_finite()
-        || !origin[0].is_finite()
-        || !origin[1].is_finite()
-    {
+    let finite = [
+        world[0],
+        world[1],
+        velocity[0],
+        velocity[1],
+        origin[0],
+        origin[1],
+    ]
+    .iter()
+    .all(|value| value.is_finite());
+    if !finite {
         return None;
     }
 
@@ -785,25 +823,7 @@ pub unsafe fn draw() {
     };
 
     // collect live ships once; the drawing pass and the player lookup share the same list
-    let (begin, end): (usize, usize) = (
-        rd(crate::native::CREATURES_BEGIN),
-        rd(crate::native::CREATURES_END),
-    );
-    if begin != 0 && end > begin {
-        let entries = ((end - begin) / 0x18)
-            .min(crate::native::CREATURE_LIST_LIMIT)
-            .min(MAX_SHIPS);
-        let mut live = [0usize; MAX_SHIPS];
-        let mut count = 0;
-        for index in 0..entries {
-            let ship = rd::<usize>(begin + index * 0x18 + 8);
-            if !crate::native::live_ship(ship) {
-                continue;
-            }
-            live[count] = ship;
-            count += 1;
-        }
-
+    if let Some((live, count)) = live_ships() {
         // the lead markers need the player's own hull, velocity and first-gun ammo speed
         let player = if PREDICTION_MARKER.load(Ordering::Relaxed) {
             live[..count]
@@ -815,8 +835,8 @@ pub unsafe fn draw() {
             None
         };
 
-        for index in 0..count {
-            draw_ship(live[index], font, &radii, player.as_ref());
+        for &ship in &live[..count] {
+            draw_ship(ship, font, &radii, player.as_ref());
         }
     }
 

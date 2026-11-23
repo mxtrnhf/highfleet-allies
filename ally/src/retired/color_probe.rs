@@ -58,7 +58,9 @@ pub unsafe fn scan_names() {
         heads += 1;
         let mut node = head;
         for _ in 0..4000 {
-            let Some(name) = ascii_name(node + 8) else { break };
+            let Some(name) = ascii_name(node + 8) else {
+                break;
+            };
             // the loaded object may sit at any qword after the name (the layout is not known): index all of them
             for off in [0x88usize, 0x90, 0xa0, 0xa8, 0xb0] {
                 let handle: usize = ((node + off) as *const usize).read_unaligned();
@@ -73,13 +75,21 @@ pub unsafe fn scan_names() {
         }
     }
     if NAMES_LOGS.fetch_add(1, Ordering::Relaxed) < 3 {
-        log::info!("COLOR names: manager {manager:#x}, {heads} lists, {} named handles", map.len());
+        log::info!(
+            "COLOR names: manager {manager:#x}, {heads} lists, {} named handles",
+            map.len()
+        );
     }
     *NAMES.lock().unwrap() = Some(map);
 }
 
 fn name_of(handle: usize) -> String {
-    NAMES.try_lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(&handle).cloned())).map(|n| format!(" name {n:?}")).unwrap_or_default()
+    NAMES
+        .try_lock()
+        .ok()
+        .and_then(|g| g.as_ref().and_then(|m| m.get(&handle).cloned()))
+        .map(|n| format!(" name {n:?}"))
+        .unwrap_or_default()
 }
 
 static NAMES_LOGS: AtomicUsize = AtomicUsize::new(0);
@@ -93,7 +103,9 @@ fn note(kind: u8, argb: u32, sprite: usize, detail: &str) {
     if kind == 0 && matches!(ret, 0x1_4016_f155 | 0x1_4017_8e4b) {
         return;
     }
-    let Ok(mut guard) = SEEN.try_lock() else { return };
+    let Ok(mut guard) = SEEN.try_lock() else {
+        return;
+    };
     let set = guard.get_or_insert_with(HashSet::new);
     if set.len() >= MAX_ENTRIES || !set.insert((kind, argb & 0x00ff_ffff, ret, sprite)) {
         return;
@@ -103,7 +115,10 @@ fn note(kind: u8, argb: u32, sprite: usize, detail: &str) {
         1 => "vector",
         _ => "style",
     };
-    log::info!("COLOR {what} argb={argb:#010x} ret={ret:#x} (rva {:#x}) {detail}", ret.wrapping_sub(0x1_4000_0000));
+    log::info!(
+        "COLOR {what} argb={argb:#010x} ret={ret:#x} (rva {:#x}) {detail}",
+        ret.wrapping_sub(0x1_4000_0000)
+    );
 }
 
 unsafe extern "C" fn on_sprite(sprite: usize, argb: u32, corner: i32) {
@@ -118,7 +133,15 @@ unsafe extern "C" fn on_sprite(sprite: usize, argb: u32, corner: i32) {
     if rd_ptr(0x1_4800_eb70) == sprite && sprite != 0 {
         which = " leader-line".to_string();
     }
-    note(0, argb, sprite, &format!("sprite {sprite:#x} corner {corner}{which}{}", name_of(sprite)));
+    note(
+        0,
+        argb,
+        sprite,
+        &format!(
+            "sprite {sprite:#x} corner {corner}{which}{}",
+            name_of(sprite)
+        ),
+    );
 }
 
 unsafe fn rd_ptr(a: usize) -> usize {
@@ -132,7 +155,8 @@ unsafe extern "C" fn on_vector(_out: usize, argb: u32) {
 unsafe extern "C" fn on_style(name: usize, _scale: f32, blend: i32, argb: u32) {
     let text = if crate::plausible(name) {
         let bytes = std::slice::from_raw_parts(name as *const u8, 40);
-        String::from_utf8_lossy(&bytes[..bytes.iter().position(|b| *b == 0).unwrap_or(40)]).into_owned()
+        String::from_utf8_lossy(&bytes[..bytes.iter().position(|b| *b == 0).unwrap_or(40)])
+            .into_owned()
     } else {
         String::new()
     };
@@ -155,7 +179,9 @@ fn call(t: &mut Trampoline, f: *const ()) {
 }
 
 pub unsafe fn install(session: &mut PatchSession) {
-    let check = |addr: usize, want: &[u8]| std::slice::from_raw_parts(addr as *const u8, want.len()) == want;
+    let check = |addr: usize, want: &[u8]| {
+        std::slice::from_raw_parts(addr as *const u8, want.len()) == want
+    };
     if check(SPRITE_COLOR, &SPRITE_BYTES) {
         let mut t = Trampoline::new();
         stash_return(&mut t);

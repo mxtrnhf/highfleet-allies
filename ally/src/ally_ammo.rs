@@ -4,7 +4,8 @@
 //! This gives each ally the same dice (`hf_notes/docs/findings/ai/ai-tick-patch-sites.md` section 3), once, when it has
 //! guns and a rating. Nothing is written for 37/57 mm lead guns (the stock rule).
 
-use std::mem::offset_of;
+use std::mem::{offset_of, size_of};
+use std::ops::Range;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
@@ -15,51 +16,57 @@ use patchy::{PatchSession, ReturnType, Trampoline};
 use crate::native::{live_ship, plausible, read, LINK_STRIDE, SHIP_LIST_LIMIT};
 use crate::native_layout::{Body, Creature, Link, PartStats};
 
-const OFF_C7C: usize = 0xc7c;
-const OFF_C7D: usize = 0xc7d;
+const OFF_AP_DOCTRINE: usize = 0xc7c;
+const OFF_PROXIMITY_DOCTRINE: usize = 0xc7d;
 const OFF_RATING: usize = 0x15f8;
-const OFF_GROUP0: (usize, usize) = (
-    offset_of!(Creature, gun_group_0),
-    offset_of!(Creature, gun_group_0) + std::mem::size_of::<usize>(),
-);
+const OFF_GUN_GROUP_0: usize = offset_of!(Creature, gun_group_0);
 const PART_STATS: usize = offset_of!(Body, part_index);
 const STAT_CAL: usize = offset_of!(PartStats, caliber);
 const STAT_LIST_BASE: usize = 0x1_43a3_3bf0;
 const STAT_LIST_END: usize = 0x1_43a3_3bf8;
-/// Byte stride of one gun link in the group-0 list: the part pointer sits at +8.
-const GUN_LINK_STRIDE: usize = std::mem::size_of::<Link>();
-/// Ceiling on the gun links read from group 0; a group has far fewer, so a larger count is a corrupt header.
-const GUN_LIST_LIMIT: usize = 64;
 
-unsafe fn rd<T: Copy>(a: usize) -> T {
-    (a as *const T).read_unaligned()
+/// Bounds a gun group's vector header without dereferencing its entries.
+///
+/// # Safety
+/// `ship` must be the live creature on the game thread; `group_offset` must locate its gun vector.
+/// The returned range is only a header check, not proof of readable memory or object identity.
+unsafe fn gun_link_range(ship: usize, group_offset: usize) -> Option<Range<usize>> {
+    let begin: usize = read(ship + group_offset);
+    let end: usize = read(ship + group_offset + size_of::<usize>());
+    if begin < 0x10000 || end < begin {
+        return None;
+    }
+    if (end - begin) / LINK_STRIDE > SHIP_LIST_LIMIT {
+        return None;
+    }
+
+    Some(begin..end)
 }
 
-/// Calibre key of the first gun of group 0, `None` while the list is empty or the record is unreadable.
-unsafe fn first_cal(ship: usize) -> Option<i32> {
-    let (b, e): (usize, usize) = (rd(ship + OFF_GROUP0.0), rd(ship + OFF_GROUP0.1));
-    if b < 0x10000 || e < b {
+/// Calibre key of the first gun of group 0; `None` before a full link and plausible stats entry exist.
+unsafe fn first_caliber(ship: usize) -> Option<i32> {
+    let links = gun_link_range(ship, OFF_GUN_GROUP_0)?;
+    if links.len() < LINK_STRIDE {
         return None;
     }
-    let list_bytes = e - b;
-    if list_bytes < GUN_LINK_STRIDE || list_bytes / GUN_LINK_STRIDE > GUN_LIST_LIMIT {
-        return None;
-    }
-    let part: usize = rd(b + offset_of!(Link, target));
+
+    let part: usize = read(links.start + offset_of!(Link, target));
     if !plausible(part) {
         return None;
     }
-    let idx: i32 = rd(part + PART_STATS);
-    let (base, end): (usize, usize) = (rd(STAT_LIST_BASE), rd(STAT_LIST_END));
-    if idx < 0 || base < 0x10000 || end < base {
+
+    let part_index: i32 = read(part + PART_STATS);
+    let (base, end): (usize, usize) = (read(STAT_LIST_BASE), read(STAT_LIST_END));
+    if part_index < 0 || base < 0x10000 || end < base {
         return None;
     }
-    let stat_count = (end - base) / std::mem::size_of::<usize>();
-    if idx as usize >= stat_count {
+    let stat_count = (end - base) / size_of::<usize>();
+    if part_index as usize >= stat_count {
         return None;
     }
-    let record: usize = rd(base + idx as usize * std::mem::size_of::<usize>());
-    plausible(record).then(|| rd::<i32>(record + STAT_CAL))
+
+    let record: usize = read(base + part_index as usize * size_of::<usize>());
+    plausible(record).then(|| read::<i32>(record + STAT_CAL))
 }
 
 /// Uniform in 0..1 from a xorshift stream seeded by the clock (two rolls in a row must not correlate).
@@ -78,31 +85,43 @@ fn unit() -> f32 {
 }
 
 /// Rolls once for `ship`; returns false when it is not ready yet (try again next tick).
-pub unsafe fn roll(ship: usize) -> bool {
-    let Some(cal) = first_cal(ship) else {
+///
+/// # Safety
+/// The caller must have established that this is a live ally on the game thread, with its
+/// gun vectors and stats table valid for the duration of the roll.
+unsafe fn roll(ship: usize) -> bool {
+    const HEAVY_GUN_CALIBER: i32 = 25;
+    const MIN_SPECIAL_AMMO_CALIBER: i32 = 10;
+
+    let Some(caliber) = first_caliber(ship) else {
         return false;
     };
-    let rating: f32 = rd(ship + OFF_RATING);
-    if rating <= 0.0 && cal < 25 {
+    let rating: f32 = read(ship + OFF_RATING);
+    let heavy_gun = caliber >= HEAVY_GUN_CALIBER;
+    if rating <= 0.0 && !heavy_gun {
         return false;
     }
-    let p = if cal >= 25 {
+    let special_ammo_chance = if heavy_gun {
         1.0
     } else {
         (rating / 50.0).clamp(0.0, 1.0)
     };
+
     let (mut ap, mut prox) = (0u8, 0u8);
-    if cal > 10 && unit() < p {
-        let to_prox = if cal >= 25 { 0.8 } else { 0.2 };
-        if unit() <= to_prox {
+    if caliber > MIN_SPECIAL_AMMO_CALIBER && unit() < special_ammo_chance {
+        let proximity_chance = if heavy_gun { 0.8 } else { 0.2 };
+        if unit() <= proximity_chance {
             prox = 1;
         } else {
             ap = 1;
         }
     }
-    (ship as *mut u8).byte_add(OFF_C7C).write(ap);
-    (ship as *mut u8).byte_add(OFF_C7D).write(prox);
-    log::info!("ALLY ammo doctrine: c={ship:#x} cal={cal} rating={rating:.1} p={p:.2} -> AP={ap} proximity={prox}");
+
+    (ship as *mut u8).byte_add(OFF_AP_DOCTRINE).write(ap);
+    (ship as *mut u8)
+        .byte_add(OFF_PROXIMITY_DOCTRINE)
+        .write(prox);
+    log::info!("ALLY ammo doctrine: c={ship:#x} cal={caliber} rating={rating:.1} p={special_ammo_chance:.2} -> AP={ap} proximity={prox}");
     true
 }
 
@@ -111,9 +130,15 @@ pub unsafe fn roll(ship: usize) -> bool {
 static AMMO_ON: AtomicBool = AtomicBool::new(false);
 /// Allies that have had their ammunition doctrine rolled this battle.
 static AMMO_ROLLED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
-/// Per-gun ammo index and extra index that the battle reserve was funded with, recorded when the ally is
-/// deployed (before the AI starts re-setting `+0x850`). `(creature, gun, index, extra_index)`.
-static AMMO_FUNDING: Mutex<Vec<(usize, usize, i32, i32)>> = Mutex::new(Vec::new());
+/// Per-gun ammo indices that the battle reserve was funded with, recorded before the AI resets `+0x850`.
+static AMMO_FUNDING: Mutex<Vec<FundingRecord>> = Mutex::new(Vec::new());
+
+struct FundingRecord {
+    creature: usize,
+    gun: usize,
+    ammo_index: i32,
+    extra_ammo_index: i32,
+}
 
 /// ReturnCreatureGunAmmoToInventory (0x1402698c0, RCX = creature): the end-of-battle refund.
 /// The game credits each gun's pool to its current ammo index. The free base-shell pool starts
@@ -121,10 +146,7 @@ static AMMO_FUNDING: Mutex<Vec<(usize, usize, i32, i32)>> = Mutex::new(Vec::new(
 /// turn that into 9999 priced rounds. Funding records preserve the original paid/free identity.
 const REFUND: usize = 0x1_4026_98c0;
 const REFUND_STOLEN: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10];
-const REFUND_GUN_LISTS: [usize; 2] = [
-    offset_of!(Creature, gun_group_0),
-    offset_of!(Creature, gun_group_1),
-];
+const REFUND_GUN_LISTS: [usize; 2] = [OFF_GUN_GROUP_0, offset_of!(Creature, gun_group_1)];
 
 /// Installs the refund detour when `ally_ai_ammo` is enabled. A differing site is logged and
 /// disables the doctrine roll, exactly as before.
@@ -141,20 +163,21 @@ pub(crate) unsafe fn install_refund(
         return Ok(());
     }
     let found = std::slice::from_raw_parts(REFUND as *const u8, REFUND_STOLEN.len());
-    if found == REFUND_STOLEN {
-        let mut trampoline = Trampoline::new();
-        trampoline.bytes(&[0x48, 0x83, 0xec, 0x08]);
-        trampoline.preserved_call(on_refund as *const (), &[], &[], ReturnType::None);
-        trampoline.bytes(&[0x48, 0x83, 0xc4, 0x08]);
-        trampoline.bytes(&REFUND_STOLEN);
-        trampoline.relative_jump(REFUND + REFUND_STOLEN.len());
-        session
-            .detour_trampoline(REFUND, REFUND_STOLEN.len(), trampoline)
-            .map_err(|e| e.to_string())?;
-    } else {
+    if found != REFUND_STOLEN {
         log::warn!("hf_ally: refund function bytes differ ({found:02x?}), not hooked: allies on AP / proximity would credit free ammo");
         set_enabled(false);
+        return Ok(());
     }
+
+    let mut trampoline = Trampoline::new();
+    trampoline.bytes(&[0x48, 0x83, 0xec, 0x08]);
+    trampoline.preserved_call(on_refund as *const (), &[], &[], ReturnType::None);
+    trampoline.bytes(&[0x48, 0x83, 0xc4, 0x08]);
+    trampoline.bytes(&REFUND_STOLEN);
+    trampoline.relative_jump(REFUND + REFUND_STOLEN.len());
+    session
+        .detour_trampoline(REFUND, REFUND_STOLEN.len(), trampoline)
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -185,9 +208,12 @@ pub(crate) unsafe fn roll_new(ships: &[usize], allies: &[usize]) {
     let Ok(mut rolled) = AMMO_ROLLED.lock() else {
         return;
     };
-    for &a in allies.iter().filter(|ship| ships.contains(ship)) {
-        if live_ship(a) && !rolled.contains(&a) && roll(a) {
-            rolled.push(a);
+    for &ally in allies {
+        if !ships.contains(&ally) || !live_ship(ally) || rolled.contains(&ally) {
+            continue;
+        }
+        if roll(ally) {
+            rolled.push(ally);
         }
     }
 }
@@ -210,7 +236,7 @@ pub(crate) unsafe fn record_funding(creature: usize) -> usize {
 /// Call on the game thread while the creature is still the live ship whose guns are being recorded.
 pub(crate) unsafe fn ensure_funding_recorded(creature: usize) -> Result<(), ()> {
     let recorded = match AMMO_FUNDING.lock() {
-        Ok(funding) => funding.iter().any(|entry| entry.0 == creature),
+        Ok(funding) => funding.iter().any(|entry| entry.creature == creature),
         Err(_) => return Err(()),
     };
     if recorded {
@@ -222,36 +248,32 @@ pub(crate) unsafe fn ensure_funding_recorded(creature: usize) -> Result<(), ()> 
     Ok(())
 }
 
-unsafe fn record_funding_locked(
-    funding: &mut Vec<(usize, usize, i32, i32)>,
-    creature: usize,
-) -> usize {
-    let mut n = 0;
-    for list in REFUND_GUN_LISTS {
-        let (b, e): (usize, usize) = (read(creature + list), read(creature + list + 8));
-        if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
+unsafe fn record_funding_locked(funding: &mut Vec<FundingRecord>, creature: usize) -> usize {
+    let mut recorded = 0;
+    for group_offset in REFUND_GUN_LISTS {
+        let Some(links) = gun_link_range(creature, group_offset) else {
             continue;
-        }
-        for a in (b..e).step_by(LINK_STRIDE) {
-            let gun: usize = read(a + 8);
+        };
+        for link in links.step_by(LINK_STRIDE) {
+            let gun: usize = read(link + offset_of!(Link, target));
             if !plausible(gun) {
                 continue;
             }
-            let entry = (
+            let entry = FundingRecord {
                 creature,
                 gun,
-                read::<i32>(gun + offset_of!(Body, weapon_ammo)),
-                read::<i32>(gun + offset_of!(Body, weapon_ammo_extra)),
-            );
-            if let Some(slot) = funding.iter_mut().find(|r| r.1 == gun) {
+                ammo_index: read(gun + offset_of!(Body, weapon_ammo)),
+                extra_ammo_index: read(gun + offset_of!(Body, weapon_ammo_extra)),
+            };
+            if let Some(slot) = funding.iter_mut().find(|record| record.gun == gun) {
                 *slot = entry;
             } else {
                 funding.push(entry);
             }
-            n += 1;
+            recorded += 1;
         }
     }
-    n
+    recorded
 }
 
 /// Entry hook of the refund: for a creature whose ammo doctrine we rolled, put every gun back on the
@@ -263,7 +285,9 @@ unsafe fn record_funding_locked(
 /// Called by the verified native refund detour on the game thread with the live creature in RCX.
 unsafe extern "C" fn on_refund(creature: usize) {
     let _hook = crate::diag::scope("on_refund");
-    let ours = AMMO_ROLLED.lock().map_or(false, |v| v.contains(&creature));
+    let ours = AMMO_ROLLED
+        .lock()
+        .is_ok_and(|rolled| rolled.contains(&creature));
     if !ours {
         return;
     }
@@ -276,25 +300,25 @@ unsafe extern "C" fn on_refund(creature: usize) {
         return;
     };
     let (mut restored, mut unrecorded) = (0, 0);
-    for list in REFUND_GUN_LISTS {
-        let (b, e): (usize, usize) = (read(creature + list), read(creature + list + 8));
-        if b < 0x10000 || e < b || (e - b) / LINK_STRIDE > SHIP_LIST_LIMIT {
+    for group_offset in REFUND_GUN_LISTS {
+        let Some(links) = gun_link_range(creature, group_offset) else {
             continue;
-        }
-        for a in (b..e).step_by(LINK_STRIDE) {
-            let gun: usize = read(a + 8);
+        };
+        for link in links.step_by(LINK_STRIDE) {
+            let gun: usize = read(link + offset_of!(Link, target));
             if !plausible(gun) {
                 continue;
             }
-            if let Some(&(_, _, index, extra)) =
-                funding.iter().find(|r| r.0 == creature && r.1 == gun)
+            if let Some(record) = funding
+                .iter()
+                .find(|record| record.creature == creature && record.gun == gun)
             {
                 (gun as *mut i32)
                     .byte_add(offset_of!(Body, weapon_ammo))
-                    .write_unaligned(index);
+                    .write_unaligned(record.ammo_index);
                 (gun as *mut i32)
                     .byte_add(offset_of!(Body, weapon_ammo_extra))
-                    .write_unaligned(extra);
+                    .write_unaligned(record.extra_ammo_index);
                 restored += 1;
             } else {
                 // no funding index (should not happen for an ally we deployed): keep the old safeguard

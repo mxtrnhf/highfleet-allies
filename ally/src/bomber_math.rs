@@ -18,6 +18,9 @@ const LATERAL_ALIGN_DISTANCE: f32 = 220.0;
 const DIVE_LATERAL: f32 = 160.0;
 /// Smallest non-zero downward component: a zero-length request means "thrust up" natively.
 const MIN_DIVE_COMPONENT: f32 = 40.0;
+/// Pull-out waypoint: straight along the run direction and this far above the ship.
+const PULL_OUT_LATERAL: f32 = 200.0;
+const PULL_OUT_UP: f32 = 200.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Phase {
@@ -49,6 +52,7 @@ pub struct Flight {
 
 impl Run {
     pub fn new(flight: &Flight) -> Self {
+        let target_below = flight.target.1 - flight.position.1;
         Self {
             phase: Phase::Dive,
             recover_until: 0.0,
@@ -58,13 +62,21 @@ impl Run {
                 -1.0
             },
             started: flight.now,
-            low_start: (flight.target.1 - flight.position.1) <= RELEASE_HEIGHT,
+            low_start: target_below <= RELEASE_HEIGHT,
         }
     }
 
     pub fn recover(&mut self, now: f64) {
         self.phase = Phase::Recover;
         self.recover_until = now + PULL_OUT_S;
+    }
+
+    /// Waypoint for the pull-out: ahead along the run direction and above the ship's height.
+    fn pull_out_waypoint(&self, position: (f32, f32)) -> (f32, f32) {
+        (
+            position.0 + self.direction * PULL_OUT_LATERAL,
+            position.1 - PULL_OUT_UP,
+        )
     }
 
     /// Descent speed that still leaves room to arrest the dive at this height.
@@ -84,17 +96,17 @@ impl Run {
         let clearance = flight.own_radius + flight.target_radius + HULL_MARGIN;
         let height = flight.target.1 - y;
 
-        if self.phase == Phase::Recover
+        let recovery_finished = self.phase == Phase::Recover
             && flight.now >= self.recover_until
             && flight.velocity.1 <= 0.0
-            && height > clearance
-        {
+            && height > clearance;
+        if recovery_finished {
             self.phase = Phase::Done;
         }
 
         match self.phase {
             Phase::Done => flight.position,
-            Phase::Recover => (x + self.direction * 200.0, y - 200.0),
+            Phase::Recover => self.pull_out_waypoint(flight.position),
             Phase::Dive | Phase::Salvo => {
                 // Emergency pull-out only when the current descent is genuinely unrecoverable.
                 let downward_speed = flight.velocity.1.max(0.0);
@@ -103,7 +115,7 @@ impl Run {
                     + downward_speed * PULL_OUT_RESPONSE_S;
                 if height <= clearance + pull_out_distance {
                     self.recover(flight.now);
-                    return (x + self.direction * 200.0, y - 200.0);
+                    return self.pull_out_waypoint(flight.position);
                 }
 
                 // Continuous downward thrust whose speed is capped by the height available to
@@ -123,14 +135,16 @@ impl Run {
                 } else {
                     ((dx.abs() - LATERAL_ALIGN_DISTANCE) / LATERAL_ALIGN_DISTANCE).clamp(0.0, 1.0)
                 };
-                let mut vertical = if vertical > 0.0 {
+                let gated_vertical = if vertical > 0.0 {
                     vertical * (1.0 - alignment_gate)
                 } else {
                     vertical
                 };
-                if vertical.abs() < MIN_DIVE_COMPONENT {
-                    vertical = MIN_DIVE_COMPONENT;
-                }
+                let vertical = if gated_vertical.abs() < MIN_DIVE_COMPONENT {
+                    MIN_DIVE_COMPONENT
+                } else {
+                    gated_vertical
+                };
 
                 (x + dx.clamp(-DIVE_LATERAL, DIVE_LATERAL), y + vertical)
             }

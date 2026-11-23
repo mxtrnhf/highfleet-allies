@@ -73,6 +73,14 @@ const OFF_WAYPOINT: usize = offset_of!(Creature, waypoint_x);
 const DROP_INTERVAL_S: f64 = 0.05;
 const FLARE_INTERVAL_S: f64 = 0.5;
 const MAX_RUNS: usize = 32;
+/// Ceiling on the bombs walked in one callback; a longer vector means a corrupt header.
+const BOMB_LIMIT: usize = 256;
+/// Ceiling on the parent hops of `root_part`; a deeper chain is treated as unknown.
+const ROOT_WALK_LIMIT: usize = 64;
+/// A run leaves the table once it has gone this long without a steering update.
+const RUN_TTL_S: f64 = 5.0;
+/// Release needs a descent this share of what the remaining height can still recover from.
+const RELEASE_DESCENT_FRACTION: f32 = 0.6;
 
 const _: () = {
     assert!(offset_of!(Body, velocity_x) == 0x130);
@@ -87,6 +95,10 @@ static WANTED_SPEED: AtomicU32 = AtomicU32::new(0);
 static RUNS: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 static FAILED: AtomicBool = AtomicBool::new(false);
 static NEXT_GATE_LOG: AtomicU64 = AtomicU64::new(0);
+/// Minimum gap between bomber gate/eligibility log lines, in game seconds.
+const GATE_LOG_INTERVAL_S: f64 = 3.0;
+/// A stored next-log time further ahead than this means the game clock restarted.
+const CLOCK_RESET_GAP_S: f64 = 10.0;
 
 /// Stack-only native output, NOT a game-owned object. Verified 0x1401b5420 writes +0/+4.
 #[repr(C)]
@@ -165,7 +177,7 @@ unsafe fn set_target(ship: usize, target: usize) {
 
 /// Bounded equivalent of Node_GetRootPart: only follow Body masters, not owner links.
 pub(crate) unsafe fn root_part(mut node: usize) -> Option<usize> {
-    for _ in 0..64 {
+    for _ in 0..ROOT_WALK_LIMIT {
         if !plausible(node) {
             return None;
         }
@@ -190,8 +202,8 @@ unsafe fn first_bomb(ship: usize) -> Option<usize> {
     let end: usize = rd(ship + OFF_BOMBS + 8)?;
     let length = end.checked_sub(begin)?;
     if !plausible(begin)
-        || length % std::mem::size_of::<Link>() != 0
-        || length / std::mem::size_of::<Link>() > 256
+        || !length.is_multiple_of(std::mem::size_of::<Link>())
+        || length / std::mem::size_of::<Link>() > BOMB_LIMIT
     {
         return None;
     }
@@ -210,13 +222,20 @@ unsafe fn first_bomb(ship: usize) -> Option<usize> {
 }
 
 unsafe fn flight(ship: usize) -> Option<(usize, Flight)> {
-    if !live(ship)
-        || rd::<u8>(ship + crate::native::OFF_AI_FLAG)? == 0
-        || rd::<i32>(ship + crate::native::OFF_MODE)? != 1
+    if !live(ship) {
+        return None;
+    }
+    // Only an AI-run ship of the player's side, flying the stock attack mode, can bomb.
+    if rd::<u8>(ship + crate::native::OFF_AI_FLAG)? == 0 {
+        return None;
+    }
+    if rd::<i32>(ship + crate::native::OFF_MODE)? != 1
         || rd::<i32>(ship + crate::native::OFF_STATE)? != 1
-        || !rd::<f32>(ship + crate::native::OFF_SIDE)
-            .is_some_and(|side| side.is_finite() && side > 0.0)
     {
+        return None;
+    }
+    let side: f32 = rd(ship + crate::native::OFF_SIDE)?;
+    if !(side.is_finite() && side > 0.0) {
         return None;
     }
     // Post-salvo escape must not vanish when the bomb destroys the target or native AI
@@ -304,10 +323,11 @@ unsafe fn log_gate(ship: usize) {
         return;
     };
     let next = f64::from_bits(NEXT_GATE_LOG.load(Ordering::Relaxed));
-    if now < next && next - now < 10.0 {
+    // Normally quiet until then; a `next` far ahead means the game clock restarted, so log again.
+    if now < next && next - now < CLOCK_RESET_GAP_S {
         return;
     }
-    NEXT_GATE_LOG.store((now + 3.0).to_bits(), Ordering::Relaxed);
+    NEXT_GATE_LOG.store((now + GATE_LOG_INTERVAL_S).to_bits(), Ordering::Relaxed);
     let node = rd::<usize>(ship + crate::native::OFF_TARGET).filter(|node| plausible(*node));
     let target = node.and_then(|node| {
         if rd::<u8>(node + crate::native::OFF_CODE)? & 0x2f == 0x2f {
@@ -404,33 +424,88 @@ unsafe fn begin_escape(entry: &mut Entry, flight: &Flight) {
     );
 }
 
+/// Native target selection runs periodically. Keep a valid bombing target stable, especially while
+/// recovering, rather than restarting a dive whenever that selector changes its mind.
+unsafe fn hold_target(ship: usize) {
+    if first_bomb(ship).is_none() {
+        return;
+    }
+    if !live(ship) {
+        return;
+    }
+    if rd::<u8>(ship + crate::native::OFF_AI_FLAG).is_none_or(|flag| flag == 0) {
+        return;
+    }
+    if rd::<i32>(ship + crate::native::OFF_STATE) != Some(1)
+        || rd::<i32>(ship + crate::native::OFF_MODE) != Some(1)
+    {
+        return;
+    }
+    let desired = RUNS.try_lock().ok().and_then(|runs| {
+        runs.iter()
+            .find(|entry| {
+                entry.ship == ship && matches!(entry.run.phase, Phase::Dive | Phase::Salvo)
+            })
+            .map(|entry| entry.target)
+    });
+    let Some(target) = desired else {
+        return;
+    };
+    if !landed_enemy(target) {
+        return;
+    }
+    if battle::commanded_target().is_some_and(|focus| focus != target) {
+        return;
+    }
+    if rd::<usize>(ship + crate::native::OFF_TARGET) != Some(target) {
+        set_target(ship, target);
+    }
+}
+
+/// Refreshes the lateral aim from the native bomb predictor while the run is diving or in salvo.
+unsafe fn update_aim(ship: usize, target: usize, entry: &mut Entry, flight: &Flight) {
+    if !matches!(entry.run.phase, Phase::Dive | Phase::Salvo) {
+        return;
+    }
+    let aim_due = flight.now >= entry.next_aim;
+    if !aim_due {
+        return;
+    }
+    entry.next_aim = flight.now + 0.1;
+    let Some(prediction) =
+        first_bomb(ship).and_then(|bomb| predict_bomb(ship, target, bomb, flight))
+    else {
+        return;
+    };
+    let miss = prediction.horizontal_miss.clamp(-1000.0, 1000.0);
+    let elapsed = (flight.now - entry.last_aim_time) as f32;
+    let miss_rate = if elapsed > 0.0 {
+        (miss - entry.aim_miss) / elapsed
+    } else {
+        0.0
+    };
+    // Full correction while the shot is still far off; only damp close to the target,
+    // where the derivative term prevents overshoot. The old fixed gain was too weak to
+    // converge before the descent reached the pull-out limit.
+    let tolerance = flight.target_radius * RELEASE_TOLERANCE_RADII;
+    let near = miss.abs() <= tolerance * 4.0;
+    let gain = if near {
+        AIM_MISS_GAIN
+    } else {
+        AIM_MISS_GAIN_FAR
+    };
+    let damping = if near { AIM_MISS_DAMPING_S } else { 0.0 };
+    entry.aim_horizontal =
+        -(gain * miss + damping * miss_rate).clamp(-MAX_LATERAL_WAYPOINT, MAX_LATERAL_WAYPOINT);
+    entry.aim_miss = miss;
+    entry.last_aim_time = flight.now;
+}
+
 unsafe fn steer(ship: usize) {
     if FAILED.load(Ordering::Relaxed) || !battle::tracked(ship) {
         return;
     }
-    // Native target selection runs periodically. Keep a valid bombing target stable, especially
-    // while recovering, rather than restarting a dive whenever that selector changes its mind.
-    if first_bomb(ship).is_some()
-        && live(ship)
-        && rd::<u8>(ship + crate::native::OFF_AI_FLAG).is_some_and(|flag| flag != 0)
-        && rd::<i32>(ship + crate::native::OFF_STATE) == Some(1)
-        && rd::<i32>(ship + crate::native::OFF_MODE) == Some(1)
-    {
-        let desired = RUNS.try_lock().ok().and_then(|runs| {
-            runs.iter()
-                .find(|entry| {
-                    entry.ship == ship && matches!(entry.run.phase, Phase::Dive | Phase::Salvo)
-                })
-                .map(|entry| entry.target)
-        });
-        if let Some(target) = desired.filter(|target| {
-            landed_enemy(*target) && battle::commanded_target().is_none_or(|focus| focus == *target)
-        }) {
-            if rd::<usize>(ship + crate::native::OFF_TARGET) != Some(target) {
-                set_target(ship, target);
-            }
-        }
-    }
+    hold_target(ship);
     let Some((target, flight)) = flight(ship) else {
         log_gate(ship);
         if let Ok(mut runs) = RUNS.try_lock() {
@@ -445,7 +520,7 @@ unsafe fn steer(ship: usize) {
     let Ok(mut runs) = RUNS.try_lock() else {
         return;
     };
-    runs.retain(|entry| flight.now >= entry.now && flight.now - entry.now < 5.0);
+    runs.retain(|entry| flight.now >= entry.now && flight.now - entry.now < RUN_TTL_S);
     let index = match runs.iter().position(|entry| entry.ship == ship) {
         Some(index) => index,
         None if runs.len() < MAX_RUNS && has_bomb => {
@@ -515,35 +590,7 @@ unsafe fn steer(ship: usize) {
         begin_escape(entry, &flight);
         entry.waypoint = entry.run.waypoint(&flight);
     }
-    if matches!(entry.run.phase, Phase::Dive | Phase::Salvo) && flight.now >= entry.next_aim {
-        entry.next_aim = flight.now + 0.1;
-        if let Some(prediction) =
-            first_bomb(ship).and_then(|bomb| predict_bomb(ship, target, bomb, &flight))
-        {
-            let miss = prediction.horizontal_miss.clamp(-1000.0, 1000.0);
-            let elapsed = (flight.now - entry.last_aim_time) as f32;
-            let miss_rate = if elapsed > 0.0 {
-                (miss - entry.aim_miss) / elapsed
-            } else {
-                0.0
-            };
-            // Full correction while the shot is still far off; only damp close to the target,
-            // where the derivative term prevents overshoot. The old fixed gain was too weak to
-            // converge before the descent reached the pull-out limit.
-            let tolerance = flight.target_radius * RELEASE_TOLERANCE_RADII;
-            let near = miss.abs() <= tolerance * 4.0;
-            let gain = if near {
-                AIM_MISS_GAIN
-            } else {
-                AIM_MISS_GAIN_FAR
-            };
-            let damping = if near { AIM_MISS_DAMPING_S } else { 0.0 };
-            entry.aim_horizontal = -(gain * miss + damping * miss_rate)
-                .clamp(-MAX_LATERAL_WAYPOINT, MAX_LATERAL_WAYPOINT);
-            entry.aim_miss = miss;
-            entry.last_aim_time = flight.now;
-        }
-    }
+    update_aim(ship, target, entry, &flight);
     if matches!(entry.run.phase, Phase::Dive | Phase::Salvo) {
         // Native signed miss includes launch velocity/impulse. Correct lateral drift during
         // descent rather than waiting indefinitely for an accurate release at a fixed height.
@@ -673,10 +720,11 @@ unsafe fn apply_engine_boost(ship: usize, command: usize, target: usize, flight:
     };
     entry.native_commands = native_commands;
     entry.commands_valid = true;
-    let (Some(first), Some(second)) = (rd::<f32>(command + 4), rd::<f32>(command + 0x24)) else {
+    let (Some(front_bank), Some(rear_bank)) = (rd::<f32>(command + 4), rd::<f32>(command + 0x24))
+    else {
         return;
     };
-    if !first.is_finite() || !second.is_finite() || first < 0.0 || second < 0.0 {
+    if !front_bank.is_finite() || !rear_bank.is_finite() || front_bank < 0.0 || rear_bank < 0.0 {
         return;
     }
     // Continuous base thrust with timed boost pulses through the aiming approach/salvo.
@@ -691,12 +739,8 @@ unsafe fn apply_engine_boost(ship: usize, command: usize, target: usize, flight:
         1.0
     };
     let recovery_strength = if boost_ready { BOMBER_BOOST } else { 1.0 };
-    let boosted_first = if diving {
-        dive_strength
-    } else {
-        recovery_strength
-    };
-    let boosted_second = if diving {
+    // Both banks share one strength: timed pulses while diving, recovery thrust otherwise.
+    let boost_strength = if diving {
         dive_strength
     } else {
         recovery_strength
@@ -704,8 +748,8 @@ unsafe fn apply_engine_boost(ship: usize, command: usize, target: usize, flight:
     // SAFETY: the byte-validated 0x140065734 hook passes RBP+0x28: two initialized 0x20-byte
     // commands in this native invocation's writable stack frame. IDs were rechecked above.
     // These unaligned scalar writes end before native dispatch; no references/ownership escape.
-    ((command + 4) as *mut f32).write_unaligned(boosted_first);
-    ((command + 0x24) as *mut f32).write_unaligned(boosted_second);
+    ((command + 4) as *mut f32).write_unaligned(boost_strength);
+    ((command + 0x24) as *mut f32).write_unaligned(boost_strength);
     let mut commanded_angle = 0.0;
     if diving || entry.run.phase == Phase::Recover {
         // Native engine angle convention is atan2(world_x, -world_y), as used by
@@ -727,7 +771,7 @@ unsafe fn apply_engine_boost(ship: usize, command: usize, target: usize, flight:
         entry.last_boost_log = flight.now;
         entry.last_boost_phase = Some(entry.run.phase);
         log::info!(
-            "ALLY bomber BOOST: c={ship:#x} {:?} target_speed={:.1} descent={:.1} lateral={:.1} servo_and_force_angle={commanded_angle:.3} boost_ready={boost_ready} temperature={:?} bank0={first:.2}->{boosted_first:.2} bank1={second:.2}->{boosted_second:.2}",
+            "ALLY bomber BOOST: c={ship:#x} {:?} target_speed={:.1} descent={:.1} lateral={:.1} servo_and_force_angle={commanded_angle:.3} boost_ready={boost_ready} temperature={:?} bank0={front_bank:.2}->{boost_strength:.2} bank1={rear_bank:.2}->{boost_strength:.2}",
             entry.run.phase, entry.wanted_speed, flight.velocity.1, flight.velocity.0,
             rd::<f32>(ship + OFF_MAX_ENGINE_TEMPERATURE),
         );
@@ -796,8 +840,8 @@ unsafe fn predict_bomb(
     let length = end.checked_sub(begin)?;
     let frame_rate: f32 = rd(FRAME_RATE)?;
     if !plausible(begin)
-        || length % std::mem::size_of::<Link>() != 0
-        || length / std::mem::size_of::<Link>() > 4096
+        || !length.is_multiple_of(std::mem::size_of::<Link>())
+        || length / std::mem::size_of::<Link>() > crate::native::CREATURE_LIST_LIMIT
         || !frame_rate.is_finite()
         || !(1.0..=1000.0).contains(&frame_rate)
     {
@@ -884,16 +928,15 @@ unsafe fn release(ship: usize) {
     {
         return;
     }
-    let bomb = match first_bomb(ship) {
-        Some(bomb) => bomb,
-        None => return,
+    let Some(bomb) = first_bomb(ship) else {
+        return;
     };
     let prediction = predict_bomb(ship, target, bomb, &flight);
     let clearance = flight.own_radius + flight.target_radius + crate::bomber_math::HULL_MARGIN;
     let height_above_target = flight.target.1 - flight.position.1;
     let budget = (height_above_target - clearance).max(0.0);
     let needed_descent = MIN_RELEASE_DESCENT_SPEED
-        .min(0.6 * Run::safe_descent(budget, flight.recovery_acceleration));
+        .min(RELEASE_DESCENT_FRACTION * Run::safe_descent(budget, flight.recovery_acceleration));
     if flight.now - entry.last_prediction_log >= 1.0 {
         entry.last_prediction_log = flight.now;
         log::info!(

@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 /// Where the modloader expects the mod's settings.
 pub(crate) const PATH: &str = "Modloader/config/ally.json";
 
+const RGB_MASK: u32 = 0x00ff_ffff;
+
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Config {
@@ -128,7 +130,7 @@ impl Default for Config {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct LoggingConfig {
     /// Runtime debug mode: megalog, watchdog, crash minidump and the verbose diagnostics.
@@ -138,16 +140,6 @@ pub(crate) struct LoggingConfig {
     pub(crate) gui_inspect: bool,
     /// Creature add/remove log (diagnostic, off by default).
     pub(crate) log_creatures: bool,
-}
-
-impl Default for LoggingConfig {
-    fn default() -> Self {
-        Self {
-            debug_log: false,
-            gui_inspect: false,
-            log_creatures: false,
-        }
-    }
 }
 
 /// Battle debug overlay settings; the `debug_overlay` block in `ally.json` (own category since
@@ -216,13 +208,15 @@ fn migrate_legacy_logging(root: &mut serde_json::Map<String, serde_json::Value>)
             legacy.insert(key.to_string(), setting);
         }
     }
-    let logging = root
+    let logging_value = root
         .entry("logging")
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    if let Some(logging) = logging.as_object_mut() {
-        for (key, setting) in legacy {
-            logging.entry(key).or_insert(setting);
-        }
+
+    let Some(logging) = logging_value.as_object_mut() else {
+        return;
+    };
+    for (key, setting) in legacy {
+        logging.entry(key).or_insert(setting);
     }
 }
 
@@ -230,19 +224,17 @@ fn migrate_legacy_logging(root: &mut serde_json::Map<String, serde_json::Value>)
 /// flat `debug_overlay` key or `logging.debug_overlay` — becomes the new block's `enable`; an
 /// explicit new block wins over both.
 fn migrate_legacy_debug_overlay(root: &mut serde_json::Map<String, serde_json::Value>) {
-    let flat = match root.get_mut("debug_overlay") {
+    let flat_legacy_setting = match root.get("debug_overlay") {
         Some(serde_json::Value::Bool(_)) => root.remove("debug_overlay"),
-        Some(_) => return, // the explicit new block wins; drop only the stale grouped boolean
+        Some(_) => return, // Leave explicit new-format values for Serde to validate.
         None => None,
     };
-    let grouped = root
+
+    let grouped_legacy_setting = root
         .get_mut("logging")
         .and_then(|logging| logging.as_object_mut())
         .and_then(|logging| logging.remove("debug_overlay"));
-    if root.contains_key("debug_overlay") {
-        return;
-    }
-    let Some(setting) = flat.or(grouped) else {
+    let Some(setting) = flat_legacy_setting.or(grouped_legacy_setting) else {
         return;
     };
     root.insert(
@@ -265,7 +257,7 @@ where
     }
     Ok(match HexColor::deserialize(deserializer)? {
         HexColor::Text(text) => text,
-        HexColor::Number(value) => format!("#{:06X}", value & 0x00ff_ffff),
+        HexColor::Number(value) => format!("#{:06X}", value & u64::from(RGB_MASK)),
     })
 }
 
@@ -281,7 +273,7 @@ pub(crate) fn parse_hex_color(text: &str) -> Option<u32> {
     if hex.len() != 6 && hex.len() != 8 {
         return None;
     }
-    u32::from_str_radix(hex, 16)
-        .ok()
-        .map(|value| value & 0x00ff_ffff)
+
+    let value = u32::from_str_radix(hex, 16).ok()?;
+    Some(value & RGB_MASK)
 }

@@ -27,11 +27,14 @@ use crate::native_layout::Creature;
 
 use windows_sys::Win32::System::{
     Diagnostics::Debug::{
-        AddVectoredExceptionHandler, MiniDumpWriteDump, RtlCaptureStackBackTrace, SetUnhandledExceptionFilter,
-        EXCEPTION_POINTERS, MINIDUMP_EXCEPTION_INFORMATION,
+        AddVectoredExceptionHandler, MiniDumpWriteDump, RtlCaptureStackBackTrace,
+        SetUnhandledExceptionFilter, EXCEPTION_POINTERS, MINIDUMP_EXCEPTION_INFORMATION,
     },
-    LibraryLoader::{GetModuleFileNameW, GetModuleHandleExW},
-    Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION},
+    LibraryLoader::{
+        GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+    },
+    Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS},
     Threading::{GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId},
 };
 
@@ -56,7 +59,11 @@ pub fn debug() -> bool {
 pub fn banner() -> String {
     format!(
         "hf_ally v{VERSION} (build {BUILD} UTC){}",
-        if debug() { " DEBUG MODE (debug_log): verbose, writes a large extra log file and a crash dump" } else { "" }
+        if debug() {
+            " DEBUG MODE (debug_log): verbose, writes a large extra log file and a crash dump"
+        } else {
+            ""
+        }
     )
 }
 
@@ -64,14 +71,24 @@ static START: OnceLock<Instant> = OnceLock::new();
 static FILE: Mutex<Option<File>> = Mutex::new(None);
 
 fn unix_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn write_file(msg: &str, in_crash: bool) {
-    let t = START.get().map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0);
+    let t = START
+        .get()
+        .map(|s| s.elapsed().as_secs_f64())
+        .unwrap_or(0.0);
     let line = format!("[+{t:9.3}] {msg}\n");
     // a crash may have happened while another thread held the lock: never wait for it there
-    let guard = if in_crash { FILE.try_lock().ok() } else { FILE.lock().ok() };
+    let guard = if in_crash {
+        FILE.try_lock().ok()
+    } else {
+        FILE.lock().ok()
+    };
     if let Some(mut guard) = guard {
         if let Some(file) = guard.as_mut() {
             let _ = file.write_all(line.as_bytes()); // unbuffered: it reaches the OS even if the process dies next
@@ -104,25 +121,34 @@ impl Drop for Scope {
     }
 }
 fn current_hook() -> String {
-    let (ptr, len) = (HOOK_PTR.load(Ordering::Relaxed), HOOK_LEN.load(Ordering::Relaxed));
+    let (ptr, len) = (
+        HOOK_PTR.load(Ordering::Relaxed),
+        HOOK_LEN.load(Ordering::Relaxed),
+    );
     if ptr == 0 {
         return "none (the game's own code)".to_string();
     }
-    unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(ptr as *const u8, len)).into_owned() }
+    unsafe {
+        String::from_utf8_lossy(std::slice::from_raw_parts(ptr as *const u8, len)).into_owned()
+    }
 }
 
 // --- crash report ---
 
 /// Where `addr` lives: `module.dll+0xoffset`, plus the Ghidra address for the game's own exe.
 unsafe fn where_is(addr: usize) -> String {
+    const MODULE_PATH_CAPACITY: usize = 260;
+
     let mut module = std::ptr::null_mut();
-    // FROM_ADDRESS (2) | UNCHANGED_REFCOUNT (1)
-    if GetModuleHandleExW(3, addr as *const u16, &mut module) == 0 || module.is_null() {
+    let flags =
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+    if GetModuleHandleExW(flags, addr as *const u16, &mut module) == 0 || module.is_null() {
         return format!("{addr:#x} (no module)");
     }
-    let mut buf = [0u16; 260];
-    let n = GetModuleFileNameW(module, buf.as_mut_ptr(), 260) as usize;
-    let path = String::from_utf16_lossy(&buf[..n.min(260)]);
+
+    let mut path_buffer = [0u16; MODULE_PATH_CAPACITY];
+    let written = GetModuleFileNameW(module, path_buffer.as_mut_ptr(), path_buffer.len() as u32);
+    let path = String::from_utf16_lossy(&path_buffer[..(written as usize).min(path_buffer.len())]);
     let name = path.rsplit(['\\', '/']).next().unwrap_or("?");
     let offset = addr - module as usize;
     if module as usize == crate::native::IMAGE_BASE {
@@ -134,11 +160,17 @@ unsafe fn where_is(addr: usize) -> String {
 
 unsafe fn readable(addr: usize) -> bool {
     let mut info: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
-    if VirtualQuery(addr as *const c_void, &mut info, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 {
+    if VirtualQuery(
+        addr as *const c_void,
+        &mut info,
+        std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+    ) == 0
+    {
         return false;
     }
-    // MEM_COMMIT, and not PAGE_NOACCESS (0x01) / PAGE_GUARD (0x100)
-    info.State == 0x1000 && info.Protect & 0x101 == 0 && info.Protect != 0
+    info.State == MEM_COMMIT
+        && info.Protect & (PAGE_NOACCESS | PAGE_GUARD) == 0
+        && info.Protect != 0
 }
 
 fn emit(report: &str, in_crash: bool) {
@@ -150,6 +182,12 @@ fn emit(report: &str, in_crash: bool) {
 }
 
 unsafe fn report(kind: &str, info: *const EXCEPTION_POINTERS) {
+    const MAX_BACKTRACE_FRAMES: usize = 48;
+    const STACK_SCAN_SLOTS: usize = 384;
+    const MAX_STACK_HITS: usize = 40;
+
+    // SAFETY: Both Win32 exception callbacks receive these records from the OS; the references
+    // stay inside this synchronous callback and are never retained or used to modify the context.
     let rec = &*(*info).ExceptionRecord;
     let ctx = &*(*info).ContextRecord;
     let code = rec.ExceptionCode as u32;
@@ -167,7 +205,11 @@ unsafe fn report(kind: &str, info: *const EXCEPTION_POINTERS) {
             1 => "writing",
             _ => "executing",
         };
-        let _ = writeln!(s, "CRASH access violation {how} address {:#x}", rec.ExceptionInformation[1]);
+        let _ = writeln!(
+            s,
+            "CRASH access violation {how} address {:#x}",
+            rec.ExceptionInformation[1]
+        );
     }
     let _ = writeln!(
         s,
@@ -179,31 +221,42 @@ unsafe fn report(kind: &str, info: *const EXCEPTION_POINTERS) {
         "CRASH regs r8={:#x} r9={:#x} r10={:#x} r11={:#x} r12={:#x} r13={:#x} r14={:#x} r15={:#x} rip={:#x}",
         ctx.R8, ctx.R9, ctx.R10, ctx.R11, ctx.R12, ctx.R13, ctx.R14, ctx.R15, ctx.Rip
     );
-    let mut frames = [std::ptr::null_mut::<c_void>(); 48];
-    let n = RtlCaptureStackBackTrace(0, 48, frames.as_mut_ptr(), std::ptr::null_mut()) as usize;
-    for (i, f) in frames[..n].iter().enumerate() {
-        let _ = writeln!(s, "CRASH frame {i}: {}", where_is(*f as usize));
+
+    let mut frames = [std::ptr::null_mut::<c_void>(); MAX_BACKTRACE_FRAMES];
+    let captured = RtlCaptureStackBackTrace(
+        0,
+        frames.len() as u32,
+        frames.as_mut_ptr(),
+        std::ptr::null_mut(),
+    ) as usize;
+    for (index, frame) in frames[..captured].iter().enumerate() {
+        let _ = writeln!(s, "CRASH frame {index}: {}", where_is(*frame as usize));
     }
-    // raw scan of the faulting thread's stack for return addresses (the unwinder above can lose the trail)
+
+    // The unwinder above can lose the trail. Look for candidate return addresses on the faulting stack.
     let mut hits = 0;
     let mut checked_page = 0usize;
-    let mut page_ok = false;
-    for i in 0..384usize {
-        let slot = ctx.Rsp as usize + i * 8;
-        if slot / 4096 != checked_page {
-            checked_page = slot / 4096;
-            page_ok = readable(slot);
+    let mut page_readable = false;
+    for index in 0..STACK_SCAN_SLOTS {
+        let slot = ctx.Rsp as usize + index * std::mem::size_of::<usize>();
+        let page = slot / PAGE_SIZE;
+        if page != checked_page {
+            checked_page = page;
+            page_readable = readable(slot);
         }
-        if !page_ok || hits >= 40 {
+        if !page_readable || hits >= MAX_STACK_HITS {
             continue;
         }
         let value = (slot as *const usize).read_unaligned();
-        if value < 0x1_0000 || value > 0x7fff_ffff_ffff {
+        if !(0x1_0000..=0x7fff_ffff_ffff).contains(&value) {
             continue;
         }
         let place = where_is(value);
-        if !place.ends_with("(no module)") && !place.starts_with("ntdll") && !place.starts_with("KERNEL") {
-            let _ = writeln!(s, "CRASH stack[{i}] = {place}");
+        if !place.ends_with("(no module)")
+            && !place.starts_with("ntdll")
+            && !place.starts_with("KERNEL")
+        {
+            let _ = writeln!(s, "CRASH stack[{index}] = {place}");
             hits += 1;
         }
     }
@@ -229,7 +282,10 @@ static PREVIOUS_FILTER: AtomicUsize = AtomicUsize::new(0);
 /// always lets the search go on (0 = EXCEPTION_CONTINUE_SEARCH).
 unsafe extern "system" fn vectored_handler(info: *mut EXCEPTION_POINTERS) -> i32 {
     let code = (*(*info).ExceptionRecord).ExceptionCode as u32;
-    if !FATAL.contains(&code) || VEH_SEEN.fetch_add(1, Ordering::Relaxed) >= 6 || BUSY.swap(true, Ordering::Relaxed) {
+    if !FATAL.contains(&code)
+        || VEH_SEEN.fetch_add(1, Ordering::Relaxed) >= 6
+        || BUSY.swap(true, Ordering::Relaxed)
+    {
         return 0;
     }
     report("first chance, the game may still handle it", info);
@@ -247,7 +303,8 @@ unsafe extern "system" fn unhandled_filter(info: *const EXCEPTION_POINTERS) -> i
     }
     let previous = PREVIOUS_FILTER.load(Ordering::Relaxed);
     if previous != 0 {
-        let previous: unsafe extern "system" fn(*const EXCEPTION_POINTERS) -> i32 = std::mem::transmute(previous);
+        let previous: unsafe extern "system" fn(*const EXCEPTION_POINTERS) -> i32 =
+            std::mem::transmute(previous);
         return previous(info);
     }
     0
@@ -275,13 +332,22 @@ unsafe fn write_dump(info: *const EXCEPTION_POINTERS) {
         std::ptr::null(),
         std::ptr::null(),
     );
-    emit(&format!("CRASH dump {path}: {}", if ok != 0 { "written" } else { "FAILED" }), true);
+    emit(
+        &format!(
+            "CRASH dump {path}: {}",
+            if ok != 0 { "written" } else { "FAILED" }
+        ),
+        true,
+    );
 }
 
 // --- megalog watchdog ---
 
 fn watchdog() {
-    use crate::native::{count, read, BATTLE_RESULT, CLOCK, CREATURES_BEGIN, CREATURES_END, RESERVE, ROSTER_BEGIN, ROSTER_END, SCENE_FLAGS, SCENE_SELECTOR};
+    use crate::native::{
+        count, read, BATTLE_RESULT, CLOCK, CREATURES_BEGIN, CREATURES_END, RESERVE, ROSTER_BEGIN,
+        ROSTER_END, SCENE_FLAGS, SCENE_SELECTOR,
+    };
     let mut last = String::new();
     let mut tick = 0u64;
     loop {
@@ -301,7 +367,10 @@ fn watchdog() {
             )
         };
         if state != last {
-            write_file(&format!("STATE {state} t={:.2}", unsafe { read::<f64>(CLOCK) }), false);
+            write_file(
+                &format!("STATE {state} t={:.2}", unsafe { read::<f64>(CLOCK) }),
+                false,
+            );
             last = state;
         }
         if tick.is_multiple_of(5) {
@@ -326,7 +395,13 @@ pub fn install() {
     START.get_or_init(Instant::now);
     let previous_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
-        emit(&format!("PANIC in hf_ally v{VERSION} build {BUILD}, hook running: {}: {info}", current_hook()), true);
+        emit(
+            &format!(
+                "PANIC in hf_ally v{VERSION} build {BUILD}, hook running: {}: {info}",
+                current_hook()
+            ),
+            true,
+        );
         previous_hook(info);
     }));
     unsafe {
@@ -357,22 +432,37 @@ fn start_megalog() {
                 *guard = Some(file);
             }
             write_file(&banner(), false);
-            write_file(&format!("megalog file {path}, process id {}", unsafe { GetCurrentProcessId() }), false);
+            write_file(
+                &format!("megalog file {path}, process id {}", unsafe {
+                    GetCurrentProcessId()
+                }),
+                false,
+            );
         }
         Err(error) => log::warn!("hf_ally: cannot create {path}: {error}"),
     }
-    let _ = std::thread::Builder::new().name("hf_ally_watchdog".into()).spawn(watchdog);
+    let _ = std::thread::Builder::new()
+        .name("hf_ally_watchdog".into())
+        .spawn(watchdog);
 }
 
-// --- fleet snapshot (debug build) ---
+// --- fleet snapshot (runtime debug mode) ---
 
 const CURRENT_LOCATION: usize = 0x1_43a1_1940; // pointer to the location the player is at
 const PLAYER_ESCADRA: usize = 0x1_43a1_3eb0; // pointer to the player's fleet
 const PLAYER_SIDE_VEC: (usize, usize) = (0x1_43a1_58e0, 0x1_43a1_58e8); // Links (0x18 bytes, fleet pointer at +8)
 const PAGE_SIZE: usize = 4096;
+const PROFILE_FLEETS_BEGIN: usize = 0x1f8;
+const PROFILE_FLEETS_END: usize = 0x200;
+const PROFILE_FLEET_LIMIT: usize = 256;
 static LAST_SNAPSHOT: Mutex<String> = Mutex::new(String::new());
 
-/// Reads `T` at `addr` only if the page is mapped and readable (a snapshot must never fault the game).
+/// Reads a scalar `T` after checking the first and last pages of the read.
+///
+/// # Safety
+/// Use only for non-owning, nonzero-size plain data no larger than a page. The caller must
+/// establish that the bytes belong to the expected live object, are valid for `T`, and are not
+/// written concurrently. A page query does not prove those conditions or hold the mapping open.
 pub unsafe fn rd<T: Copy>(addr: usize) -> Option<T> {
     let end = addr.checked_add(std::mem::size_of::<T>())?;
     let last = end - 1;
@@ -385,6 +475,27 @@ pub unsafe fn rd<T: Copy>(addr: usize) -> Option<T> {
         return None;
     }
     Some((addr as *const T).read_unaligned())
+}
+
+/// Reads and bounds the profile's fleet pointer vector header without dereferencing its entries.
+///
+/// # Safety
+/// `profile` must identify the current game-owned profile while called on the game thread.
+unsafe fn profile_fleet_slots(profile: usize) -> Option<(usize, usize)> {
+    let (begin, end) = (
+        rd::<usize>(profile + PROFILE_FLEETS_BEGIN),
+        rd::<usize>(profile + PROFILE_FLEETS_END),
+    );
+    let (begin, end) = (begin?, end?);
+    if begin < 0x10000 || end < begin {
+        return None;
+    }
+    let count = (end - begin) / std::mem::size_of::<usize>();
+    if count > PROFILE_FLEET_LIMIT {
+        return None;
+    }
+
+    Some((begin, count))
 }
 
 /// Check every page of a bounded native span without manufacturing an owning container.
@@ -416,7 +527,9 @@ pub unsafe fn readable_span(address: usize, bytes: usize) -> bool {
 /// One line per ship of a fleet: the creature behind each list entry with the flags a landing or a battle uses
 /// (`m_incity` +0xb6c, `m_landing` +0xb6d, AI flag +0xbd4, order +0xd70, state +0xbdc, side +0xad4).
 unsafe fn ships_of(fleet: usize) -> String {
-    let Some(sentinel) = rd::<usize>(fleet + 0x100) else { return "list unreadable".into() };
+    let Some(sentinel) = rd::<usize>(fleet + 0x100) else {
+        return "list unreadable".into();
+    };
     let mut out = String::new();
     let mut node = rd::<usize>(sentinel).unwrap_or(sentinel);
     for _ in 0..64 {
@@ -426,7 +539,8 @@ unsafe fn ships_of(fleet: usize) -> String {
         let prop = rd::<usize>(node + 0x10).unwrap_or(0);
         // the game's own accessor (what `FUN_1400f5b40` calls on every list entry); null when the ship is not spawned
         let creature = if prop != 0 && readable(prop) {
-            let linked: unsafe extern "C" fn(usize) -> usize = std::mem::transmute(0x1_4021_b070usize);
+            let linked: unsafe extern "C" fn(usize) -> usize =
+                std::mem::transmute(0x1_4021_b070usize);
             linked(prop)
         } else {
             0
@@ -457,53 +571,81 @@ pub unsafe fn snapshot(why: std::fmt::Arguments<'_>) {
     if !debug() {
         return;
     }
-    let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(crate::native::GET_PROFILE);
+    let get_profile: unsafe extern "C" fn() -> usize =
+        std::mem::transmute(crate::native::GET_PROFILE);
     let profile = get_profile();
     let here = rd::<usize>(CURRENT_LOCATION).unwrap_or(0);
     let player = rd::<usize>(PLAYER_ESCADRA).unwrap_or(0);
     let mut s = format!("location={here:#x} player_fleet={player:#x}\n");
-    let (begin, end) = (rd::<usize>(profile + 0x1f8).unwrap_or(0), rd::<usize>(profile + 0x200).unwrap_or(0));
     let mut fleets = Vec::new();
-    if begin >= 0x10000 && end >= begin && (end - begin) / 8 <= 256 {
-        for i in 0..(end - begin) / 8 {
-            fleets.push(rd::<usize>(begin + i * 8).unwrap_or(0));
+    if let Some((begin, count)) = profile_fleet_slots(profile) {
+        for index in 0..count {
+            fleets.push(rd::<usize>(begin + index * std::mem::size_of::<usize>()).unwrap_or(0));
         }
     }
-    let _ = writeln!(s, "profile fleets: {} (enemy/neutral fleets elsewhere are not listed)", fleets.len());
+    let _ = writeln!(
+        s,
+        "profile fleets: {} (enemy/neutral fleets elsewhere are not listed)",
+        fleets.len()
+    );
     let mut omitted = 0;
-    for &f in &fleets {
-        // enemy and neutral fleets are only counted: they move every tick and would flood the log
-        if f != 0 && f != player && rd::<f32>(f + 0x128).map_or(false, |side| side <= 0.0) && !(here != 0 && rd::<usize>(f + 0x340) == Some(here)) {
-            omitted += 1;
-            continue;
-        }
-        if f == 0 {
+    for &fleet in &fleets {
+        if fleet == 0 {
             let _ = writeln!(s, "  FLEET null entry");
             continue;
         }
+
+        // Enemy and neutral fleets elsewhere are counted but not listed: their movement would
+        // invalidate the snapshot every tick.
+        let remote_nonplayer_fleet = fleet != player
+            && rd::<f32>(fleet + 0x128).is_some_and(|side| side <= 0.0)
+            && !(here != 0 && rd::<usize>(fleet + 0x340) == Some(here));
+        if remote_nonplayer_fleet {
+            omitted += 1;
+            continue;
+        }
+
         let _ = writeln!(
             s,
-            "  FLEET {f:#x}{}{} side={} here={} flag461={} f368={} count108={} ships:{}",
-            if f == player { " PLAYER" } else { "" },
-            "",
-            rd::<f32>(f + 0x128).unwrap_or(f32::NAN),
-            rd::<usize>(f + 0x340) == Some(here),
-            rd::<u8>(f + 0x461).map_or(-1, i32::from),
-            rd::<f32>(f + 0x368).unwrap_or(f32::NAN),
-            rd::<usize>(f + 0x108).map_or(-1, |v| v as i64),
-            ships_of(f)
+            "  FLEET {fleet:#x}{} side={} here={} flag461={} f368={} count108={} ships:{}",
+            if fleet == player { " PLAYER" } else { "" },
+            rd::<f32>(fleet + 0x128).unwrap_or(f32::NAN),
+            rd::<usize>(fleet + 0x340) == Some(here),
+            rd::<u8>(fleet + 0x461).map_or(-1, i32::from),
+            rd::<f32>(fleet + 0x368).unwrap_or(f32::NAN),
+            rd::<usize>(fleet + 0x108).map_or(-1, |count| count as i64),
+            ships_of(fleet)
         );
     }
     let _ = writeln!(s, "  ({omitted} enemy/neutral fleets not listed)");
-    let (vb, ve) = (rd::<usize>(PLAYER_SIDE_VEC.0).unwrap_or(0), rd::<usize>(PLAYER_SIDE_VEC.1).unwrap_or(0));
+    let (vb, ve) = (
+        rd::<usize>(PLAYER_SIDE_VEC.0).unwrap_or(0),
+        rd::<usize>(PLAYER_SIDE_VEC.1).unwrap_or(0),
+    );
     let mut entries = String::new();
     if vb >= 0x10000 && ve >= vb && (ve - vb) / 0x18 <= 64 {
         for i in 0..(ve - vb) / 0x18 {
             let node = rd::<usize>(vb + i * 0x18 + 8).unwrap_or(0);
-            let _ = write!(entries, " {node:#x}{}", if node != 0 && fleets.contains(&node) { "" } else { "(NOT in profile)" });
+            let _ = write!(
+                entries,
+                " {node:#x}{}",
+                if node != 0 && fleets.contains(&node) {
+                    ""
+                } else {
+                    "(NOT in profile)"
+                }
+            );
         }
     }
-    let _ = writeln!(s, "  PLAYER-SIDE VECTOR (0x143a158e0): {} entries:{entries}", if vb == 0 { 0 } else { (ve.saturating_sub(vb)) / 0x18 });
+    let _ = writeln!(
+        s,
+        "  PLAYER-SIDE VECTOR (0x143a158e0): {} entries:{entries}",
+        if vb == 0 {
+            0
+        } else {
+            (ve.saturating_sub(vb)) / 0x18
+        }
+    );
     if let Ok(mut last) = LAST_SNAPSHOT.lock() {
         if *last == s {
             return;
@@ -517,18 +659,22 @@ pub unsafe fn snapshot(why: std::fmt::Arguments<'_>) {
 /// Used before writing to a ship that left the battle: a destroyed ship's object is gone and must not be touched.
 /// Every pointer is checked for readability first.
 pub unsafe fn fleet_has_ship(ship: usize) -> bool {
-    let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(crate::native::GET_PROFILE);
+    let get_profile: unsafe extern "C" fn() -> usize =
+        std::mem::transmute(crate::native::GET_PROFILE);
     let profile = get_profile();
-    let (Some(begin), Some(end)) = (rd::<usize>(profile + 0x1f8), rd::<usize>(profile + 0x200)) else { return false };
-    if begin < 0x10000 || end < begin || (end - begin) / 8 > 256 {
+    let Some((begin, count)) = profile_fleet_slots(profile) else {
         return false;
-    }
-    for i in 0..(end - begin) / 8 {
-        let Some(fleet) = rd::<usize>(begin + i * 8) else { continue };
-        if fleet == 0 || !rd::<f32>(fleet + 0x128).map_or(false, |side| side > 0.0) {
+    };
+    for index in 0..count {
+        let Some(fleet) = rd::<usize>(begin + index * std::mem::size_of::<usize>()) else {
+            continue;
+        };
+        if fleet == 0 || !rd::<f32>(fleet + 0x128).is_some_and(|side| side > 0.0) {
             continue;
         }
-        let Some(sentinel) = rd::<usize>(fleet + 0x100) else { continue };
+        let Some(sentinel) = rd::<usize>(fleet + 0x100) else {
+            continue;
+        };
         let mut node = rd::<usize>(sentinel).unwrap_or(sentinel);
         for _ in 0..64 {
             if node == sentinel || node == 0 {
@@ -536,7 +682,8 @@ pub unsafe fn fleet_has_ship(ship: usize) -> bool {
             }
             let prop = rd::<usize>(node + 0x10).unwrap_or(0);
             if prop != 0 && readable(prop) {
-                let linked: unsafe extern "C" fn(usize) -> usize = std::mem::transmute(0x1_4021_b070usize);
+                let linked: unsafe extern "C" fn(usize) -> usize =
+                    std::mem::transmute(0x1_4021_b070usize);
                 if linked(prop) == ship {
                     return true;
                 }

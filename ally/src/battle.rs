@@ -28,13 +28,14 @@ use crate::honor_share;
 use crate::lifecycle_log;
 use crate::native::{
     count, live_ship, plausible, read, roster, GetProfileFn, SetControlledFn, SetLinkFn,
-    BATTLE_RESULT, CLOCK, CONTROLLED_LINKS, CREATURES_BEGIN, CREATURES_END, CREATURE_LIST_LIMIT,
-    ENEMIES_BEGIN, ENEMIES_END, GET_PROFILE, GET_PROFILE_PROLOGUE, IMAGE_BASE, LINK_STRIDE,
-    OFF_ACTIVE, OFF_AGGRESSION, OFF_AI_FLAG, OFF_CODE, OFF_MODE_D70, OFF_POS_X, OFF_POS_Y,
-    OFF_PRIZE, OFF_SIDE, OFF_STATE, OFF_TARGET, OFF_TARGET_LINK, RESERVE, ROSTER_BEGIN,
-    SCENE_SELECTOR, SET_CONTROLLED, SET_CONTROLLED_PROLOGUE, SET_LINK, SET_LINK_PROLOGUE,
+    ACTIVE_DIALOG, BATTLE_RESULT, CLOCK, CONTROLLED_LINKS, CREATURES_BEGIN, CREATURES_END,
+    CREATURE_LIST_LIMIT, ENEMIES_BEGIN, ENEMIES_END, FRAME_DT, GET_PROFILE, GET_PROFILE_PROLOGUE,
+    IMAGE_BASE, IN_COMBAT, LINK_STRIDE, OFF_ACTIVE, OFF_AGGRESSION, OFF_AI_FLAG, OFF_CODE,
+    OFF_MODE_D70, OFF_POS_X, OFF_POS_Y, OFF_PRIZE, OFF_SIDE, OFF_STATE, OFF_TARGET,
+    OFF_TARGET_LINK, RESERVE, ROSTER_BEGIN, SCENE_SELECTOR, SET_CONTROLLED,
+    SET_CONTROLLED_PROLOGUE, SET_LINK, SET_LINK_PROLOGUE,
 };
-use crate::native_layout::Creature;
+use crate::native_layout::{Creature, NODE_OWNER};
 use crate::plane_loadouts;
 use crate::precombat;
 use crate::second_player;
@@ -78,9 +79,28 @@ const DEPLOY_K: usize = 0x1_4035_b974;
 const DEPLOY_AGGR: usize = 0x1_4035_24d8;
 const ALLY_SLOT: usize = 1;
 const RETREAT_POINT: usize = 0x1_47fc_7638;
+/// The game's enemy wave timer, reported in the retreat log.
+const WAVE_TIMER: usize = 0x1_47fc_7020;
 /// Arena extents `[xmax, ymax, xmin, ymin]` (f32 each), used by stock AI and deploy.
 const BOUNDS_ADDRESS: usize = 0x1_403c_2bc0;
 const OFF_RADIUS: usize = offset_of!(Creature, bounding_radius);
+
+/// Pre-combat ship numbers: 1 is the player, 2 is the first selectable reserve ship.
+const FIRST_ALLY_SHIP_NUMBER: usize = 2;
+const MAX_SHIP_NUMBER: usize = 9;
+
+/// A reserve-list node is `{ next, prev }`; the list's sentinel `next` is its front.
+const RESERVE_NEXT: usize = 0;
+const RESERVE_PREV: usize = 8;
+/// The `RESERVE` global is `{ head, size }`: the word after the sentinel pointer is the entry count.
+const RESERVE_SIZE: usize = 8;
+/// Ceiling on the reserve entries the manager tracks in one battle.
+const RESERVE_LIMIT: usize = 32;
+/// At most one ally deploy per this many game seconds.
+const DEPLOY_INTERVAL_S: f64 = 3.0;
+
+/// Win32 `GetAsyncKeyState` sets the high bit of the result while the key is held.
+const KEY_DOWN_BIT: u16 = 0x8000;
 
 type DeployFn =
     unsafe extern "C" fn(usize, usize, *mut u64, u64, f32, f32, f32, f32, u32, i32) -> u8;
@@ -233,24 +253,24 @@ pub(crate) unsafe fn install_prize_guard(
     let sites_ok = TARGET_SITES
         .iter()
         .all(|(site, bytes)| std::slice::from_raw_parts(*site as *const u8, 5) == bytes);
-    if target_ok && sites_ok {
-        for (site, bytes) in TARGET_SITES {
-            let mut trampoline = Trampoline::new();
-            trampoline.bytes(&[0x51, 0x48, 0x83, 0xec, 0x28]); // push rcx; sub rsp, 0x28
-            trampoline.absolute_call(TARGET_FN as *const ());
-            trampoline.bytes(&[0x48, 0x83, 0xc4, 0x28, 0x59]); // add rsp, 0x28; pop rcx
-            trampoline.preserved_call(on_target_chosen as *const (), &[], &[], ReturnType::None);
-            trampoline.relative_jump(site + bytes.len());
-            session
-                .detour_trampoline(site, bytes.len(), trampoline)
-                .map_err(|e| e.to_string())?;
-        }
-    } else {
+    if !target_ok || !sites_ok {
         log::warn!(
             "hf_ally: AI target choice hooks differ; prize protection and focus command are unavailable"
         );
         SPARE_PRIZES.store(false, Ordering::Relaxed);
         FOCUS_KEY.store(0, Ordering::Relaxed);
+        return Ok(());
+    }
+    for (site, bytes) in TARGET_SITES {
+        let mut trampoline = Trampoline::new();
+        trampoline.bytes(&[0x51, 0x48, 0x83, 0xec, 0x28]); // push rcx; sub rsp, 0x28
+        trampoline.absolute_call(TARGET_FN as *const ());
+        trampoline.bytes(&[0x48, 0x83, 0xc4, 0x28, 0x59]); // add rsp, 0x28; pop rcx
+        trampoline.preserved_call(on_target_chosen as *const (), &[], &[], ReturnType::None);
+        trampoline.relative_jump(site + bytes.len());
+        session
+            .detour_trampoline(site, bytes.len(), trampoline)
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -346,24 +366,24 @@ unsafe fn ally_sound_events(ships: &[usize]) {
         }
     }
     let enemies = count(ENEMIES_BEGIN, ENEMIES_END, 0x18);
-    let mut gone = Vec::new();
+    let mut left_roster = Vec::new();
     for &p in allies.iter() {
-        let here = ships.contains(&p);
+        let in_roster = ships.contains(&p);
         let last_state = last.iter().find(|e| e.0 == p).map_or(-1, |e| e.1);
-        let dead = if here {
+        let dead = if in_roster {
             matches!(read::<i32>(p + OFF_STATE), 6 | 7)
         } else {
-            gone.push(p);
-            let extracted = SUM_FLAGS.load(Ordering::Relaxed) & F_EXTRACTED != 0
+            left_roster.push(p);
+            let not_destroyed = SUM_FLAGS.load(Ordering::Relaxed) & F_EXTRACTED != 0
                 || matches!(last_state, 2 | 6 | 7 | -1);
-            if extracted || enemies == 0 {
+            if not_destroyed || enemies == 0 {
                 log::info!("ALLY c={p:#x} left the roster, not destroyed (last state {last_state}, enemies {enemies})");
             }
             // retreated alive: flying out (state 2) when it vanished, or extracted with the flagship
             if SUM_FLAGS.load(Ordering::Relaxed) & F_EXTRACTED != 0 || last_state == 2 {
                 sound::retreated();
             }
-            !extracted && enemies != 0
+            !not_destroyed && enemies != 0
         };
         if !dead || announced.contains(&p) {
             continue;
@@ -373,11 +393,11 @@ unsafe fn ally_sound_events(ships: &[usize]) {
         if ALLY_PTR.load(Ordering::Relaxed) == p {
             SUM_ALLY_STATE.store(6, Ordering::Relaxed);
         }
-        log::info!("ALLY lost: c={p:#x} destroyed (last state {last_state}, in roster {here}, enemies {enemies})");
+        log::info!("ALLY lost: c={p:#x} destroyed (last state {last_state}, in roster {in_roster}, enemies {enemies})");
         diag::flush_log();
         sound::lost();
     }
-    allies.retain(|p| !gone.contains(p));
+    allies.retain(|p| !left_roster.contains(p));
     last.retain(|e| ships.contains(&e.0));
 }
 
@@ -433,17 +453,24 @@ pub(crate) unsafe extern "C" fn on_spawn(template: usize, caller: usize) {
     lifecycle_log::log_spawn(template, caller);
 }
 
+/// Moves reserve entry `k` (0 = the front) to the front of the circular sentinel list at `RESERVE`.
+/// Returns false if the walk reaches a null pointer or the sentinel before entry `k`.
+///
+/// # Safety
+/// Call on the game thread inside the battle hook, while the native reserve list is this battle's.
+/// The traversed nodes and both neighbors must be live, and the links must be consistent. Only
+/// scalar pointers are relinked; no nodes are copied or transferred to Rust ownership.
 unsafe fn reserve_to_front(k: usize) -> bool {
     let sentinel: usize = read(RESERVE);
     if sentinel == 0 {
         return false;
     }
-    let mut node: usize = read(sentinel);
+    let mut node: usize = read(sentinel + RESERVE_NEXT);
     for _ in 0..k {
         if node == 0 || node == sentinel {
             return false;
         }
-        node = read(node);
+        node = read(node + RESERVE_NEXT);
     }
     if node == 0 || node == sentinel {
         return false;
@@ -451,13 +478,13 @@ unsafe fn reserve_to_front(k: usize) -> bool {
     if k == 0 {
         return true;
     }
-    let (next, prev): (usize, usize) = (read(node), read(node + 8));
+    let (next, prev): (usize, usize) = (read(node + RESERVE_NEXT), read(node + RESERVE_PREV));
     (prev as *mut usize).write_unaligned(next); // prev.next = next
-    ((next + 8) as *mut usize).write_unaligned(prev); // next.prev = prev
-    let first: usize = read(sentinel);
+    ((next + RESERVE_PREV) as *mut usize).write_unaligned(prev); // next.prev = prev
+    let first: usize = read(sentinel + RESERVE_NEXT);
     (node as *mut usize).write_unaligned(first);
-    ((node + 8) as *mut usize).write_unaligned(sentinel);
-    ((first + 8) as *mut usize).write_unaligned(node);
+    ((node + RESERVE_PREV) as *mut usize).write_unaligned(sentinel);
+    ((first + RESERVE_PREV) as *mut usize).write_unaligned(node);
     (sentinel as *mut usize).write_unaligned(node);
     true
 }
@@ -466,6 +493,8 @@ unsafe fn reserve_to_front(k: usize) -> bool {
 /// The role stays on the ship after it returns to the fleet (the game never resets it), so it is put back.
 static ORDERED: Mutex<Vec<(usize, i32, u32)>> = Mutex::new(Vec::new());
 pub(crate) const ORDER_BOMBING: i32 = 2;
+/// How many checks `restore_orders` makes for a ship that is in no player fleet before giving up on it.
+const RESTORE_ORDER_MISS_LIMIT: u32 = 40;
 
 /// Puts the order back on every ordered ship that is out of the battle and still in a player fleet. A ship that
 /// is still fighting waits; a ship that is in no fleet (destroyed, object gone) is never touched.
@@ -491,7 +520,7 @@ pub(crate) unsafe fn restore_orders(why: &str, final_try: bool) {
             return false;
         }
         *misses += 1;
-        if final_try || *misses >= 40 {
+        if final_try || *misses >= RESTORE_ORDER_MISS_LIMIT {
             log::info!("ALLY order not restored ({why}): c={:#x} is in no player fleet (destroyed?), left alone", *ship);
             return false;
         }
@@ -536,6 +565,7 @@ unsafe fn order_retreat(ally: usize, why: &str) -> bool {
 
 static FUEL_RETREAT_PERCENT: AtomicU32 = AtomicU32::new(0); // f32 bits
 static FUEL_LOG_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0); // f64 bits of the game clock
+const FUEL_LOG_INTERVAL_S: f64 = 10.0;
 const OFF_FUEL: usize = offset_of!(Creature, fuel); // f64: combat fuel now (the battle burns it: 0x14007a210)
 const OFF_FUEL_CAPACITY: usize = offset_of!(Creature, fuel_capacity); // f64
 const OFF_FUEL_AT_START: usize = 0xbd0; // f32: written at spawn (0x1402672c0), not modeled by highfleet-rs
@@ -567,19 +597,19 @@ unsafe fn fuel_retreat(allies: &[usize]) {
         if !fuel.is_finite() || !basis.is_finite() || basis <= 0.0 {
             continue;
         }
-        let now = fuel / basis * 100.0;
+        let fuel_percent = fuel / basis * 100.0;
         let clock = read::<f64>(CLOCK);
-        if clock - f64::from_bits(FUEL_LOG_AT.load(Ordering::Relaxed)) >= 10.0 {
+        if clock - f64::from_bits(FUEL_LOG_AT.load(Ordering::Relaxed)) >= FUEL_LOG_INTERVAL_S {
             FUEL_LOG_AT.store(clock.to_bits(), Ordering::Relaxed);
             log::info!(
-                "ALLY fuel: c={ally:#x} combat fuel {fuel:.1}, capacity {:.1}, at battle start {:.1}, {now:.1}% of capacity",
+                "ALLY fuel: c={ally:#x} combat fuel {fuel:.1}, capacity {:.1}, at battle start {:.1}, {fuel_percent:.1}% of capacity",
                 read::<f64>(ally + OFF_FUEL_CAPACITY),
                 read::<f32>(ally + OFF_FUEL_AT_START)
             );
         }
-        if now <= percent as f64 {
+        if fuel_percent <= percent as f64 {
             log::info!(
-                "ALLY fuel low: c={ally:#x} combat fuel {fuel:.1} of capacity {basis:.1} = {now:.1}% <= {percent}%, leaving"
+                "ALLY fuel low: c={ally:#x} combat fuel {fuel:.1} of capacity {basis:.1} = {fuel_percent:.1}% <= {percent}%, leaving"
             );
             order_retreat(ally, "fuel");
             sound::danger("fuel retreat");
@@ -622,7 +652,7 @@ unsafe fn border_extract_retreating_allies(allies: &[usize]) {
         let x = read::<f32>(ally + OFF_POS_X);
         let y = read::<f32>(ally + OFF_POS_Y);
         let radius = read::<f32>(ally + OFF_RADIUS);
-        if !(x.is_finite() && y.is_finite()) {
+        if !x.is_finite() || !y.is_finite() {
             continue;
         }
         let margin = if radius.is_finite() && radius > 0.0 {
@@ -667,7 +697,7 @@ unsafe fn retreat_logic(ships: &[usize]) {
     border_extract_retreating_allies(&allies);
     let key = RETREAT_KEY.load(Ordering::Relaxed);
     if key != 0 {
-        let down = GetAsyncKeyState(key as i32) as u16 & 0x8000 != 0;
+        let down = GetAsyncKeyState(key as i32) as u16 & KEY_DOWN_BIT != 0;
         if down && !KEY_WAS_DOWN.swap(true, Ordering::Relaxed) {
             // v0.9.2: only while the player's own ship is flying in the arena. During the fade-out after a retreat
             // (flagship leaving or gone) the scene is being torn down and the order would hit a dying ship.
@@ -734,7 +764,7 @@ unsafe fn retreat_logic(ships: &[usize]) {
             let saved = RETREAT_POINT_SAVED.load(Ordering::Relaxed);
             let now: u64 = read(RETREAT_POINT);
             // only when somebody can still use it: an ally stays, or a reserve ship will take over
-            let someone_left = !allies.is_empty() || read::<usize>(RESERVE + 8) > 0;
+            let someone_left = !allies.is_empty() || read::<usize>(RESERVE + RESERVE_SIZE) > 0;
             if now == 0 && saved != 0 && someone_left {
                 (RETREAT_POINT as *mut u64).write_unaligned(saved);
             }
@@ -761,8 +791,8 @@ unsafe fn retreat_logic(ships: &[usize]) {
                 "ALLY retreat with the flagship: extracted {} ally(s), roster {before} -> {}, reserve {}, wave timer {}",
                 allies.len(),
                 after.len(),
-                read::<usize>(RESERVE + 8),
-                read::<f32>(0x1_47fc_7020),
+                read::<usize>(RESERVE + RESERVE_SIZE),
+                read::<f32>(WAVE_TIMER),
             );
         }
     }
@@ -828,7 +858,7 @@ unsafe fn summary_tick(ships: &[usize]) {
                 Ordering::Relaxed,
             );
             SUM_SQUAD.store(
-                (ships.len() + read::<usize>(RESERVE + 8).min(32)) as u32,
+                (ships.len() + read::<usize>(RESERVE + RESERVE_SIZE).min(RESERVE_LIMIT)) as u32,
                 Ordering::Relaxed,
             );
             SUM_ALLY_STATE.store(-1, Ordering::Relaxed);
@@ -878,7 +908,7 @@ unsafe fn creature_of(node: usize) -> usize {
     if read::<u8>(node + OFF_CODE) & 0x2f == 0x2f {
         return node;
     }
-    let owner: usize = read(node + 0xb8);
+    let owner: usize = read(node + NODE_OWNER);
     if owner != 0 && read::<u8>(owner + OFF_CODE) & 0x2f == 0x2f {
         owner
     } else {
@@ -891,7 +921,7 @@ unsafe fn focus_enemies() -> Vec<usize> {
     let (begin, end): (usize, usize) = (read(CREATURES_BEGIN), read(CREATURES_END));
     if begin < 0x10000
         || end < begin
-        || (end - begin) % LINK_STRIDE != 0
+        || !(end - begin).is_multiple_of(LINK_STRIDE)
         || (end - begin) / LINK_STRIDE > CREATURE_LIST_LIMIT
     {
         return Vec::new();
@@ -917,9 +947,9 @@ unsafe fn boxed_enemy(player: usize, enemies: &[usize]) -> Option<usize> {
     if !plausible(node) {
         return None;
     }
-    // Parts hold their owning creature at +0xb8. The page-checked scalar read is
+    // Parts hold their owning creature at `NODE_OWNER`. The page-checked scalar read is
     // only used to find a matching live-list entry, not to dereference the owner.
-    let owner = diag::rd::<usize>(node + 0xb8)?;
+    let owner = diag::rd::<usize>(node + NODE_OWNER)?;
     enemies.contains(&owner).then_some(owner)
 }
 
@@ -962,7 +992,7 @@ unsafe fn apply_focus(ship: usize, target: usize) {
 
 unsafe fn focus_tick(ships: &[usize]) {
     let key = FOCUS_KEY.load(Ordering::Relaxed);
-    let down = key != 0 && key <= 255 && GetAsyncKeyState(key as i32) as u16 & 0x8000 != 0;
+    let down = key != 0 && key <= 255 && GetAsyncKeyState(key as i32) as u16 & KEY_DOWN_BIT != 0;
     let pressed = down && !FOCUS_KEY_DOWN.swap(down, Ordering::Relaxed);
     if !down {
         FOCUS_KEY_DOWN.store(false, Ordering::Relaxed);
@@ -980,18 +1010,19 @@ unsafe fn focus_tick(ships: &[usize]) {
     if pressed {
         let mut foreground = 0;
         GetWindowThreadProcessId(GetForegroundWindow(), &mut foreground);
-        let dt: f32 = read(0x1_403c_126c);
+        let dt: f32 = read(FRAME_DT);
         let player: usize = read(CONTROLLED_LINKS + 8);
-        if foreground == GetCurrentProcessId()
+        // Only the ship a human flies, in an active and focused battle, may take a focus order.
+        let can_issue = foreground == GetCurrentProcessId()
             && !precombat::is_open()
-            && read::<u8>(0x1_47fc_6fb7) != 0
-            && read::<usize>(0x1_43a1_3e08) == 0
+            && read::<u8>(IN_COMBAT) != 0
+            && read::<usize>(ACTIVE_DIALOG) == 0
             && dt.is_finite()
             && dt > 0.0
             && ships.contains(&player)
             && live_ship(player)
-            && read::<u8>(player + OFF_AI_FLAG) == 0
-        {
+            && read::<u8>(player + OFF_AI_FLAG) == 0;
+        if can_issue {
             if let Some(target) = boxed_enemy(player, &enemies) {
                 let now: f64 = read(CLOCK);
                 if now.is_finite() {
@@ -1089,7 +1120,7 @@ unsafe extern "C" fn on_target_chosen(ship: usize) {
             read::<f32>(p + OFF_POS_Y) - sy,
         );
         let d = dx * dx + dy * dy;
-        if best.map_or(true, |(bd, _)| d < bd) {
+        if best.is_none_or(|(best_distance, _)| d < best_distance) {
             best = Some((d, p));
         }
     }
@@ -1206,10 +1237,10 @@ unsafe extern "C" fn on_battle_tick() {
     }
     // at most one deploy per 3 game seconds
     let last = f64::from_bits(LAST_DEPLOY.load(Ordering::Relaxed));
-    if last != 0.0 && now - last < 3.0 {
+    if last != 0.0 && now - last < DEPLOY_INTERVAL_S {
         return;
     }
-    let reserve: usize = read(RESERVE + 8);
+    let reserve: usize = read(RESERVE + RESERVE_SIZE);
     if !BATTLE_LOGGED.swap(true, Ordering::Relaxed) {
         let (cb, ce): (usize, usize) = (read(CREATURES_BEGIN), read(CREATURES_END));
         let enemy = (cb..ce)
@@ -1225,7 +1256,7 @@ unsafe extern "C" fn on_battle_tick() {
             enemy.map(|p| read::<i32>(p + OFF_MODE_D70))
         );
     }
-    if reserve == 0 || reserve > 32 {
+    if reserve == 0 || reserve > RESERVE_LIMIT {
         ALLY_DONE.store(true, Ordering::Relaxed);
         if SUM_SPAWNED.load(Ordering::Relaxed) == 0 {
             log::info!("ALLY no reserve ship to bring (reserve size {reserve})");
@@ -1239,8 +1270,9 @@ unsafe extern "C" fn on_battle_tick() {
     // minus the lower-numbered ships already deployed
     let mask = precombat::selected_mask();
     let used = USED_MASK.load(Ordering::Relaxed);
-    let candidate = (2..(2 + reserve + used.count_ones() as usize))
-        .find(|n| *n <= 9 && mask & (1 << n) != 0 && used & (1 << n) == 0);
+    let candidate = (FIRST_ALLY_SHIP_NUMBER
+        ..(FIRST_ALLY_SHIP_NUMBER + reserve + used.count_ones() as usize))
+        .find(|n| *n <= MAX_SHIP_NUMBER && mask & (1 << n) != 0 && used & (1 << n) == 0);
     let Some(slot) = candidate else {
         ALLY_DONE.store(true, Ordering::Relaxed);
         if SUM_SPAWNED.load(Ordering::Relaxed) == 0 {
@@ -1252,7 +1284,8 @@ unsafe extern "C" fn on_battle_tick() {
         return;
     };
     let lower_used = (used & ((1u32 << slot) - 1)).count_ones() as usize;
-    let index = slot - 2 - lower_used.min(slot - 2);
+    let reserve_slot = slot - FIRST_ALLY_SHIP_NUMBER;
+    let index = reserve_slot - lower_used.min(reserve_slot);
     USED_MASK.fetch_or(1 << slot, Ordering::Relaxed);
     LAST_DEPLOY.store(now.to_bits(), Ordering::Relaxed);
     if index >= reserve {
@@ -1287,7 +1320,7 @@ unsafe extern "C" fn on_battle_tick() {
     log::info!(
         "ALLY deploy returned {ok}, roster {before} -> {}, reserve {reserve} -> {}",
         after.len(),
-        read::<usize>(RESERVE + 8)
+        read::<usize>(RESERVE + RESERVE_SIZE)
     );
     diag::flush_log();
     if after.len() != before + 1 {
