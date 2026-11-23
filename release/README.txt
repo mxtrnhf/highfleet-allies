@@ -36,14 +36,17 @@ RETAINED FROM PREVIOUS PACKS
 - Shipworks custom ally/enemy rosters: ADD, ADD ENEMY, CLEAR, FIGHT.
 
 INSTALL
-1. Back up Saves.
+1. Close the game. Back up Saves and, if upgrading, Modloader/config/.
 2. Install logdot's Modloader v4:
    https://github.com/logdot/Highfleet-Modloader
-3. Extract this ZIP into the folder containing Highfleet.exe. Merge Modloader/
-   and Media/. Remove older hf_ally_v*.dll / hf_ai_v*.dll and duplicate QoL DLLs
-   from Modloader/mods/ so only one of each remains.
-4. Merge the included ally.json and hf_ai.json with your custom settings.
-5. Keep the QoL flare crash fix enabled.
+3. Extract this ZIP into the folder containing Highfleet.exe. If keeping
+   upstream QoL, extract to a temporary folder first and skip the bundled
+   highfleet_qol.dll when copying. Remove older hf_ally_v*.dll / hf_ai_v*.dll
+   and duplicate QoL DLLs from Modloader/mods/ so only one of each remains.
+4. If upgrading, merge your custom settings into the included ally.json and
+   hf_ai.json presets. See docs/player-defaults.md for legacy settings.
+5. Use the bundled QoL for a fresh install. Keep enable_flare_crash_fix on in
+   qol.json with hf_ai, whichever QoL build you use.
 
 CONTENTS
 - Modloader/mods/hf_ally_v@ALLY_VERSION@.dll, hf_ai_v@AI_VERSION@.dll, highfleet_qol.dll

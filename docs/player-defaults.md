@@ -1,10 +1,17 @@
-# Player defaults — hf_ally v1.0.0 / hf_ai v1.0.0
+# Player defaults
 
-> **Config compatibility.** Updating from v0.15.0 or any later development build: replace both `Modloader/config/ally.json` and `Modloader/config/hf_ai.json` with the 1.0.0 presets. In `ally.json`, `enabled` is the only master switch; `auto_retreat` and `enemy_all_at_once` are retired; `spawn_ally`, `ally_toggle`, `ally_reticles`, `max_enemy_ships`, `plane_bombers`, `marker_seam`, `marker_delay_ms` and the retired logging keys are ignored. `ally_reticle_scale: 0` hides the ally target boxes; `ally_honor_share` (default `0.5`) shares the player's battle honor with deployed allies; ally radio lines follow the game language (`Media/Snd/RADIO` in Russian, `Media/Snd/RADIO_ENG` in English). In `hf_ai.json`, the preventive flare curtain (`curtain_*` / `launch_flares_*`) and offensive early fire (`aim_fire_*`) were retired, and the default `dive_dwell_s` is now `0.3`.
->
-> **From v0.14.13 or older:** also replace both configs; the v1.0.0 presets include the earlier grouped/HEX/logging cleanups and the current key set.
+## Upgrading configs
 
-The tracked player default profiles for `hf_ally v1.0.0` and `hf_ai v1.0.0` live in:
+Back up `Modloader/config/` before extracting a new pack. Start from the presets
+in that pack and copy over the settings you still want. This is especially
+important when upgrading from a pre-1.0 build: several old keys no longer do
+anything, and some settings moved into groups. See [retired ally settings](retired-settings.md),
+[ally logging](ally-config.md#logging-logging-object), and the
+[AI config reference](hf-ai-config-reference.md).
+
+## Preset files
+
+The tracked player presets live in:
 
 - [ally/config/ally.json](../ally/config/ally.json)
 - [ai/config/hf_ai.json](../ai/config/hf_ai.json)
@@ -26,7 +33,7 @@ guides to disable specific behavior.
 
 ## Profile highlights
 
-Allies (`hf_ally v1.0.0`): up to two wingmen, 1.5 s arrival delay,
+Allies (`hf_ally`): up to two wingmen, 1.5 s arrival delay,
 three enemy slots active at once, K-13/loadout buttons on, ally ship panels and ally target
 boxes on (`ally_reticle_scale: 0.6`), ship switching on, ally ship bombers on
 (`ally_bombers: true`), `ally_zenith_autofire` on (vanilla autonomous launches), bomb/rocket and AA attack
@@ -36,8 +43,7 @@ delays of 1 s, fuel retreat at 30%, and battle honor sharing at 50%
 `logging.debug_log` is the runtime debug switch and defaults to `false`; set it
 `true` only for a tester log.
 
-AI (`hf_ai v1.2.1`, preset introduced in v0.10.11): 40 gameplay settings plus `logging.log_panic`
-(41 total leaf settings). The optional high-TWR hf_ai boost-only limiter uses `twr_limit: 5.0`
+AI (`hf_ai`): the optional high-TWR boost-only limiter uses `twr_limit: 5.0`
 and `twr_deceleration: 0.75` (either at zero disables it). Flares, allied reactions, universal
 aim dodging (`aim_chance: 0.75`, `aim_boost: 2.0`), and dive avoidance (`dive_chance: 0.8`, `dive_dwell_s: 0.3`,
 `dive_boost: 2.0`) are on. Top-level `twr_cutoff` is `2.0`. Carrier groups launch
