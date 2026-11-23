@@ -161,9 +161,16 @@ unsafe fn direct_slot_is_plausible(header: *const LinkVecHeader) -> bool {
     let begin = (*header).begin as usize;
     let end = (*header).end as usize;
     let capacity_end = (*header).capacity_end as usize;
-    if begin == 0 || end < begin || capacity_end <= end {
+
+    // Range validity: no null begin pointer and begin <= end < capacity_end.
+    if begin == 0 {
         return false;
     }
+    if end < begin || capacity_end <= end {
+        return false;
+    }
+
+    // Entry spacing and capacity: `end` must be on an entry boundary with room for one element.
     let element_size = size_of::<Link>();
     (end - begin).is_multiple_of(element_size) && capacity_end - end >= element_size
 }
@@ -211,6 +218,11 @@ unsafe extern "C-unwind" fn on_collect_append(
 
 /// Verifies the exact 1.163 part-subtree append and constructor before either
 /// patch is prepared.
+///
+/// # Safety
+///
+/// Every pinned address must be readable for its expected window in the live
+/// supported image.
 unsafe fn verify_native() -> Result<(), String> {
     for (name, address, expected) in [
         (

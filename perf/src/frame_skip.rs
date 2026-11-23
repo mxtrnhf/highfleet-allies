@@ -69,21 +69,20 @@ pub unsafe fn prepare(session: &mut PatchSession) -> Result<(), String> {
     Ok(())
 }
 
-/// Entry hook. `render` is the boolean from `_FrameFunc` (`0` means the stock
-/// pacing heuristic asked to skip this render). When it is zero, set the game's
-/// existing one-shot skip flag; the native video task then takes its own early
-/// out. No other game state is touched.
-unsafe extern "win64" fn video_entry(render: u32) {
+/// Entry hook. `should_render` is the boolean from `_FrameFunc` (`0` means the
+/// stock pacing heuristic asked to skip this render). When it is zero, set the
+/// game's existing one-shot skip flag; the native video task then takes its own
+/// early out. No other game state is touched.
+unsafe extern "win64" fn video_entry(should_render: u32) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    // Diagnostic counters: calls vs decisions, so a zero skip count can be
-    // distinguished from a hook that never ran.
-    crate::profile::count(9);
-    if render == 0 {
+    // Count every call so zero skip requests can be distinguished from a hook that never ran.
+    crate::profile::count(crate::profile::Counter::RenderCalls);
+    if should_render == 0 {
         // SAFETY: fixed image .bss byte, written on the game thread only.
         unsafe { (SKIP_FLAG as *mut u8).write_volatile(1) };
-        crate::profile::count(8);
-        crate::profile::count(10);
+        crate::profile::count(crate::profile::Counter::RenderSkipFrames);
+        crate::profile::count(crate::profile::Counter::RenderFalse);
     }
 }

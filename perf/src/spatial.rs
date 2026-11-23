@@ -2,6 +2,9 @@
 
 const LEAF_SIZE: usize = 8;
 pub const MAX_FIXTURES: usize = 65_536;
+// With at most MAX_FIXTURES bounds, halving down to LEAF_SIZE leaves at most
+// 13 pending siblings in a depth-first traversal, plus the current node.
+const TRAVERSAL_STACK_CAPACITY: usize = 32;
 
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
@@ -138,13 +141,14 @@ impl SpatialIndex {
         if end - start <= LEAF_SIZE {
             return branch;
         }
-        let axis =
+        let split_axis =
             usize::from(bounds.upper[1] - bounds.lower[1] > bounds.upper[0] - bounds.lower[0]);
         let middle = (start + end) / 2;
         let all_bounds = &self.bounds;
         self.order[start..end].select_nth_unstable_by(middle - start, |&left, &right| {
             let center = |index: usize| {
-                f64::from(all_bounds[index].lower[axis]) + f64::from(all_bounds[index].upper[axis])
+                f64::from(all_bounds[index].lower[split_axis])
+                    + f64::from(all_bounds[index].upper[split_axis])
             };
             center(left)
                 .total_cmp(&center(right))
@@ -164,7 +168,7 @@ impl SpatialIndex {
         if self.branches.is_empty() {
             return true;
         }
-        let mut stack = [0_usize; 32];
+        let mut stack = [0_usize; TRAVERSAL_STACK_CAPACITY];
         let mut pending = 1;
         while pending != 0 {
             pending -= 1;

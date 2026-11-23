@@ -131,7 +131,13 @@ unsafe extern "C" fn init() -> bool {
     hud_query::configure(config.verify_queries);
     match unsafe { install(&config) } {
         Ok(()) => {
-            log::info!("hf_perf: optimizations={}, HUD spatial queries={}, KAZ fast scan={}, frame skip={}, profiling={}; in-game FPS gain unmeasured", config.enabled, config.enabled && config.hud_spatial_queries, config.enabled && config.kaz_fast_scan, config.enabled && config.frame_skip, config.profiling);
+            let hud_queries_active = config.enabled && config.hud_spatial_queries;
+            let kaz_scan_active = config.enabled && config.kaz_fast_scan;
+            let frame_skip_active = config.enabled && config.frame_skip;
+            log::info!(
+                "hf_perf: optimizations={}, HUD spatial queries={}, KAZ fast scan={}, frame skip={}, profiling={}; in-game FPS gain unmeasured",
+                config.enabled, hud_queries_active, kaz_scan_active, frame_skip_active, config.profiling
+            );
             true
         }
         Err(error) => {
@@ -141,38 +147,52 @@ unsafe extern "C" fn init() -> bool {
     }
 }
 
+/// Validate every native byte guard for the enabled optimizations, in the same
+/// font, sprite, HUD, KAZ and frame-skip order used before patch preparation.
+///
+/// # Safety
+///
+/// Startup-only installation with the supported executable mapped and no caller
+/// executing the target. These are bounded code ranges of the fixed image.
+unsafe fn validate_native_code(config: &Config) -> Result<(), String> {
+    if !config.enabled {
+        return Ok(());
+    }
+    for (address, expected) in [
+        (FONT_SET_COLOR, FONT_BYTES.as_slice()),
+        (SPRITE_SET_COLOR, SPRITE_BYTES.as_slice()),
+    ] {
+        // SAFETY: These bounded code ranges are mapped read-only executable
+        // sections of the supported main module, not arbitrary game pointers.
+        let found = unsafe { std::slice::from_raw_parts(address as *const u8, expected.len()) };
+        if found != expected {
+            return Err(format!(
+                "native bytes differ at {address:#x}; another mod or unsupported build"
+            ));
+        }
+    }
+    if config.hud_spatial_queries {
+        // SAFETY: Same supported mapped image/startup contract as font guards.
+        unsafe { hud_hooks::validate()? };
+    }
+    if config.kaz_fast_scan {
+        // SAFETY: Same fixed-image startup contract; KAZ validates its full
+        // target loop and every replaced native helper before installation.
+        unsafe { kaz_scan::validate()? };
+    }
+    if config.frame_skip {
+        // SAFETY: Same fixed-image startup contract; only the video-task
+        // entry prologue is read here.
+        unsafe { frame_skip::validate()? };
+    }
+    Ok(())
+}
+
 /// Install only at startup with the supported executable mapped and no caller
 /// executing the target. No part of this operation establishes heap validity.
 unsafe fn install(config: &Config) -> Result<(), String> {
-    if config.enabled {
-        for (address, expected) in [
-            (FONT_SET_COLOR, FONT_BYTES.as_slice()),
-            (SPRITE_SET_COLOR, SPRITE_BYTES.as_slice()),
-        ] {
-            // SAFETY: These bounded code ranges are mapped read-only executable
-            // sections of the supported main module, not arbitrary game pointers.
-            let found = unsafe { std::slice::from_raw_parts(address as *const u8, expected.len()) };
-            if found != expected {
-                return Err(format!(
-                    "native bytes differ at {address:#x}; another mod or unsupported build"
-                ));
-            }
-        }
-        if config.hud_spatial_queries {
-            // SAFETY: Same supported mapped image/startup contract as font guards.
-            unsafe { hud_hooks::validate()? };
-        }
-        if config.kaz_fast_scan {
-            // SAFETY: Same fixed-image startup contract; KAZ validates its full
-            // target loop and every replaced native helper before installation.
-            unsafe { kaz_scan::validate()? };
-        }
-        if config.frame_skip {
-            // SAFETY: Same fixed-image startup contract; only the video-task
-            // entry prologue is read here.
-            unsafe { frame_skip::validate()? };
-        }
-    }
+    // SAFETY: Startup-only fixed-image contract described above.
+    unsafe { validate_native_code(config)? };
     let mut session = PatchSession::new();
     if config.profiling {
         if config.ai_spans {
@@ -218,7 +238,7 @@ unsafe fn install(config: &Config) -> Result<(), String> {
 }
 
 unsafe extern "win64" fn profiled_font_color(font: *mut u8, color: u32) {
-    profile::count(4);
+    profile::count(profile::Counter::FontCalls);
     // SAFETY: forwards the unchanged native entry's arguments and lifetime.
     unsafe { font_color::set_color(font, color) };
 }

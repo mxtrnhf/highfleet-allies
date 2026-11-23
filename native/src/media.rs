@@ -240,6 +240,7 @@ unsafe fn name_key(name: *const u8) -> Option<u64> {
         // bounds the read even when that contract is violated.
         let byte = unsafe { name.add(offset).read() };
         if byte == 0 {
+            // Bit 0 keeps a real key distinct from the empty-slot marker.
             return Some(hash | 1);
         }
         hash ^= byte as u64;
@@ -620,10 +621,15 @@ const INDEX_SITES: [CallSite; 3] = [
     },
 ];
 
-const TYPE_11: usize = 1;
-const SOUND: usize = 2;
-const FONT: usize = 3;
-const TEXTURE: usize = 4;
+// Slots in `PROBE_COUNTERS`, in `PROBE_SITES` order. These select per-site
+// counters; the resource type is the runtime argument and is not encoded here.
+const ANIMATION_PROBE_SITE: usize = 0;
+const TYPE_11_PROBE_SITE: usize = 1;
+const SOUND_PROBE_SITE: usize = 2;
+const FONT_PROBE_SITE: usize = 3;
+const TEXTURE_PROBE_SITE: usize = 4;
+const MAP_ANIMATION_A_PROBE_SITE: usize = 5;
+const MAP_ANIMATION_B_PROBE_SITE: usize = 6;
 
 const PROBE_SITES: [CallSite; 7] = [
     CallSite {
@@ -795,7 +801,7 @@ fn record_name(resource_type: i32, name: *const u8) {
         return;
     }
 
-    let key = hash | 1;
+    let key = hash | 1; // Bit 0 keeps a real key distinct from an empty slot.
     let base = key as usize & (NAME_HASH_SLOTS - 1);
     for probe in 0..NAME_HASH_PROBES {
         let slot = &NAME_HASHES[(base + probe) & (NAME_HASH_SLOTS - 1)];
@@ -864,13 +870,13 @@ macro_rules! probe_wrapper {
     };
 }
 
-probe_wrapper!(animation_probe, 0);
-probe_wrapper!(type_11_probe, TYPE_11);
-probe_wrapper!(sound_probe, SOUND);
-probe_wrapper!(font_probe, FONT);
-probe_wrapper!(texture_probe, TEXTURE);
-probe_wrapper!(map_animation_a_probe, 5);
-probe_wrapper!(map_animation_b_probe, 6);
+probe_wrapper!(animation_probe, ANIMATION_PROBE_SITE);
+probe_wrapper!(type_11_probe, TYPE_11_PROBE_SITE);
+probe_wrapper!(sound_probe, SOUND_PROBE_SITE);
+probe_wrapper!(font_probe, FONT_PROBE_SITE);
+probe_wrapper!(texture_probe, TEXTURE_PROBE_SITE);
+probe_wrapper!(map_animation_a_probe, MAP_ANIMATION_A_PROBE_SITE);
+probe_wrapper!(map_animation_b_probe, MAP_ANIMATION_B_PROBE_SITE);
 
 // --- snapshots ---------------------------------------------------------------------------------
 

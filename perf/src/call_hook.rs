@@ -20,6 +20,11 @@ use windows_sys::Win32::System::{
 const ALLOCATION_GRANULARITY: usize = 0x1_0000;
 const RELAY_PAGE_BYTES: usize = 0x1000;
 const SEARCH_STEPS: usize = 1024;
+/// A near x86 CALL (`E8 rel32`) replaced at each guarded site.
+const CALL_BYTES: usize = 5;
+/// RIP-relative indirect jump (`JMP [rip+0]`) followed by the absolute target.
+const ABSOLUTE_JUMP_CODE: [u8; 6] = [0xff, 0x25, 0, 0, 0, 0];
+const RELAY_CODE_BYTES: usize = ABSOLUTE_JUMP_CODE.len() + std::mem::size_of::<usize>();
 
 /// Prepare a guarded five-byte CALL to a nearby absolute-jump relay.
 ///
@@ -34,13 +39,15 @@ pub unsafe fn prepare_call(
     replacement: *const (),
 ) -> Result<(), String> {
     // SAFETY: Caller establishes this bounded mapped code range at startup.
-    if unsafe { std::slice::from_raw_parts(site as *const u8, 5) } != expected {
+    if unsafe { std::slice::from_raw_parts(site as *const u8, CALL_BYTES) } != expected {
         return Err(format!("native CALL differs at {site:#x}"));
     }
     if expected[0] != 0xe8 {
         return Err(format!("expected CALL opcode at {site:#x}"));
     }
-    let continuation = site.checked_add(5).ok_or("CALL address overflow")?;
+    let continuation = site
+        .checked_add(CALL_BYTES)
+        .ok_or("CALL address overflow")?;
     let relay = allocate_near(site)?;
     let displacement = match i32::try_from(relay as i128 - continuation as i128) {
         Ok(displacement) => displacement,
@@ -50,9 +57,9 @@ pub unsafe fn prepare_call(
             return Err("relay is outside CALL rel32 range".into());
         }
     };
-    let mut code = [0u8; 14];
-    code[..6].copy_from_slice(&[0xff, 0x25, 0, 0, 0, 0]);
-    code[6..].copy_from_slice(&(replacement as usize).to_le_bytes());
+    let mut code = [0u8; RELAY_CODE_BYTES];
+    code[..ABSOLUTE_JUMP_CODE.len()].copy_from_slice(&ABSOLUTE_JUMP_CODE);
+    code[ABSOLUTE_JUMP_CODE.len()..].copy_from_slice(&(replacement as usize).to_le_bytes());
     // SAFETY: Fresh private RW reservation; no published code points here yet.
     unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), relay.cast::<u8>(), code.len()) };
     let mut previous = 0;

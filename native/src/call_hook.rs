@@ -20,6 +20,15 @@ const ALLOCATION_GRANULARITY: usize = 0x1_0000;
 const RELAY_PAGE_BYTES: usize = 0x1000;
 const SEARCH_STEPS: usize = 1024;
 
+/// Opcode of the five-byte relative `CALL` every relay replaces.
+const NEAR_CALL_OPCODE: u8 = 0xe8;
+/// `MOV R8,RBP`; only the collector relay needs the third argument moved.
+const MOV_R8_RBP: [u8; 3] = [0x4c, 0x8b, 0xc5];
+/// `JMP QWORD PTR [RIP+0]`; the absolute target follows immediately.
+const INDIRECT_JUMP: [u8; 6] = [0xff, 0x25, 0, 0, 0, 0];
+/// Prefix plus indirect jump plus the absolute 64-bit replacement address.
+const RELAY_BYTES: usize = MOV_R8_RBP.len() + INDIRECT_JUMP.len() + std::mem::size_of::<usize>();
+
 /// Prepare a native five-byte CALL to a nearby absolute-jump relay.
 ///
 /// # Safety
@@ -63,7 +72,7 @@ unsafe fn prepare_call_inner(
     if unsafe { std::slice::from_raw_parts(site as *const u8, 5) } != expected {
         return Err(format!("native CALL differs at {site:#x}"));
     }
-    if expected[0] != 0xe8 {
+    if expected[0] != NEAR_CALL_OPCODE {
         return Err(format!("expected CALL opcode at {site:#x}"));
     }
     let continuation = site.checked_add(5).ok_or("CALL address overflow")?;
@@ -77,16 +86,17 @@ unsafe fn prepare_call_inner(
             return Err("relay is outside CALL rel32 range".into());
         }
     };
-    let mut storage = [0u8; 17];
+    let mut storage = [0u8; RELAY_BYTES];
     let prefix_length = if pass_rbp {
-        storage[..3].copy_from_slice(&[0x4c, 0x8b, 0xc5]); // MOV R8,RBP
-        3
+        storage[..MOV_R8_RBP.len()].copy_from_slice(&MOV_R8_RBP);
+        MOV_R8_RBP.len()
     } else {
         0
     };
-    let code = &mut storage[..prefix_length + 14];
-    code[prefix_length..prefix_length + 6].copy_from_slice(&[0xff, 0x25, 0, 0, 0, 0]);
-    code[prefix_length + 6..].copy_from_slice(&(replacement as usize).to_le_bytes());
+    let target_offset = prefix_length + INDIRECT_JUMP.len();
+    let code = &mut storage[..target_offset + std::mem::size_of::<usize>()];
+    code[prefix_length..target_offset].copy_from_slice(&INDIRECT_JUMP);
+    code[target_offset..].copy_from_slice(&(replacement as usize).to_le_bytes());
     // SAFETY: Fresh private RW storage, not executable or reachable yet.
     unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), relay.cast::<u8>(), code.len()) };
     let mut old_protection = 0;
@@ -112,7 +122,7 @@ unsafe fn prepare_call_inner(
         unsafe { VirtualFree(relay, 0, MEM_RELEASE) };
         return Err(format!("cannot flush CALL relay: {error}"));
     }
-    let mut call = [0xe8, 0, 0, 0, 0];
+    let mut call = [NEAR_CALL_OPCODE, 0, 0, 0, 0];
     call[1..].copy_from_slice(&displacement.to_le_bytes());
     // SAFETY: One complete CALL replaces one validated complete CALL; the relay
     // tail-jumps to an ABI-compatible callee with the original return address.

@@ -489,32 +489,36 @@ struct SearchResult {
 /// `node` must be a live `Node` and `link` the registration the native routine
 /// was called with; the same list invariants the native body assumes apply.
 unsafe fn resolve(node: *mut u8, link: *mut u8, tail_probe: bool) -> SearchResult {
-    if INDEX_ENABLED.load(Ordering::Relaxed) {
-        if let Some(cell) = index_take(link as usize, node as usize) {
-            let cell = cell as *mut u8;
-            // A handle is only trusted when the cell still points at this Link.
-            if read_pointer(cell, CELL_LINK) == link {
-                TABLE.hits.fetch_add(1, Ordering::Relaxed);
-                return SearchResult {
-                    cell,
-                    hops: 0,
-                    tail_probed: false,
-                    tail_hit: false,
-                    indexed: true,
-                };
-            }
-            // Stale or foreign mapping: drop it and let the native scan decide.
-            // A handful of these can happen around teardown; a sustained rate
-            // means the mutation audit is incomplete, so stop trusting the
-            // table for the rest of the session and keep the native scan.
-            let mismatches = TABLE.mismatches.fetch_add(1, Ordering::Relaxed) + 1;
-            index_forget(link as usize);
-            if mismatches > MAX_MISMATCHES {
-                INDEX_ENABLED.store(false, Ordering::Relaxed);
-            }
-        } else {
-            TABLE.misses.fetch_add(1, Ordering::Relaxed);
-        }
+    if !INDEX_ENABLED.load(Ordering::Relaxed) {
+        return search(node, link, tail_probe);
+    }
+
+    let Some(cell) = index_take(link as usize, node as usize) else {
+        TABLE.misses.fetch_add(1, Ordering::Relaxed);
+        return search(node, link, tail_probe);
+    };
+    let cell = cell as *mut u8;
+
+    // A handle is only trusted when the cell still points at this Link.
+    if read_pointer(cell, CELL_LINK) == link {
+        TABLE.hits.fetch_add(1, Ordering::Relaxed);
+        return SearchResult {
+            cell,
+            hops: 0,
+            tail_probed: false,
+            tail_hit: false,
+            indexed: true,
+        };
+    }
+
+    // Stale or foreign mapping: drop it and let the native scan decide.
+    // A handful of these can happen around teardown; a sustained rate
+    // means the mutation audit is incomplete, so stop trusting the
+    // table for the rest of the session and keep the native scan.
+    let mismatches = TABLE.mismatches.fetch_add(1, Ordering::Relaxed) + 1;
+    index_forget(link as usize);
+    if mismatches > MAX_MISMATCHES {
+        INDEX_ENABLED.store(false, Ordering::Relaxed);
     }
     search(node, link, tail_probe)
 }
@@ -764,6 +768,7 @@ unsafe extern "C-unwind" fn slink_scalar_deleting_destructor(
         return this;
     }
 
+    // The SLink vtable pointer is the object's first word, as in the native body.
     write_pointer(this, 0, SLINK_VTABLE_ADDRESS);
 
     let link = this.add(SLINK_EMBEDDED_LINK);
@@ -807,6 +812,7 @@ const SLINK_BASE_DESTRUCTOR: usize = 0x1_4018_f7d0;
 ///
 /// `address` must be readable for `expected.len()` bytes in the live process.
 unsafe fn validate_body(name: &str, address: usize, expected: &[u8]) -> Result<(), String> {
+    // SAFETY: Caller contract: the whole expected span is readable.
     let actual = slice::from_raw_parts(address as *const u8, expected.len());
     if actual == expected {
         return Ok(());
@@ -888,6 +894,7 @@ pub unsafe fn prepare(
         SLINK_SCALAR_DELETING_DESTRUCTOR_ADDRESS,
         &SLINK_SCALAR_DELETING_DESTRUCTOR_BODY,
     )?;
+    // `New` is not patched; its prologue pins the entry the cell helpers call.
     validate_body("New", NATIVE_NEW_ADDRESS, &NATIVE_NEW_PROLOGUE)?;
 
     prepare_replacement(

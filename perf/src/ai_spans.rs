@@ -167,31 +167,29 @@ pub unsafe fn prepare(session: &mut PatchSession) -> Result<(), String> {
             false
         }
     };
-    if driver {
-        unsafe {
-            call_hook::prepare_call(
-                session,
-                DRIVER_SITE,
-                &DRIVER_CALL,
-                timed_driver as *const (),
-            )?
-        };
-    }
-    if scans {
-        unsafe {
-            call_hook::prepare_call(
-                session,
-                TICK_SCAN_SITE,
-                &TICK_SCAN_CALL,
-                timed_scan as *const (),
-            )?;
-            call_hook::prepare_call(
-                session,
-                CTRL_SCAN_SITE,
-                &CTRL_SCAN_CALL,
-                timed_scan as *const (),
-            )?;
+    // Driver first, then the two scan sites; each entry is prepared only when
+    // its coverage group validated, and every entry stays optional.
+    let hooks = [
+        (driver, DRIVER_SITE, &DRIVER_CALL, timed_driver as *const ()),
+        (
+            scans,
+            TICK_SCAN_SITE,
+            &TICK_SCAN_CALL,
+            timed_scan as *const (),
+        ),
+        (
+            scans,
+            CTRL_SCAN_SITE,
+            &CTRL_SCAN_CALL,
+            timed_scan as *const (),
+        ),
+    ];
+    for (enabled, site, expected, replacement) in hooks {
+        if !enabled {
+            continue;
         }
+        // SAFETY: Complete validated CALL, replaced under the startup contract.
+        unsafe { call_hook::prepare_call(session, site, expected, replacement)? };
     }
     DRIVER_INSTALLED.store(driver, Ordering::Release);
     SCAN_INSTALLED.store(scans, Ordering::Release);

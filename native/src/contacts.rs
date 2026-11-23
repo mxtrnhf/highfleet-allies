@@ -279,6 +279,22 @@ impl Class {
             Self::Cell => &POOL.cell_len,
         }
     }
+
+    /// Bumped when an allocation of this class is forwarded to native `New`.
+    fn native_counter(self) -> &'static AtomicU64 {
+        match self {
+            Self::Record => &POOL.counters.record_native,
+            Self::Cell => &POOL.counters.cell_native,
+        }
+    }
+
+    /// Bumped when a free of this class is forwarded to native `free`.
+    fn forwarded_counter(self) -> &'static AtomicU64 {
+        match self {
+            Self::Record => &POOL.counters.record_forwarded,
+            Self::Cell => &POOL.counters.cell_forwarded,
+        }
+    }
 }
 
 /// Guard that releases the pool lock on drop.
@@ -389,26 +405,17 @@ unsafe fn native_free(block: usize, size: usize) {
 /// the lock, so a throwing native `New` unwinds without a live pool guard.
 unsafe fn allocate(class: Class, size: usize) -> *mut u8 {
     if size != class.size() {
-        bump(match class {
-            Class::Record => &POOL.counters.record_native,
-            Class::Cell => &POOL.counters.cell_native,
-        });
+        bump(class.native_counter());
         return native_new(size);
     }
     if !pool_active() {
         bump(&POOL.counters.inactive);
-        bump(match class {
-            Class::Record => &POOL.counters.record_native,
-            Class::Cell => &POOL.counters.cell_native,
-        });
+        bump(class.native_counter());
         return native_new(size);
     }
 
     let Some(block) = reuse(class) else {
-        bump(match class {
-            Class::Record => &POOL.counters.record_native,
-            Class::Cell => &POOL.counters.cell_native,
-        });
+        bump(class.native_counter());
         return native_new(size);
     };
     bump(match class {
@@ -426,14 +433,14 @@ unsafe fn release(class: Class, block: usize, size: usize) {
     // correct fallback because every block this hook can see came from the
     // native allocator. Pool state never decides *how* to free a block.
     if block == 0 || size != class.size() {
-        bump(forwarded_counter(class));
+        bump(class.forwarded_counter());
         native_free(block, size);
         return;
     }
 
     if !pool_active() {
         bump(&POOL.counters.inactive);
-        bump(forwarded_counter(class));
+        bump(class.forwarded_counter());
         native_free(block, size);
         return;
     }
@@ -446,15 +453,8 @@ unsafe fn release(class: Class, block: usize, size: usize) {
         return;
     }
 
-    bump(forwarded_counter(class));
+    bump(class.forwarded_counter());
     native_free(block, size);
-}
-
-fn forwarded_counter(class: Class) -> &'static AtomicU64 {
-    match class {
-        Class::Record => &POOL.counters.record_forwarded,
-        Class::Cell => &POOL.counters.cell_forwarded,
-    }
 }
 
 /// Call-site replacement for the record `New(0x48)`.
@@ -478,7 +478,13 @@ unsafe extern "C-unwind" fn free_cell(block: usize, size: usize) {
 }
 
 /// Reads a small native byte range and compares it with the verified 1.163 bytes.
+///
+/// # Safety
+///
+/// `address` must be readable and unchanged for `expected.len()` bytes in the live process
+/// for the duration of the comparison.
 unsafe fn check_bytes(address: usize, expected: &[u8], label: &str) -> Result<(), String> {
+    // SAFETY: Caller contract: the expected span is readable.
     let found = std::slice::from_raw_parts(address as *const u8, expected.len());
     if found != expected {
         return Err(format!(
@@ -489,7 +495,12 @@ unsafe fn check_bytes(address: usize, expected: &[u8], label: &str) -> Result<()
 }
 
 /// Verifies that the `E8` at `site` still calls `expected`.
+///
+/// # Safety
+///
+/// `site` must be readable and unchanged for the five-byte near CALL it is expected to hold.
 unsafe fn check_call_target(site: usize, expected: usize, label: &str) -> Result<(), String> {
+    // SAFETY: Caller contract: the CALL opcode is readable.
     let opcode = (site as *const u8).read();
     if opcode != 0xe8 {
         return Err(format!(
@@ -497,7 +508,7 @@ unsafe fn check_call_target(site: usize, expected: usize, label: &str) -> Result
         ));
     }
     let displacement = std::ptr::read_unaligned((site + 1) as *const i32) as isize;
-    let target = site.wrapping_add(5).wrapping_add(displacement as usize);
+    let target = site.wrapping_add(5).wrapping_add_signed(displacement);
     if target != expected {
         return Err(format!(
             "{label} at {site:#x} calls {target:#x}, expected {expected:#x}; contact pool not installed"
@@ -507,6 +518,11 @@ unsafe fn check_call_target(site: usize, expected: usize, label: &str) -> Result
 }
 
 /// Validates every byte the module depends on before a single patch is prepared.
+///
+/// # Safety
+///
+/// All guarded call sites and the native allocator entries must be readable in
+/// the live supported image.
 unsafe fn validate() -> Result<(), String> {
     check_bytes(
         ALLOC_RECORD_GUARD_ADDR,

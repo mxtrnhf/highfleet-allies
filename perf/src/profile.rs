@@ -24,7 +24,37 @@ use crate::profile_memory::{self as memory, Workload, PROFILERS};
 const FRAME: usize = 0x1401a8970;
 const PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10];
 const QUEUE_CAPACITY: usize = 2048;
-pub const COUNTER_COUNT: usize = 11;
+
+/// CSV columns, in the exact order [`write_row`] emits them.
+const CSV_HEADER: &str = concat!(
+    "schema,sequence,wall_s,loop_interval_us,frame_call_us,observer_before_us,observer_after_us,",
+    "simulation_delta_s,paused,frame_native_us,pre_us,physics_us,input_us,ai_us,game_us,sound_us,video_us,",
+    "bodies,physics_bodies,contacts,joints,ai_list_entries,",
+    "warning_calls,query_calls,indexed_rays,fallback_rays,font_calls,kaz_scan_calls,kaz_scan_targets,",
+    "kaz_prefilter_rejections,render_skip_frames,render_calls,render_false,heuristic_p25_us,heuristic_p50_us,",
+    "ai_steering_us_total,ai_creature_update_us_total,ai_threat_scan_us_total,ai_tracking_us_total,ai_boost_us_total,",
+    "ai_steering_calls_total,ai_creature_update_calls_total,ai_threat_scan_calls_total,ai_tracking_calls_total,",
+    "ai_boost_calls_total,ai_driver_us_total,ai_scan_us_total,ai_driver_calls_total,ai_scan_calls_total,",
+    "dropped_rows_total,quit"
+);
+
+/// Activation counters indexed in the order of their CSV columns.
+#[repr(usize)]
+pub(crate) enum Counter {
+    WarningCalls = 0,
+    QueryCalls = 1,
+    IndexedRays = 2,
+    FallbackRays = 3,
+    FontCalls = 4,
+    KazScanCalls = 5,
+    KazScanTargets = 6,
+    KazPrefilterRejections = 7,
+    RenderSkipFrames = 8,
+    RenderCalls = 9,
+    RenderFalse = 10,
+}
+
+const COUNTER_COUNT: usize = Counter::RenderFalse as usize + 1;
 static COUNTERS: [AtomicU64; COUNTER_COUNT] = [const { AtomicU64::new(0) }; COUNTER_COUNT];
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -54,13 +84,13 @@ pub extern "C" fn hf_perf_record_span_v1(id: u32, ticks: u64) {
     MOD_CALLS[id as usize].fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn count(id: usize) {
-    count_by(id, 1);
+pub(crate) fn count(counter: Counter) {
+    count_by(counter, 1);
 }
 
-pub fn count_by(id: usize, amount: u64) {
+pub(crate) fn count_by(counter: Counter, amount: u64) {
     if ENABLED.load(Ordering::Relaxed) {
-        if let Some(counter) = COUNTERS.get(id) {
+        if let Some(counter) = COUNTERS.get(counter as usize) {
             counter.fetch_add(amount, Ordering::Relaxed);
         }
     }
@@ -151,7 +181,7 @@ pub unsafe fn prepare(
         .open(&path)
         .map_err(|e| e.to_string())?;
     let mut writer = BufWriter::new(file);
-    writeln!(writer, "schema,sequence,wall_s,loop_interval_us,frame_call_us,observer_before_us,observer_after_us,simulation_delta_s,paused,frame_native_us,pre_us,physics_us,input_us,ai_us,game_us,sound_us,video_us,bodies,physics_bodies,contacts,joints,ai_list_entries,warning_calls,query_calls,indexed_rays,fallback_rays,font_calls,kaz_scan_calls,kaz_scan_targets,kaz_prefilter_rejections,render_skip_frames,render_calls,render_false,heuristic_p25_us,heuristic_p50_us,ai_steering_us_total,ai_creature_update_us_total,ai_threat_scan_us_total,ai_tracking_us_total,ai_boost_us_total,ai_steering_calls_total,ai_creature_update_calls_total,ai_threat_scan_calls_total,ai_tracking_calls_total,ai_boost_calls_total,ai_driver_us_total,ai_scan_us_total,ai_driver_calls_total,ai_scan_calls_total,dropped_rows_total,quit").map_err(|e| e.to_string())?;
+    writeln!(writer, "{CSV_HEADER}").map_err(|e| e.to_string())?;
     writer.flush().map_err(|e| e.to_string())?;
     let metadata = serde_json::json!({"schema":1,"version":env!("CARGO_PKG_VERSION"),"pid":pid,"qpc_frequency":frequency,"config":config,
         "measurement":"game-loop wall timings; NOT presented frames or Rust-only CPU time; ai_*_us_total and ai_driver/ai_scan columns are per-frame span totals",
@@ -168,7 +198,7 @@ pub unsafe fn prepare(
     std::thread::Builder::new()
         .name("hf-perf-csv".into())
         .spawn(move || {
-            let write_rows = || -> std::io::Result<()> {
+            let mut write_rows = || -> std::io::Result<()> {
                 loop {
                     match receiver.recv_timeout(Duration::from_secs(1)) {
                         Ok(row) => {
@@ -191,7 +221,6 @@ pub unsafe fn prepare(
                     }
                 }
             };
-            let mut write_rows = write_rows;
             if let Err(error) = write_rows() {
                 WRITER_FAILED.store(true, Ordering::Relaxed);
                 log::error!("hf_perf: CSV writer stopped: {error}");

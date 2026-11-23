@@ -58,11 +58,14 @@ extern "win64" {
 // Alternative evaluated here only: always write, but inline the trivial setter.
 unsafe extern "win64" fn unconditional_batch(font: *mut u8, color: u32) {
     unsafe {
-        font.add(font_color::FONT_COLOR).cast::<u32>().write(color);
+        font.add(font_color::FONT_COLOR_OFFSET)
+            .cast::<u32>()
+            .write(color);
         for index in 0..font_color::GLYPH_COUNT {
-            let glyph = font.add(8 + index * 8).cast::<*mut u8>().read();
+            let glyph_offset = font_color::GLYPH_POINTERS + index * std::mem::size_of::<*mut u8>();
+            let glyph = font.add(glyph_offset).cast::<*mut u8>().read();
             if !glyph.is_null() {
-                for offset in font_color::CORNER_COLORS.into_iter().rev() {
+                for offset in font_color::CORNER_COLOR_OFFSETS.into_iter().rev() {
                     glyph.add(offset).cast::<u32>().write(color);
                 }
             }

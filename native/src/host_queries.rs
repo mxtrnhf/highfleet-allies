@@ -39,6 +39,26 @@ struct Module {
 // exposed through it. The DLL remains loaded for process lifetime.
 unsafe impl Sync for Module {}
 
+/// Low byte of `MEMORY_BASIC_INFORMATION::Protect`; the upper bits are modifiers.
+const PAGE_PROTECTION_MASK: u32 = 0xff;
+/// Header bytes read for the pinned DOS/PE/file/optional signatures.
+const HEADER_WINDOW_BYTES: usize = 0x180;
+/// Pinned PE32+ signatures and header offsets shared by the admitted DLLs.
+const DOS_SIGNATURE: u16 = 0x5a4d;
+const NT_HEADERS_POINTER: usize = 0x3c;
+const NT_HEADERS_OFFSET: usize = 0x78;
+const PE_SIGNATURE: u32 = 0x4550;
+const FILE_HEADER_TIMESTAMP: usize = 0x80;
+const FILE_HEADER_MACHINE: usize = 0x7c;
+const OPTIONAL_HEADER_MAGIC: usize = 0x90;
+const OPTIONAL_HEADER_IMAGE_SIZE: usize = 0xc8;
+const MACHINE_AMD64: u16 = 0x8664;
+const PE32_PLUS_MAGIC: u16 = 0x20b;
+/// One pointer-sized import-table slot.
+const IAT_ENTRY_BYTES: usize = size_of::<usize>();
+/// Import-name bytes, including the NUL, at each module's `name_rva`.
+const QUERY_IMPORT_NAME: &[u8] = b"VirtualQuery\0";
+
 // Reviewed directly from the installed PE32+ import tables on 2026-11-10.
 // Only these exact identities/layouts are admitted; no generic PE parser or
 // dependency update is required for this attribution experiment.
@@ -124,7 +144,7 @@ fn readable(address: usize, length: usize) -> bool {
     if information.State != MEM_COMMIT || information.Protect & PAGE_GUARD != 0 {
         return false;
     }
-    let protection = information.Protect & 0xff;
+    let protection = information.Protect & PAGE_PROTECTION_MASK;
     if !matches!(
         protection,
         PAGE_READONLY
@@ -148,26 +168,36 @@ fn readable(address: usize, length: usize) -> bool {
 /// Each span is independently validated before scalar/byte reads. The pinned
 /// NT-header offset is 0x78 in all three admitted DLLs.
 unsafe fn validate(module: &Module, base: usize) -> bool {
-    if !readable(base, 0x180) {
+    if !readable(base, HEADER_WINDOW_BYTES) {
         return false;
     }
     let u16_at = |offset: usize| unsafe { ((base + offset) as *const u16).read_unaligned() };
     let u32_at = |offset: usize| unsafe { ((base + offset) as *const u32).read_unaligned() };
-    if u16_at(0) != 0x5a4d || u32_at(0x3c) != 0x78 || u32_at(0x78) != 0x4550 {
+    if u16_at(0) != DOS_SIGNATURE
+        || u32_at(NT_HEADERS_POINTER) != NT_HEADERS_OFFSET as u32
+        || u32_at(NT_HEADERS_OFFSET) != PE_SIGNATURE
+    {
         return false;
     }
-    if u16_at(0x7c) != 0x8664 || u16_at(0x90) != 0x20b {
+    if u16_at(FILE_HEADER_MACHINE) != MACHINE_AMD64
+        || u16_at(OPTIONAL_HEADER_MAGIC) != PE32_PLUS_MAGIC
+    {
         return false;
     }
-    if u32_at(0x80) != module.timestamp || u32_at(0xc8) != module.image_size {
+    if u32_at(FILE_HEADER_TIMESTAMP) != module.timestamp
+        || u32_at(OPTIONAL_HEADER_IMAGE_SIZE) != module.image_size
+    {
         return false;
     }
     let name = base + module.name_rva;
-    if !readable(name, b"VirtualQuery\0".len()) || !readable(base + module.iat_rva, 8) {
+    if !readable(name, QUERY_IMPORT_NAME.len()) || !readable(base + module.iat_rva, IAT_ENTRY_BYTES)
+    {
         return false;
     }
     // SAFETY: Span checked above; bytes are import-name data, never ownership.
-    unsafe { std::slice::from_raw_parts(name as *const u8, 13) == b"VirtualQuery\0" }
+    let name_bytes =
+        unsafe { std::slice::from_raw_parts(name as *const u8, QUERY_IMPORT_NAME.len()) };
+    name_bytes == QUERY_IMPORT_NAME
 }
 
 /// Install optional, atomic import observers after the native patch batch.
@@ -188,7 +218,7 @@ pub unsafe fn install() {
             continue;
         }
         let address = base + module.iat_rva;
-        if !address.is_multiple_of(size_of::<usize>()) {
+        if !address.is_multiple_of(IAT_ENTRY_BYTES) {
             log::warn!("hf_native: host query observer slot {index}: unaligned IAT refused");
             continue;
         }
@@ -202,8 +232,14 @@ pub unsafe fn install() {
 
         let mut previous = 0;
         // SAFETY: Protect only the validated live IAT entry, not target code.
-        if unsafe { VirtualProtect(address as *const c_void, 8, PAGE_READWRITE, &mut previous) }
-            == 0
+        if unsafe {
+            VirtualProtect(
+                address as *const c_void,
+                IAT_ENTRY_BYTES,
+                PAGE_READWRITE,
+                &mut previous,
+            )
+        } == 0
         {
             log::warn!("hf_native: host query observer slot {index}: IAT protection failed");
             continue;
@@ -218,7 +254,15 @@ pub unsafe fn install() {
             .is_ok();
         let mut ignored = 0;
         // SAFETY: Restore the page protection returned by the matching call.
-        if unsafe { VirtualProtect(address as *const c_void, 8, previous, &mut ignored) } == 0 {
+        if unsafe {
+            VirtualProtect(
+                address as *const c_void,
+                IAT_ENTRY_BYTES,
+                previous,
+                &mut ignored,
+            )
+        } == 0
+        {
             log::error!(
                 "hf_native: host query observer slot {index}: cannot restore IAT protection"
             );

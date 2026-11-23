@@ -25,6 +25,9 @@ const BODY_CLASS: usize = 0x28;
 const BODY_B2: usize = 0x178;
 const BODY_EXCLUDED: usize = 0x224;
 const BOUNDS_PADDING: f32 = 1.0; // 20 world units; conservative f32 clipping guard band.
+
+// Conservative admission bound: geometry beyond it gets infinite query bounds,
+// and rays beyond it stay on the native scan instead of the indexed path.
 const MAX_BOUNDED_COORDINATE: f32 = 32768.0;
 // Conservative admission tolerances, not a general floating-point error proof.
 // Geometry outside them stays in every query instead of being spatially culled.
@@ -108,62 +111,13 @@ impl QueryScope {
             if self.body_count > BODY_LIMIT {
                 return Err("native body count exceeds capacity");
             }
-            self.records
-                .try_reserve(MAX_FIXTURES)
-                .map_err(|_| "fixture view allocation")?;
-            self.bounds
-                .try_reserve(MAX_FIXTURES)
-                .map_err(|_| "fixture bounds allocation")?;
-            self.candidates
-                .try_reserve(MAX_FIXTURES)
-                .map_err(|_| "query output allocation")?;
+            self.reserve_storage()?;
             for ordinal in 0..self.body_count {
                 let body = read::<usize>(BODY_ARRAY + ordinal * 8);
                 if body == 0 {
                     return Err("null native body");
                 }
-                let vtable = read::<usize>(body);
-                if vtable == 0 || read::<usize>(vtable + 0x78) != ACTIVE_METHOD {
-                    return Err("unreviewed body activity virtual");
-                }
-                if read::<i32>(body + NODE_STATE) < 2 {
-                    continue;
-                }
-                if read::<u8>(body + BODY_CLASS) & 0xf != 0xf {
-                    continue;
-                }
-                let physics = read::<usize>(body + BODY_B2);
-                if physics == 0 || read::<i32>(body + BODY_LAYER) == 0 {
-                    continue;
-                }
-                let mut fixture = read::<usize>(physics + 0x70);
-                let mut walked = 0;
-                while fixture != 0 {
-                    walked += 1;
-                    if walked > MAX_FIXTURES || self.records.len() == MAX_FIXTURES {
-                        return Err("fixture traversal/capacity limit");
-                    }
-                    let shape = read::<usize>(fixture + 0x18);
-                    let owner = read::<usize>(fixture + 0x10);
-                    if shape == 0 || owner == 0 {
-                        return Err("null fixture shape/body");
-                    }
-                    let methods = read::<usize>(shape);
-                    if methods == 0
-                        || read::<usize>(methods + 0x20) != POLYGON_RAY
-                        || read::<usize>(methods + 0x28) != POLYGON_BOUNDS
-                    {
-                        return Err("unreviewed fixture shape virtual");
-                    }
-                    let transform = owner + 0xc;
-                    self.bounds.push(shape_bounds(shape, transform)?);
-                    self.records.push(FixtureView {
-                        body,
-                        shape,
-                        transform,
-                    });
-                    fixture = read::<usize>(fixture + 8);
-                }
+                self.collect_body_fixtures(body)?;
             }
             self.index.build(&self.bounds)?;
             self.built = true;
@@ -171,19 +125,78 @@ impl QueryScope {
         }
     }
 
+    /// Reserve the worst-case bound/fixture/output storage before walking.
+    fn reserve_storage(&mut self) -> Result<(), &'static str> {
+        self.records
+            .try_reserve(MAX_FIXTURES)
+            .map_err(|_| "fixture view allocation")?;
+        self.bounds
+            .try_reserve(MAX_FIXTURES)
+            .map_err(|_| "fixture bounds allocation")?;
+        self.candidates
+            .try_reserve(MAX_FIXTURES)
+            .map_err(|_| "query output allocation")
+    }
+
+    /// Append one body's fixture views and bounds, if the body is a live owner.
+    unsafe fn collect_body_fixtures(&mut self, body: usize) -> Result<(), &'static str> {
+        // SAFETY: `body` is a live body-array entry inside the native warning
+        // callback; the fixture list is borrowed only for this bounded walk.
+        let Some(physics) = (unsafe { active_body_physics(body) })? else {
+            return Ok(());
+        };
+        // SAFETY: same callback-local borrowed state as build; the fixture list and
+        // every node in it are live native storage for this synchronous walk only.
+        unsafe {
+            let mut fixture = read::<usize>(physics + 0x70);
+            let mut walked = 0;
+            while fixture != 0 {
+                walked += 1;
+                if walked > MAX_FIXTURES || self.records.len() == MAX_FIXTURES {
+                    return Err("fixture traversal/capacity limit");
+                }
+                let shape = read::<usize>(fixture + 0x18);
+                let owner = read::<usize>(fixture + 0x10);
+                if shape == 0 || owner == 0 {
+                    return Err("null fixture shape/body");
+                }
+                let methods = read::<usize>(shape);
+                if methods == 0
+                    || read::<usize>(methods + 0x20) != POLYGON_RAY
+                    || read::<usize>(methods + 0x28) != POLYGON_BOUNDS
+                {
+                    return Err("unreviewed fixture shape virtual");
+                }
+                let transform = owner + 0xc;
+                self.bounds.push(shape_bounds(shape, transform)?);
+                self.records.push(FixtureView {
+                    body,
+                    shape,
+                    transform,
+                });
+                fixture = read::<usize>(fixture + 8);
+            }
+        }
+        Ok(())
+    }
+
     unsafe fn query(&mut self, ray: Ray, fan: u8) -> Option<Hit> {
         // SAFETY: Same callback-local native contract as build; reviewed native
         // raycasts only read shape/transform and write our plain scalar output.
         unsafe {
-            if self.failed
-                || fan > 1
-                || !ray.valid()
-                || !ray
-                    .start
-                    .into_iter()
-                    .chain(ray.end)
-                    .all(|value| value.abs() <= MAX_BOUNDED_COORDINATE)
-            {
+            if self.failed || fan > 1 {
+                return None;
+            }
+            if !ray.valid() {
+                return None;
+            }
+            // Unbounded rays keep the exact native loop instead of the index.
+            let within_coordinate_limit = ray
+                .start
+                .into_iter()
+                .chain(ray.end)
+                .all(|value| value.abs() <= MAX_BOUNDED_COORDINATE);
+            if !within_coordinate_limit {
                 return None;
             }
             if !self.built {
@@ -240,6 +253,30 @@ unsafe fn read<T: Copy>(address: usize) -> T {
     // SAFETY: Each caller establishes the containing live native allocation and
     // readable field width. Unaligned scalar reads introduce no Rust references.
     unsafe { (address as *const T).read_unaligned() }
+}
+
+/// Physics object of a body the native warning scan would visit; `None` when a
+/// live-state, class or layer gate excludes the body.
+unsafe fn active_body_physics(body: usize) -> Result<Option<usize>, &'static str> {
+    // SAFETY: `body` is a live body-array entry inside the warning callback; only
+    // reviewed scalar fields and the reviewed activity virtual are read.
+    unsafe {
+        let vtable = read::<usize>(body);
+        if vtable == 0 || read::<usize>(vtable + 0x78) != ACTIVE_METHOD {
+            return Err("unreviewed body activity virtual");
+        }
+        if read::<i32>(body + NODE_STATE) < 2 {
+            return Ok(None);
+        }
+        if read::<u8>(body + BODY_CLASS) & 0xf != 0xf {
+            return Ok(None);
+        }
+        let physics = read::<usize>(body + BODY_B2);
+        if physics == 0 || read::<i32>(body + BODY_LAYER) == 0 {
+            return Ok(None);
+        }
+        Ok(Some(physics))
+    }
 }
 
 unsafe fn shape_bounds(shape: usize, transform: usize) -> Result<Bounds, &'static str> {
@@ -393,7 +430,7 @@ pub fn configure(verify: bool) {
 }
 
 pub unsafe extern "win64" fn draw_warning_scope() {
-    crate::profile::count(0);
+    crate::profile::count(crate::profile::Counter::WarningCalls);
     let previous = DEPTH.with(|depth| depth.replace(depth.get().saturating_add(1)));
     if previous == 0 {
         SCOPE.with(|scope| {
@@ -451,9 +488,13 @@ unsafe fn try_query_warning(ray: *const Ray, output: *mut u8, fan: u32) -> u8 {
 }
 
 pub unsafe extern "win64" fn query_warning(ray: *const Ray, output: *mut u8, fan: u32) -> u8 {
-    crate::profile::count(1);
+    crate::profile::count(crate::profile::Counter::QueryCalls);
     // SAFETY: forwards the native loop's existing scratch pointers and fan ID.
     let handled = unsafe { try_query_warning(ray, output, fan) };
-    crate::profile::count(if handled != 0 { 2 } else { 3 });
+    crate::profile::count(if handled != 0 {
+        crate::profile::Counter::IndexedRays
+    } else {
+        crate::profile::Counter::FallbackRays
+    });
     handled
 }

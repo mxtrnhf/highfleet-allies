@@ -18,6 +18,8 @@ const BODY_ARRAY: usize = 0x143a33c90;
 const BODY_COUNT: usize = 0x143a51150;
 const DAMAGE_THRESHOLD: usize = 0x1403ef040;
 const MAX_BODIES: usize = 15_000;
+// Native literal distance gate inside the target loop, in world units.
+const MAX_TARGET_DISTANCE: f32 = 60.0;
 // Exact native f32 bit patterns, not rounded source-level approximations.
 const TARGET_CONE: f32 = f32::from_bits(0x3f490fdb);
 const APPROACH_CONE: f32 = f32::from_bits(0x3fc90fdb);
@@ -115,10 +117,37 @@ unsafe fn normalize(function: NormalizeFn, value: [f32; 2]) -> [f32; 2] {
     result
 }
 
-/// Return the first native target in original body-array order. The filters are
-/// conjunctions; moving pure stats/scalar gates earlier cannot select a body the
-/// native conjunction would reject. NaN comparisons intentionally pass just as
-/// native COMISS/JA does. No candidate pointers are retained after this call.
+/// Cheap scalar/stats gates evaluated before any virtual or distance call.
+/// Every body rejected by these checks would also fail the native filter.
+unsafe fn cheap_gates_reject(
+    body: usize,
+    stats: StatsFn,
+    threshold: f32,
+    weapon_has_owner: bool,
+    weapon_owner: usize,
+) -> bool {
+    // SAFETY: scalar fields of a live body-array entry plus the reviewed native
+    // stats lookup; no pointer is retained past this call.
+    unsafe {
+        let stats_record = stats(read::<i32>(body + 0x188));
+        let category = if stats_record.is_null() {
+            0
+        } else {
+            read::<u32>(stats_record as usize + 0xb0)
+        };
+        let excluded =
+            matches!(category, 0x4000 | 0x8000000 | 0x200000) || (category >> 10) & 1 != 0;
+        let weak = threshold > read::<f32>(body + 0x2e0) + read::<f32>(body + 0x2dc);
+        let inactive_layer = read::<i32>(body + 0x1f0) == 0;
+        let own_body = weapon_has_owner && read::<usize>(body + 0xc0) == weapon_owner;
+
+        excluded || weak || inactive_layer || own_body
+    }
+}
+
+/// Return the first native target in original body-array order. NaN comparisons
+/// intentionally pass just as native COMISS/JA does. No candidate pointers are
+/// retained after this call.
 unsafe extern "win64" fn select_target(
     weapon: usize,
     axis_x: f32,
@@ -126,7 +155,7 @@ unsafe extern "win64" fn select_target(
     weapon_x: f32,
     weapon_y: f32,
 ) -> usize {
-    crate::profile::count(5);
+    crate::profile::count(crate::profile::Counter::KazScanCalls);
     // SAFETY: all native functions/objects are the original caller's live game
     // state. No object ownership, container copy, or cross-callback cache exists.
     unsafe {
@@ -148,25 +177,14 @@ unsafe extern "win64" fn select_target(
             if body == 0 {
                 continue;
             }
-            let stats_record = stats(read::<i32>(body + 0x188));
-            let category = if stats_record.is_null() {
-                0
-            } else {
-                read::<u32>(stats_record as usize + 0xb0)
-            };
-            let excluded =
-                matches!(category, 0x4000 | 0x8000000 | 0x200000) || (category >> 10) & 1 != 0;
-            let weak = threshold > read::<f32>(body + 0x2e0) + read::<f32>(body + 0x2dc);
-            let inactive_layer = read::<i32>(body + 0x1f0) == 0;
-            let own_body = weapon_has_owner && read::<usize>(body + 0xc0) == weapon_owner;
-            if excluded || weak || inactive_layer || own_body {
+            if cheap_gates_reject(body, stats, threshold, weapon_has_owner, weapon_owner) {
                 prefilter_rejections += 1;
                 continue;
             }
 
             let active: ActiveFn = std::mem::transmute(read::<usize>(read::<usize>(body) + 0x78));
             if active(body as *const u8) == 0
-                || distance(weapon as *const u8, body as *const u8) > 60.0
+                || distance(weapon as *const u8, body as *const u8) > MAX_TARGET_DISTANCE
             {
                 continue;
             }
@@ -198,12 +216,18 @@ unsafe extern "win64" fn select_target(
                 velocity[1] * axis_y + velocity[0] * axis_x,
             );
             if (-approach).abs() > APPROACH_CONE {
-                crate::profile::count(6);
-                crate::profile::count_by(7, prefilter_rejections);
+                crate::profile::count(crate::profile::Counter::KazScanTargets);
+                crate::profile::count_by(
+                    crate::profile::Counter::KazPrefilterRejections,
+                    prefilter_rejections,
+                );
                 return body;
             }
         }
-        crate::profile::count_by(7, prefilter_rejections);
+        crate::profile::count_by(
+            crate::profile::Counter::KazPrefilterRejections,
+            prefilter_rejections,
+        );
         0
     }
 }

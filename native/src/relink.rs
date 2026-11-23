@@ -575,6 +575,7 @@ unsafe fn root_shape(root: *mut u8, id: u64) -> usize {
 /// table saturates instead of evicting; `sample_root_table_full` counts samples
 /// that could not be inserted.
 fn record_sampled_root(root: *mut u8) {
+    // Bit 0 keeps a non-null root pointer from colliding with the empty marker.
     let key = (root as u64) | 1;
     let base = (key.wrapping_mul(HASH_MULTIPLIER) >> (64 - SAMPLE_ROOT_SHIFT)) as usize
         & (SAMPLE_ROOT_SLOTS - 1);
@@ -673,7 +674,7 @@ unsafe fn run_query(root: *mut u8, id: u64, site: usize) -> *mut u8 {
         unsafe { ROOT_VTABLES_OUTSIDE.record(root) };
     }
 
-    let sampled = counters.sequence.fetch_add(1, Ordering::Relaxed) & SAMPLE_MASK == 0;
+    let sampled = (counters.sequence.fetch_add(1, Ordering::Relaxed) & SAMPLE_MASK) == 0;
     let observation = if sampled {
         // SAFETY: Same live query inputs; only the sampled path walks the tree.
         unsafe { sample_query(root, id) }

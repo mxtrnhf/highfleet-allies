@@ -7,17 +7,29 @@ use crate::hud_query;
 const WRAPPER_SITE: usize = 0x1_4029_c668;
 const WRAPPER_BYTES: [u8; 5] = [0xe8, 0x13, 0x8b, 0xfa, 0xff];
 const BODY_ARRAY: usize = 0x1_43a3_3c90;
-const LOOPS: [(usize, usize, [u8; 7]); 2] = [
-    (
-        0x1_4024_54e0,
-        0x1_4024_5586,
-        [0x4c, 0x8d, 0x35, 0xa9, 0xe7, 0x7e, 0x03],
-    ),
-    (
-        0x1_4024_5baf,
-        0x1_4024_5c56,
-        [0x4c, 0x8d, 0x35, 0xda, 0xe0, 0x7e, 0x03],
-    ),
+
+/// One native warning-ray fan loop and its two trampoline exit targets.
+#[derive(Clone, Copy)]
+struct LoopPatch {
+    /// Loop head replaced by the detour.
+    entry: usize,
+    /// Native continuation after the loop, taken when the index answers a ray.
+    continuation: usize,
+    /// The displaced RIP-relative `LEA r14, [BODY_ARRAY]`.
+    displaced: [u8; 7],
+}
+
+const LOOPS: [LoopPatch; 2] = [
+    LoopPatch {
+        entry: 0x1_4024_54e0,
+        continuation: 0x1_4024_5586,
+        displaced: [0x4c, 0x8d, 0x35, 0xa9, 0xe7, 0x7e, 0x03],
+    },
+    LoopPatch {
+        entry: 0x1_4024_5baf,
+        continuation: 0x1_4024_5c56,
+        displaced: [0x4c, 0x8d, 0x35, 0xda, 0xe0, 0x7e, 0x03],
+    },
 ];
 
 /// Caller guarantees mapped Steam 1.163 executable and startup quiescence.
@@ -46,8 +58,8 @@ pub unsafe fn validate() -> Result<(), String> {
             0x1_4000_5e60,
             &[0x83, 0x79, 0x48, 0x02, 0x0f, 0x9d, 0xc0, 0xc3],
         ),
-        (LOOPS[0].0, LOOPS[0].2.as_slice()),
-        (LOOPS[1].0, LOOPS[1].2.as_slice()),
+        (LOOPS[0].entry, LOOPS[0].displaced.as_slice()),
+        (LOOPS[1].entry, LOOPS[1].displaced.as_slice()),
     ] {
         // SAFETY: Same fixed, bounded mapped executable ranges as above.
         let bytes = unsafe { std::slice::from_raw_parts(address as *const u8, expected.len()) };
@@ -60,7 +72,12 @@ pub unsafe fn validate() -> Result<(), String> {
 
 /// Prepare all three disjoint patches; caller installs the session at startup.
 pub unsafe fn prepare(session: &mut PatchSession) -> Result<(), String> {
-    for (fan, &(entry, continuation, expected)) in LOOPS.iter().enumerate() {
+    for (fan, loop_patch) in LOOPS.iter().enumerate() {
+        let LoopPatch {
+            entry,
+            continuation,
+            displaced,
+        } = *loop_patch;
         let mut trampoline = Trampoline::new();
         let native = trampoline.new_label();
         // RSP is aligned at this native mid-function callsite. preserved_call
@@ -68,7 +85,9 @@ pub unsafe fn prepare(session: &mut PatchSession) -> Result<(), String> {
         // RCX = [RBP-0x70] input; RDX = original [RSP+0x68] 12-byte scratch;
         // R8D = fan ordinal. Nonvolatile Win64 registers/XMM6-XMM15 stay intact.
         let mut arguments = vec![
-            0x48, 0x8d, 0x4d, 0x90, 0x48, 0x8d, 0x94, 0x24, 0x28, 0x01, 0x00, 0x00, 0x41, 0xb8,
+            0x48, 0x8d, 0x4d, 0x90, // lea rcx,[rbp-0x70]
+            0x48, 0x8d, 0x94, 0x24, 0x28, 0x01, 0x00, 0x00, // lea rdx,[rsp+0x128]
+            0x41, 0xb8, // mov r8d, fan
         ];
         arguments.extend_from_slice(&(fan as u32).to_le_bytes());
         trampoline.preserved_call(
@@ -90,10 +109,10 @@ pub unsafe fn prepare(session: &mut PatchSession) -> Result<(), String> {
         // preserving flags, rather than incorrectly relocating its disp32.
         trampoline.bytes(&[0x49, 0xbe]);
         trampoline.bytes(&BODY_ARRAY.to_le_bytes());
-        trampoline.relative_jump(entry + expected.len());
+        trampoline.relative_jump(entry + displaced.len());
         // SAFETY: Validated complete 7-byte instruction. Both exits preserve
         // native live values; fallback executes the original loop unchanged.
-        unsafe { session.detour_trampoline(entry, expected.len(), trampoline) }
+        unsafe { session.detour_trampoline(entry, displaced.len(), trampoline) }
             .map_err(|error| error.to_string())?;
     }
     let mut wrapper = Trampoline::new();
