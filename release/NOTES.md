@@ -33,7 +33,9 @@ Includes **hf_ally v@ALLY_VERSION@**, **hf_ai v@AI_VERSION@** and bundled QoL.
 
 ## Install
 
-For HighFleet **Steam 1.163** with Modloader v4. Back up `Saves`, extract the ZIP
-into the game directory, and remove older ally/AI DLLs so only one of each remains.
-Use only one QoL build: do not stack bundled `highfleet_qol.dll` with another QoL
-fork. Merge the included configs with your custom settings.
+For HighFleet **Steam 1.163** with Modloader v4. Back up `Saves` and any existing
+`Modloader/config/` before extracting the ZIP into the game directory. Remove
+older ally/AI DLLs and use only one QoL build. The bundled QoL is recommended for
+fresh installs; keep `enable_flare_crash_fix` enabled with `hf_ai` regardless of
+which QoL build you use. If upgrading, merge your custom settings into the new
+presets.

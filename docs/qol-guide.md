@@ -1,10 +1,14 @@
 # QoL settings: refuel, speed and elevation (`Modloader/config/qol.json`)
 
-The `highfleet_qol.dll` in the release pack is [logdot's highfleet-qol](https://github.com/logdot/highfleet-qol) `main` plus our manual elevation and optional firing-arc rules (source in [`../qol`](../qol)). **logdot's stock QoL release (v1.3.0) works fine with our mods; it just does not have the additional settings below.** Prefer his release once it includes the features you need.
+For fresh installs, use the `highfleet_qol.dll` included in the Allies pack.
+It's based on [logdot's highfleet-qol](https://github.com/logdot/highfleet-qol)
+and adds manual elevation, optional firing-arc rules, and the aircraft and fleet
+guards described below. If you prefer upstream QoL, don't install the bundled
+DLL alongside it. Keep `enable_flare_crash_fix` on with `hf_ai` in either build.
 
 | Section | What it does | Where it comes from |
 |---|---|---|
-| `refuel` | how fast fleets refuel at stations | logdot's `main` (our PR #19, merged, no release yet) |
+| `refuel` | how fast fleets refuel at stations | logdot's `main` (our PR #19) |
 | `speed` | the map cruise-speed formula | logdot's `main` (our PR #19) |
 | `elevation` | raise/lower the floor of a held part in the ship editor | **our PR [#20](https://github.com/logdot/highfleet-qol/pull/20), still a draft** |
 | `elevation_rules` | choose gun/KAZ firing-arc rules | ported from our separate QoL fork; vanilla by default |
