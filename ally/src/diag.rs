@@ -7,9 +7,12 @@
 //! * `logging.debug_log` (runtime switch, default off): a second, unbuffered file
 //!   `Modloader/logs/hf_ally_megalog_<time>.log` with a heartbeat, every click, every change of the game's scene
 //!   state and every spawn, a watchdog that flushes the normal log every 300 ms, and a minidump
-//!   (`hf_ally_crash_<time>.dmp`) on an unhandled crash.
+//!   (`hf_ally_crash_<time>.dmp`) on an unhandled crash or (`hf_ally_hang_<time>.dmp`) when a hook stops
+//!   returning. A hang is not an exception: the process lives, the watchdog keeps writing, and only the
+//!   game's own thread stops, so the hang report names the hook and the stage it is stuck in.
 
 use std::{
+    cell::Cell,
     ffi::c_void,
     fmt::Write as _,
     fs::File,
@@ -17,7 +20,7 @@ use std::{
     mem::offset_of,
     panic,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         Mutex, OnceLock,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -77,14 +80,14 @@ fn unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn write_file(msg: &str, in_crash: bool) {
+fn write_file(msg: &str, never_wait: bool) {
     let t = START
         .get()
         .map(|s| s.elapsed().as_secs_f64())
         .unwrap_or(0.0);
     let line = format!("[+{t:9.3}] {msg}\n");
-    // a crash may have happened while another thread held the lock: never wait for it there
-    let guard = if in_crash {
+    // a crash, or a hang whose thread may still hold this lock: never wait for it there
+    let guard = if never_wait {
         FILE.try_lock().ok()
     } else {
         FILE.lock().ok()
@@ -103,34 +106,123 @@ pub fn crumb(msg: &str) {
     }
 }
 
-// --- which hf_ally hook is running (read by the crash report) ---
+// --- which hf_ally hook is running, and where in it (read by the crash report and the watchdog) ---
 
 static HOOK_PTR: AtomicUsize = AtomicUsize::new(0);
 static HOOK_LEN: AtomicUsize = AtomicUsize::new(0);
+/// The outermost hook on the stack and when it was entered (milliseconds since `START`): the region the watchdog
+/// measures for hangs. A game call made from one hook runs another one, and the inner hook returning must not make
+/// the outer one invisible to the hang detection.
+static REGION_PTR: AtomicUsize = AtomicUsize::new(0);
+static REGION_LEN: AtomicUsize = AtomicUsize::new(0);
+static REGION_START_MS: AtomicU64 = AtomicU64::new(0);
+static STAGE_PTR: AtomicUsize = AtomicUsize::new(0);
+static STAGE_LEN: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    /// Hooks currently on this thread's stack (only the outermost one is published in `REGION_*`).
+    static HOOK_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Milliseconds since the mod started, the clock the watchdog measures hook runs with.
+pub(crate) fn elapsed_ms() -> u64 {
+    START
+        .get()
+        .map(|start| start.elapsed().as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Whether a hook is running right now (only the watchdog's hang detection needs this).
+pub(crate) fn hook_running() -> bool {
+    REGION_PTR.load(Ordering::Acquire) != 0
+}
+
+/// How long the outermost running hook has been running, in milliseconds; 0 when none is.
+pub(crate) fn hook_held_ms() -> u64 {
+    if !hook_running() {
+        return 0;
+    }
+    elapsed_ms().saturating_sub(REGION_START_MS.load(Ordering::Acquire))
+}
 
 pub struct Scope;
 /// Marks "inside hf_ally hook `name`" until the returned guard is dropped.
 pub fn scope(name: &'static str) -> Scope {
+    let outermost = HOOK_DEPTH.with(|depth| {
+        let next = depth.get().saturating_add(1);
+        depth.set(next);
+        next == 1
+    });
+    if outermost {
+        REGION_START_MS.store(elapsed_ms(), Ordering::Relaxed);
+        REGION_LEN.store(name.len(), Ordering::Relaxed);
+        REGION_PTR.store(name.as_ptr() as usize, Ordering::Release);
+        STAGE_LEN.store(0, Ordering::Relaxed);
+        STAGE_PTR.store(0, Ordering::Relaxed);
+    }
     HOOK_LEN.store(name.len(), Ordering::Relaxed);
-    HOOK_PTR.store(name.as_ptr() as usize, Ordering::Relaxed);
+    HOOK_PTR.store(name.as_ptr() as usize, Ordering::Release);
     Scope
 }
 impl Drop for Scope {
     fn drop(&mut self) {
-        HOOK_PTR.store(0, Ordering::Relaxed);
+        HOOK_PTR.store(0, Ordering::Release);
+        let outermost = HOOK_DEPTH.with(|depth| {
+            let left = depth.get().saturating_sub(1);
+            depth.set(left);
+            left == 0
+        });
+        if outermost {
+            REGION_PTR.store(0, Ordering::Release);
+            STAGE_PTR.store(0, Ordering::Relaxed);
+            STAGE_LEN.store(0, Ordering::Relaxed);
+        }
     }
 }
-fn current_hook() -> String {
-    let (ptr, len) = (
-        HOOK_PTR.load(Ordering::Relaxed),
-        HOOK_LEN.load(Ordering::Relaxed),
-    );
+
+/// Names the stage a multi-step hook is in, for the megalog heartbeat and the hang report. The last stage set
+/// stays until the hook returns; recording it is a few relaxed stores, so call it per stage, not per branch.
+pub fn stage(name: &'static str) {
+    if DEBUG_ON.load(Ordering::Relaxed) {
+        STAGE_LEN.store(name.len(), Ordering::Relaxed);
+        STAGE_PTR.store(name.as_ptr() as usize, Ordering::Release);
+    }
+}
+
+fn hook_name(ptr: usize, len: usize) -> Option<String> {
     if ptr == 0 {
-        return "none (the game's own code)".to_string();
+        return None;
     }
-    unsafe {
+    // SAFETY: the pointer comes from a `&'static str` handed to `scope`, which outlives the process's code.
+    Some(unsafe {
         String::from_utf8_lossy(std::slice::from_raw_parts(ptr as *const u8, len)).into_owned()
-    }
+    })
+}
+
+/// The innermost running hook, for the crash report.
+fn current_hook() -> String {
+    hook_name(
+        HOOK_PTR.load(Ordering::Acquire),
+        HOOK_LEN.load(Ordering::Relaxed),
+    )
+    .unwrap_or_else(|| "none (the game's own code)".to_string())
+}
+
+/// The outermost running hook, the region the watchdog measures.
+fn current_region() -> String {
+    hook_name(
+        REGION_PTR.load(Ordering::Acquire),
+        REGION_LEN.load(Ordering::Relaxed),
+    )
+    .unwrap_or_else(|| "none (the game's own code)".to_string())
+}
+
+/// The stage the running hook reported last, if any (`stage()` in the hook).
+fn current_stage() -> Option<String> {
+    hook_name(
+        STAGE_PTR.load(Ordering::Acquire),
+        STAGE_LEN.load(Ordering::Relaxed),
+    )
 }
 
 // --- crash report ---
@@ -173,9 +265,9 @@ unsafe fn readable(addr: usize) -> bool {
         && info.Protect != 0
 }
 
-fn emit(report: &str, in_crash: bool) {
+fn emit(report: &str, never_wait: bool) {
     for line in report.lines() {
-        write_file(line, in_crash);
+        write_file(line, never_wait);
     }
     log::error!("{report}");
     flush_log();
@@ -310,38 +402,100 @@ unsafe extern "system" fn unhandled_filter(info: *const EXCEPTION_POINTERS) -> i
     0
 }
 
-unsafe fn write_dump(info: *const EXCEPTION_POINTERS) {
+/// `MiniDumpWithThreadInfo`: every thread's stack, which is what a hang needs (`MiniDumpNormal` adds nothing).
+const HANG_DUMP_FLAGS: i32 = 0x1000;
+/// `WithDataSegs | WithIndirectlyReferencedMemory | WithThreadInfo`: the crash dump as before.
+const CRASH_DUMP_FLAGS: i32 = 0x1 | 0x40 | 0x1000;
+
+/// Writes a minidump of this process and returns the one-line report for the log. `exception` points at the
+/// faulting record for a crash; `None` dumps the live process.
+///
+/// # Safety
+/// `exception`, when given, must point at a live exception record pair for as long as the call runs. The dump
+/// reads this process's own memory and thread contexts, so the caller must accept a short stop-the-world.
+unsafe fn write_minidump(
+    prefix: &str,
+    flags: i32,
+    exception: Option<&MINIDUMP_EXCEPTION_INFORMATION>,
+) -> String {
     use std::os::windows::io::AsRawHandle;
-    let path = format!("Modloader/logs/hf_ally_crash_{}.dmp", unix_secs());
+    let path = format!("Modloader/logs/{prefix}_{}.dmp", unix_secs());
     let Ok(file) = File::create(&path) else {
-        write_file(&format!("CRASH dump: cannot create {path}"), true);
-        return;
+        return format!("dump: cannot create {path}");
     };
+    let info = exception.map_or(std::ptr::null(), |record| record as *const _);
+    let ok = MiniDumpWriteDump(
+        GetCurrentProcess(),
+        GetCurrentProcessId(),
+        file.as_raw_handle() as _,
+        flags,
+        info,
+        std::ptr::null(),
+        std::ptr::null(),
+    );
+    format!(
+        "dump {path}: {}",
+        if ok != 0 { "written" } else { "FAILED" }
+    )
+}
+
+unsafe fn write_dump(info: *const EXCEPTION_POINTERS) {
     let exception = MINIDUMP_EXCEPTION_INFORMATION {
         ThreadId: GetCurrentThreadId(),
         ExceptionPointers: info as *mut EXCEPTION_POINTERS,
         ClientPointers: 0,
     };
-    // MiniDumpWithDataSegs (0x1) | WithIndirectlyReferencedMemory (0x40) | WithThreadInfo (0x1000)
-    let ok = MiniDumpWriteDump(
-        GetCurrentProcess(),
-        GetCurrentProcessId(),
-        file.as_raw_handle() as _,
-        0x1 | 0x40 | 0x1000,
-        &exception,
-        std::ptr::null(),
-        std::ptr::null(),
-    );
-    emit(
-        &format!(
-            "CRASH dump {path}: {}",
-            if ok != 0 { "written" } else { "FAILED" }
-        ),
-        true,
-    );
+    let report = write_minidump("hf_ally_crash", CRASH_DUMP_FLAGS, Some(&exception));
+    emit(&format!("CRASH {report}"), true);
 }
 
 // --- megalog watchdog ---
+
+/// A hook running this long is worth a megalog line: a normal frame is far shorter.
+const SLOW_HOOK_MS: u64 = 250;
+/// A hook running this long is not coming back on its own: the game thread is stuck inside it.
+const HANG_HOOK_MS: u64 = 3_000;
+/// At most this many hang dumps per session, so a recurring stall cannot fill the disk.
+const MAX_HANG_DUMPS: u32 = 3;
+static SLOW_REPORTED: AtomicBool = AtomicBool::new(false);
+static HANG_REPORTED: AtomicBool = AtomicBool::new(false);
+static HANG_DUMPS: AtomicU32 = AtomicU32::new(0);
+
+/// The hook region for a report: the outermost hook, plus the innermost one when a game call from it runs another.
+fn hook_label() -> String {
+    let region = current_region();
+    let inner = current_hook();
+    if inner == region || inner.starts_with("none") {
+        region
+    } else {
+        format!("{region} (inside {inner})")
+    }
+}
+
+/// Reports a hook that has not returned. A hang is not an exception, so this is the only place it can surface:
+/// the watchdog keeps heartbeating and writes a minidump of the live process (all thread stacks) instead.
+fn report_hang(held_ms: u64) {
+    let stage = current_stage().unwrap_or_else(|| "none".to_string());
+    // the stuck thread may still hold the megalog lock: never wait for it here
+    write_file(
+        &format!(
+            "HANG in hf_ally v{VERSION} build {BUILD}: the game thread has been inside hook {} stage {stage} for {held_ms} ms and is not ticking",
+            hook_label()
+        ),
+        true,
+    );
+    if HANG_DUMPS.fetch_add(1, Ordering::Relaxed) < MAX_HANG_DUMPS {
+        // A dump can take a while, or block on a stuck process: write it on its own thread so the heartbeat
+        // above keeps coming and the megalog still shows how long the hang lasted.
+        let _ = std::thread::Builder::new()
+            .name("hf_ally_hangdump".into())
+            .spawn(|| {
+                // SAFETY: the dump only reads this process. It stops the world briefly, which costs nothing on a hang.
+                let report = unsafe { write_minidump("hf_ally_hang", HANG_DUMP_FLAGS, None) };
+                write_file(&format!("HANG {report}"), true);
+            });
+    }
+}
 
 fn watchdog() {
     use crate::native::{
@@ -353,6 +507,25 @@ fn watchdog() {
     loop {
         std::thread::sleep(Duration::from_millis(100));
         tick += 1;
+        // a hook that holds on may hold the megalog lock too: after a hang is reported, only try-lock
+        let held_ms = hook_held_ms();
+        let hung = held_ms >= HANG_HOOK_MS;
+        if !hook_running() {
+            SLOW_REPORTED.store(false, Ordering::Relaxed);
+            HANG_REPORTED.store(false, Ordering::Relaxed);
+        } else if held_ms >= SLOW_HOOK_MS && !SLOW_REPORTED.swap(true, Ordering::Relaxed) {
+            let stage = current_stage().unwrap_or_else(|| "none".to_string());
+            write_file(
+                &format!(
+                    "SLOW hook {} stage {stage} running {held_ms} ms",
+                    hook_label()
+                ),
+                true,
+            );
+        }
+        if hung && !HANG_REPORTED.swap(true, Ordering::Relaxed) {
+            report_hang(held_ms);
+        }
         // only scalar globals and pointer values are read here: nothing a game thread can free under us
         let state = unsafe {
             format!(
@@ -369,22 +542,31 @@ fn watchdog() {
         if state != last {
             write_file(
                 &format!("STATE {state} t={:.2}", unsafe { read::<f64>(CLOCK) }),
-                false,
+                hung,
             );
             last = state;
         }
         if tick.is_multiple_of(5) {
-            let heartbeat = unsafe {
+            let mut heartbeat = unsafe {
                 format!(
-                    "HB t={:.2} {last} creatures={} hook={}",
+                    "HB t={:.2} {last} creatures={}",
                     read::<f64>(CLOCK),
                     count(CREATURES_BEGIN, CREATURES_END, 0x18),
-                    current_hook()
                 )
             };
-            write_file(&heartbeat, false);
+            if hook_running() {
+                let stage = current_stage().unwrap_or_else(|| "none".to_string());
+                heartbeat.push_str(&format!(
+                    " hook={} stage={stage} held={held_ms}ms",
+                    hook_label()
+                ));
+            } else {
+                heartbeat.push_str(" hook=none (the game's own code)");
+            }
+            write_file(&heartbeat, hung);
         }
-        if tick.is_multiple_of(3) {
+        // a hung thread may hold the logger's lock: keep heartbeating instead of blocking on it
+        if tick.is_multiple_of(3) && !hung {
             flush_log();
         }
     }

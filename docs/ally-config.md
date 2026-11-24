@@ -54,7 +54,7 @@ For individual features, use this table. Settings for an already-disabled parent
 | K-13 engagement delay only | `plane_aa_delay: 0.0` | Removes the added wait, not the mod-managed interceptor; use `plane_k13: false` or `plane_loadouts: false` for the feature. |
 | Strategic-launch interception ignore list | `intercept_ignore_oids: []` | Empty list skips the patch and is vanilla. |
 | `PLAYER` pre-combat label | `marker_text: ""` | Plane-loadout labels are controlled by `plane_loadouts`, not this key. Labels draw at the fixed B23 seam. |
-| Debug mode | `logging.debug_log: false` | No megalog, watchdog, crash dump, pre-combat GUI lists or per-second probes. The legacy `megalog` cargo feature does not force it on. |
+| Debug mode | `logging.debug_log: false` | No megalog, watchdog, crash or hang dump, pre-combat GUI lists or per-second probes. The legacy `megalog` cargo feature does not force it on. |
 | Ally target boxes | `ally_reticle_scale: 0` | No boxes around enemies targeted by allies; the player's own box is unchanged. |
 | Battle debug overlay | `debug_overlay.enable: false` | No rings, AI-state labels, waypoints or lead markers are drawn. Independent of `ally_reticle_scale`. |
 | Creature registry log | `logging.log_creatures: false` | Other logs remain. |
@@ -99,7 +99,7 @@ modloader log messages and the basic crash reporter remain available.
 
 | Key inside `logging` | Default | Purpose |
 |---|---|---|
-| `debug_log` | `false` | Runtime debug switch. `true` starts the megalog `hf_ally_megalog_<time>.log`, the watchdog, the crash minidump `hf_ally_crash_<time>.dmp`, pre-combat GUI lists, per-second probes and the lifted line budget. Since v0.16.2, aircraft census/watch and delayed loadout-verification diagnostics also require this switch. Dumps may contain paths/campaign data; delete after sending. The legacy `megalog` cargo feature does not force it on. |
+| `debug_log` | `false` | Runtime debug switch. `true` starts the megalog `hf_ally_megalog_<time>.log`, the watchdog, the crash minidump `hf_ally_crash_<time>.dmp`, pre-combat GUI lists, per-second probes and the lifted line budget. Since v1.3.18 the watchdog also reports a hook that stops returning: a `SLOW` line after 250 ms, and after 3 s a `HANG` line with the hook and its stage plus `hf_ally_hang_<time>.dmp` (all thread stacks, at most three per session), which is what a game freeze produces. Since v0.16.2, aircraft census/watch and delayed loadout-verification diagnostics also require this switch. Dumps may contain paths/campaign data; delete after sending. The legacy `megalog` cargo feature does not force it on. |
 | `gui_inspect` | `false` | Full GUI lists on clicks and native ammo-selector rebuilds. |
 | `log_creatures` | `false` | Creature add/remove log (very noisy). |
 

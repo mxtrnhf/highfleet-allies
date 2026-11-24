@@ -100,11 +100,13 @@ unsafe fn draw_ally_targets() {
         return;
     }
     let color = ALLY_COLOR.load(Ordering::Relaxed) | 0xff00_0000;
-    let Some(allies) = crate::battle::allies() else {
-        return;
+    // copy the list out and release the lock first: no native draw call may run while it is held
+    let allies: Vec<usize> = match crate::battle::allies() {
+        Some(allies) => allies.iter().copied().collect(),
+        None => return,
     };
 
-    for &ally in allies.iter() {
+    for ally in allies {
         if !crate::native::live_ship(ally) {
             continue;
         }

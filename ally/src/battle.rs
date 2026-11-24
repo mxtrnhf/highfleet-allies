@@ -142,7 +142,6 @@ static SUM_ALLY_STATE: AtomicI32 = AtomicI32::new(-1);
 static SUM_RESULT: AtomicI32 = AtomicI32::new(0);
 static SUM_FLAGS: AtomicU32 = AtomicU32::new(0);
 static SUM_LAST: AtomicU64 = AtomicU64::new(0);
-static ANNOUNCED_LOST: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
 const F_SPAWNED: u32 = 1;
 const F_HANDOVER: u32 = 2;
@@ -345,60 +344,123 @@ pub(crate) unsafe fn emit_last_summary() {
     emit_summary(f64::from_bits(SUM_LAST.load(Ordering::Relaxed)));
 }
 
-static ALLY_LAST: Mutex<Vec<(usize, i32)>> = Mutex::new(Vec::new());
+/// What the sound-event pass remembers between frames.
+struct SoundState {
+    /// Allies already announced as destroyed (pointer reuse: entries are dropped when the ship leaves the roster).
+    announced: Vec<usize>,
+    /// Last state seen per ally still in the roster (a destroyed ship is not flagged 6/7: it just leaves the roster).
+    last: Vec<(usize, i32)>,
+}
+/// Lock order in this mod: `ALLIES` before `SOUND_STATE`. Neither is held while the pass logs, flushes or plays
+/// sounds, so a game or logger callback cannot re-enter a hook that wants the same lock.
+static SOUND_STATE: Mutex<SoundState> = Mutex::new(SoundState {
+    announced: Vec::new(),
+    last: Vec::new(),
+});
+
+/// One outcome of a frame, replayed after the locks are released (empty on almost every frame).
+enum SoundEvent {
+    LeftRoster {
+        ship: usize,
+        last_state: i32,
+        enemies: usize,
+    },
+    Retreated,
+    Lost {
+        ship: usize,
+        last_state: i32,
+        in_roster: bool,
+        enemies: usize,
+    },
+}
 
 /// Announces allies that have just been destroyed; runs every battle frame. The game removes a destroyed ship from the
 /// roster with its state still 1 (v0.10.1 test), so an ally that is gone counts as destroyed unless it was
 /// retreating (state 2) or extracted, or no enemy is left (victory tears the roster down). A ship seen in state 6/7
 /// still in the roster counts too.
 unsafe fn ally_sound_events(ships: &[usize]) {
-    let (Ok(mut announced), Ok(mut allies), Ok(mut last)) =
-        (ANNOUNCED_LOST.lock(), ALLIES.lock(), ALLY_LAST.lock())
-    else {
-        return;
-    };
-    announced.retain(|p| ships.contains(p));
-    for &p in allies.iter().filter(|p| ships.contains(p)) {
-        let state = read::<i32>(p + OFF_STATE);
-        match last.iter_mut().find(|e| e.0 == p) {
-            Some(e) => e.1 = state,
-            None => last.push((p, state)),
-        }
-    }
-    let enemies = count(ENEMIES_BEGIN, ENEMIES_END, 0x18);
-    let mut left_roster = Vec::new();
-    for &p in allies.iter() {
-        let in_roster = ships.contains(&p);
-        let last_state = last.iter().find(|e| e.0 == p).map_or(-1, |e| e.1);
-        let dead = if in_roster {
-            matches!(read::<i32>(p + OFF_STATE), 6 | 7)
-        } else {
-            left_roster.push(p);
-            let not_destroyed = SUM_FLAGS.load(Ordering::Relaxed) & F_EXTRACTED != 0
-                || matches!(last_state, 2 | 6 | 7 | -1);
-            if not_destroyed || enemies == 0 {
-                log::info!("ALLY c={p:#x} left the roster, not destroyed (last state {last_state}, enemies {enemies})");
-            }
-            // retreated alive: flying out (state 2) when it vanished, or extracted with the flagship
-            if SUM_FLAGS.load(Ordering::Relaxed) & F_EXTRACTED != 0 || last_state == 2 {
-                sound::retreated();
-            }
-            !not_destroyed && enemies != 0
+    let mut events = Vec::new();
+    {
+        let Ok(mut allies) = ALLIES.lock() else {
+            return;
         };
-        if !dead || announced.contains(&p) {
-            continue;
+        let Ok(mut sound) = SOUND_STATE.lock() else {
+            return;
+        };
+        sound.announced.retain(|p| ships.contains(p));
+        for &p in allies.iter().filter(|p| ships.contains(p)) {
+            let state = read::<i32>(p + OFF_STATE);
+            match sound.last.iter_mut().find(|e| e.0 == p) {
+                Some(e) => e.1 = state,
+                None => sound.last.push((p, state)),
+            }
         }
-        announced.push(p);
-        SUM_LOST.fetch_add(1, Ordering::Relaxed);
-        if ALLY_PTR.load(Ordering::Relaxed) == p {
-            SUM_ALLY_STATE.store(6, Ordering::Relaxed);
+        let enemies = count(ENEMIES_BEGIN, ENEMIES_END, 0x18);
+        let mut left_roster = Vec::new();
+        for &p in allies.iter() {
+            let in_roster = ships.contains(&p);
+            let last_state = sound.last.iter().find(|e| e.0 == p).map_or(-1, |e| e.1);
+            let dead = if in_roster {
+                matches!(read::<i32>(p + OFF_STATE), 6 | 7)
+            } else {
+                left_roster.push(p);
+                let extracted = SUM_FLAGS.load(Ordering::Relaxed) & F_EXTRACTED != 0;
+                let not_destroyed = extracted || matches!(last_state, 2 | 6 | 7 | -1);
+                if not_destroyed || enemies == 0 {
+                    events.push(SoundEvent::LeftRoster {
+                        ship: p,
+                        last_state,
+                        enemies,
+                    });
+                }
+                // retreated alive: flying out (state 2) when it vanished, or extracted with the flagship
+                if extracted || last_state == 2 {
+                    events.push(SoundEvent::Retreated);
+                }
+                !not_destroyed && enemies != 0
+            };
+            if !dead || sound.announced.contains(&p) {
+                continue;
+            }
+            sound.announced.push(p);
+            SUM_LOST.fetch_add(1, Ordering::Relaxed);
+            if ALLY_PTR.load(Ordering::Relaxed) == p {
+                SUM_ALLY_STATE.store(6, Ordering::Relaxed);
+            }
+            events.push(SoundEvent::Lost {
+                ship: p,
+                last_state,
+                in_roster,
+                enemies,
+            });
         }
-        log::info!("ALLY lost: c={p:#x} destroyed (last state {last_state}, in roster {in_roster}, enemies {enemies})");
-        diag::flush_log();
-        sound::lost();
+        allies.retain(|p| !left_roster.contains(p));
+        sound.last.retain(|e| ships.contains(&e.0));
     }
-    allies.retain(|p| !left_roster.contains(p));
-    last.retain(|e| ships.contains(&e.0));
+    for event in events {
+        match event {
+            SoundEvent::LeftRoster {
+                ship,
+                last_state,
+                enemies,
+            } => log::info!(
+                "ALLY c={ship:#x} left the roster, not destroyed (last state {last_state}, enemies {enemies})"
+            ),
+            SoundEvent::Retreated => sound::retreated(),
+            SoundEvent::Lost {
+                ship,
+                last_state,
+                in_roster,
+                enemies,
+            } => {
+                log::info!(
+                    "ALLY lost: c={ship:#x} destroyed (last state {last_state}, in roster {in_roster}, enemies {enemies})"
+                );
+                diag::flush_log();
+                sound::lost();
+            }
+        }
+    }
 }
 
 /// Native spawner callback; starts a new ally battle only at the player's initial deploy site.
@@ -505,6 +567,10 @@ pub(crate) unsafe fn restore_orders(why: &str, final_try: bool) {
         return;
     }
     let in_battle = roster();
+    // the log lines wait until the guard is gone: never call the logger while a mod lock is held
+    let mut restored = Vec::new();
+    let mut kept_order = Vec::new();
+    let mut gone = Vec::new();
     list.retain_mut(|(ship, previous, misses)| {
         if in_battle.contains(ship) {
             return !final_try; // still fighting
@@ -512,20 +578,34 @@ pub(crate) unsafe fn restore_orders(why: &str, final_try: bool) {
         if diag::fleet_has_ship(*ship) {
             let now = read::<i32>(*ship + OFF_MODE_D70);
             if now == ORDER_BOMBING {
-                (*ship as *mut i32).byte_add(OFF_MODE_D70).write_unaligned(*previous);
-                log::info!("ALLY order restored ({why}): c={:#x} order {now} -> {previous}", *ship);
+                (*ship as *mut i32)
+                    .byte_add(OFF_MODE_D70)
+                    .write_unaligned(*previous);
+                restored.push((*ship, now, *previous));
             } else {
-                log::info!("ALLY order not restored ({why}): c={:#x} order is {now} now, left alone", *ship);
+                kept_order.push((*ship, now));
             }
             return false;
         }
         *misses += 1;
         if final_try || *misses >= RESTORE_ORDER_MISS_LIMIT {
-            log::info!("ALLY order not restored ({why}): c={:#x} is in no player fleet (destroyed?), left alone", *ship);
+            gone.push(*ship);
             return false;
         }
         true
     });
+    drop(list);
+    for (ship, now, previous) in restored {
+        log::info!("ALLY order restored ({why}): c={ship:#x} order {now} -> {previous}");
+    }
+    for (ship, now) in kept_order {
+        log::info!("ALLY order not restored ({why}): c={ship:#x} order is {now} now, left alone");
+    }
+    for ship in gone {
+        log::info!(
+            "ALLY order not restored ({why}): c={ship:#x} is in no player fleet (destroyed?), left alone"
+        );
+    }
 }
 
 /// Order the ally out: the AI-run, strike-craft "fly out" state (mode 2, state 2). The AI tick then steers to
@@ -673,21 +753,23 @@ unsafe fn border_extract_retreating_allies(allies: &[usize]) {
 /// Retreat key and automatic retreat; runs every battle frame.
 unsafe fn retreat_logic(ships: &[usize]) {
     // an ally the manager promoted to the player's ship (mode 1, AI flag off) is the flagship now, not an ally
+    // log after the lock, not inside it: nothing of the mod or the game is called while it is held
+    let mut promoted = Vec::new();
     if let Ok(mut v) = ALLIES.lock() {
         let coop_p2 = second_player::raw();
         v.retain(|p| {
-            let promoted = *p != coop_p2
+            let is_promoted = *p != coop_p2
                 && ships.contains(p)
                 && read::<i32>(*p + OFF_MODE_D70) == 1
                 && read::<u8>(*p + OFF_AI_FLAG) == 0;
-            if promoted {
-                log::info!(
-                    "ALLY c={:#x} was promoted to the flagship: no longer tracked as an ally",
-                    *p
-                );
+            if is_promoted {
+                promoted.push(*p);
             }
-            !promoted
+            !is_promoted
         });
+    }
+    for ship in promoted {
+        log::info!("ALLY c={ship:#x} was promoted to the flagship: no longer tracked as an ally");
     }
     let allies: Vec<usize> = ALLIES
         .lock()
@@ -1149,12 +1231,19 @@ unsafe extern "C" fn on_target_chosen(ship: usize) {
 /// Called at the start of the per-frame battle manager.
 unsafe extern "C" fn on_battle_tick() {
     let _hook = diag::scope("on_battle_tick");
+    // stage names go into the megalog heartbeat and a hang report, so a freeze says where it stopped
+    diag::stage("planes");
     plane_loadouts::verify(read::<f64>(CLOCK));
     plane_loadouts::tick();
+    diag::stage("precombat");
     precombat::tick(1);
+    diag::stage("roster");
     let ships = roster();
+    diag::stage("restore_orders");
     restore_orders("battle tick", false);
+    diag::stage("ship_switch");
     ship_switch::tick(&ships);
+    diag::stage("focus");
     focus_tick(&ships);
     if !ARMED.load(Ordering::Relaxed) {
         // not an ally battle: touch nothing; just keep the roster-empty bookkeeping so a later battle starts clean
@@ -1163,17 +1252,23 @@ unsafe extern "C" fn on_battle_tick() {
         }
         return;
     }
+    diag::stage("battle_diagnostics");
     battle_diagnostics::tick(&ships);
+    diag::stage("retreat");
     retreat_logic(&ships);
     // A manual handoff can introduce a new AI ally even after the reserve is exhausted.
+    diag::stage("ally_ammo");
     if ally_ammo::enabled() {
         if let Ok(allies) = ALLIES.lock() {
             ally_ammo::roll_new(&ships, &allies);
         }
     }
+    diag::stage("sound_events");
     ally_sound_events(&ships);
+    diag::stage("summary");
     summary_tick(&ships);
     if !ships.is_empty() {
+        diag::stage("hide_toggles");
         precombat::hide("battle running");
     }
     if ships.is_empty() {
@@ -1209,6 +1304,9 @@ unsafe extern "C" fn on_battle_tick() {
     }
 
     // allies still fighting; the lost ones free a place for the next ship switched on
+    diag::stage("deploy_check");
+    // log and flush only after the lock is released: never call out of the mod while holding it
+    let mut lost = Vec::new();
     let alive = {
         let Ok(mut allies) = ALLIES.lock() else {
             return;
@@ -1219,18 +1317,17 @@ unsafe extern "C" fn on_battle_tick() {
                 matches!(read::<i32>(*p + OFF_STATE), 6 | 7) || read::<i32>(*p + OFF_ACTIVE) == 0;
             if ships.contains(p) && dead {
                 SUM_LOST.fetch_add(1, Ordering::Relaxed);
-                log::info!(
-                    "ALLY lost: c={:#x} destroyed (state {})",
-                    *p,
-                    read::<i32>(*p + OFF_STATE)
-                );
-                diag::flush_log();
+                lost.push((*p, read::<i32>(*p + OFF_STATE)));
                 return false;
             }
             ships.contains(p) || (*p == coop_p2 && coop_p2 != 0)
         });
         allies.len() as u32
     };
+    for (ship, state) in lost {
+        log::info!("ALLY lost: c={ship:#x} destroyed (state {state})");
+        diag::flush_log();
+    }
     let max_allies = MAX_ALLIES.load(Ordering::Relaxed);
     if alive >= max_allies {
         return;
@@ -1298,6 +1395,7 @@ unsafe extern "C" fn on_battle_tick() {
     let set_link: SetLinkFn = std::mem::transmute(SET_LINK);
     let get_profile: GetProfileFn = std::mem::transmute(GET_PROFILE);
 
+    diag::stage("deploy");
     let moved = reserve_to_front(index);
     log::info!(
         "ALLY chosen ship number {slot} (reserve entry {index}), moved to the front: {moved}"
@@ -1326,6 +1424,7 @@ unsafe extern "C" fn on_battle_tick() {
     if after.len() != before + 1 {
         return; // nothing new to fix up
     }
+    diag::stage("deploy_fixup");
     let Some(&ally) = after.last() else { return };
 
     // Record the ammo the reserve was funded with before the AI controller starts re-setting `+0x850`.
