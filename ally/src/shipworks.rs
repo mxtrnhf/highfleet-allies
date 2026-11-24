@@ -3,6 +3,7 @@
 //! Native evidence and manual validation checklist: docs/shipworks-test-allies.md.
 
 mod design;
+mod missile_defense;
 
 use std::{
     ffi::{CStr, CString},
@@ -34,10 +35,11 @@ const ADD_NAME: &[u8] = b"SW_ALLY_ADD\0";
 const ENEMY_ADD_NAME: &[u8] = b"SW_ENEMY_ADD\0";
 const CLEAR_NAME: &[u8] = b"SW_ALLY_CLEAR\0";
 const ACE_NAME: &CStr = c"SW_ACE";
+const ACE_DEFENSE_NAME: &CStr = c"SW_ACE_DEFENSE";
 const CRASH_NAME: &[u8] = b"SW_ALLY_CRASH\0";
 const ACE_OPTIONS: [(&CStr, &CStr); 3] = [
     (c"SW_ACE_AIR", c"AIRSTRIKE"),
-    (c"SW_ACE_DEFENSE", c"MISSILE DEFENSE"),
+    (ACE_DEFENSE_NAME, c"MISSILE DEFENSE"),
     (c"SW_ACE_SILENT", c"SILENT STRIKE"),
 ];
 const ROW_NAMES: [&[u8]; ROSTER_LIMIT] = [
@@ -202,6 +204,7 @@ struct Session {
     last_clear_ms: Option<u64>,
     last_ace_ms: Option<u64>,
     saved_mask: Option<u32>,
+    defense: missile_defense::Panel,
     /// The enemy Escadra created by the last custom FIGHT, so it can be pruned from the
     /// profile's escadra vector before the next battle (it would otherwise accumulate).
     enemy_escadra: usize,
@@ -218,6 +221,7 @@ static SESSION: Mutex<Session> = Mutex::new(Session {
     last_clear_ms: None,
     last_ace_ms: None,
     saved_mask: None,
+    defense: missile_defense::Panel::new(),
     enemy_escadra: 0,
 });
 static READY: AtomicBool = AtomicBool::new(false);
@@ -354,6 +358,7 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
     session
         .detour_trampoline(LEVEL_SEAM, LEVEL_BYTES.len(), level)
         .map_err(|e| e.to_string())?;
+    missile_defense::install(session)?;
     CRASH_BUTTON.store(crash_button, Ordering::Relaxed);
     READY.store(true, Ordering::Relaxed);
     Ok(())
@@ -392,6 +397,8 @@ pub(crate) unsafe fn tick() {
         if !CONTROLS_VISIBLE.load(Ordering::Relaxed) {
             return;
         }
+    } else {
+        missile_defense::cancel_unhandled_request();
     }
     let scan = precombat::scan_gui_list();
     if !scan.complete {
@@ -495,6 +502,9 @@ pub(crate) unsafe fn tick() {
             );
         }
     }
+    state
+        .defense
+        .draw(&scan.elements, template, [width, height], y);
 
     // One list column below the buttons: ally rows, ally status, enemy rows, enemy status.
     let left = x - width * 0.5;
@@ -722,6 +732,7 @@ unsafe fn hide_controls(listed: &[usize]) {
         precombat::set_gui_active(ace_gui, false);
     }
     hide_ace_options(listed);
+    missile_defense::hide(listed);
     hide_member(ADD_GUI.load(Ordering::Relaxed), listed);
     hide_member(ENEMY_ADD_GUI.load(Ordering::Relaxed), listed);
     hide_member(CLEAR_GUI.load(Ordering::Relaxed), listed);
@@ -747,8 +758,14 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
         .any(|(id, _)| name.as_bytes() == id.to_bytes());
     let left_click = button as u32 == 1;
     let closed_ace = left_click && !ace_button && ACE_OPEN.swap(false, Ordering::Relaxed);
+    if name == "EDC_TEST_FIGHT" {
+        missile_defense::cancel_request();
+        return false;
+    }
+    let defense_control = missile_defense::is_control(name);
     if !ace_button
         && !ace_option
+        && !defense_control
         && !matches!(
             name,
             "SW_ALLY_ADD" | "SW_ENEMY_ADD" | "SW_ALLY_CLEAR" | "SW_ALLY_CRASH"
@@ -763,8 +780,15 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
         return true;
     }
     if ace_option {
-        // UI only: selecting any option dismisses the menu without changing the encounter.
         if closed_ace {
+            if let Ok(mut state) = SESSION.try_lock() {
+                if name.as_bytes() == ACE_DEFENSE_NAME.to_bytes() {
+                    state.defense.open();
+                } else {
+                    // The other two modes are still placeholders.
+                    state.defense.close();
+                }
+            }
             sound::button("Shipworks A.C.E. option");
         }
         return true;
@@ -798,6 +822,13 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     let Ok(mut state) = SESSION.try_lock() else {
         return true;
     };
+    if defense_control {
+        let has_allies = !state.entries.is_empty();
+        let has_enemies = !state.enemy_entries.is_empty();
+        // A valid LAUNCH falls through to the native click dispatcher. The missile
+        // defense comparison seam routes only that accepted click to EDC_TEST_FIGHT.
+        return !state.defense.click(name, has_allies, has_enemies);
+    }
     let now = now_ms();
     let clear = name == "SW_ALLY_CLEAR";
     let enemy_add = name == "SW_ENEMY_ADD";
@@ -900,7 +931,7 @@ unsafe extern "C" fn on_fleet(fleet: usize) {
             );
         }
     }
-    if added > 0 {
+    if added > 0 && !missile_defense::requested() {
         let mask = ((1u32 << added) - 1) << 2;
         let previous = precombat::replace_selected_mask(mask);
         state.saved_mask.get_or_insert(previous);
@@ -1128,10 +1159,11 @@ unsafe extern "C" fn on_enemy_fleet(
     // level loader re-links every profile escadra into the enemy fleet, so leaving it would
     // accumulate the previous fight's enemies into this one.
     prune_enemy_escadra();
-    let custom = SESSION
-        .try_lock()
-        .map(|state| !state.enemy_entries.is_empty())
-        .unwrap_or(false);
+    let custom = missile_defense::requested()
+        || SESSION
+            .try_lock()
+            .map(|state| !state.enemy_entries.is_empty())
+            .unwrap_or(false);
     if custom {
         // The native FIGHT handler clears the enemy list right after this seam and links the
         // new escadra, but a node left by a destroyed previous fleet can still crash the level
@@ -1147,7 +1179,7 @@ unsafe extern "C" fn on_enemy_fleet(
     }
     // One 0x20-byte inline (SSO) EscadraName that no library design resolves to; the native
     // renderShipPhoto__ lookup returns null for it and the ship is skipped.
-    let bogus_name = b"HF_NO_SUCH_DESIGN\0";
+    let bogus_name = c"HF_NO_SUCH_SHIP".to_bytes_with_nul();
     let mut element = [0u8; 0x20];
     element[..bogus_name.len()].copy_from_slice(bogus_name);
     element[0x10..0x18].copy_from_slice(&((bogus_name.len() - 1) as u64).to_le_bytes());
@@ -1216,6 +1248,10 @@ unsafe extern "C" fn on_level(path: usize) {
         level_path.push(byte);
     }
     // A test/landing trip and its return are still the same Shipworks session.
+    if level_path == b"Missile.seria" && missile_defense::active() {
+        return;
+    }
+    missile_defense::leave();
     if level_path == b"Combat.seria"
         || (level_path == b"City_generated.seria" && read::<u8>(TEST_FIGHT_FLAG) != 0)
     {
@@ -1227,9 +1263,11 @@ unsafe extern "C" fn on_level(path: usize) {
     if let Some(mask) = state.saved_mask.take() {
         precombat::replace_selected_mask(mask);
     }
+    state.defense.close();
     if level_path == b"Editor.seria" {
         return;
     }
+    state.defense = missile_defense::Panel::new();
     clear_roster(&mut state);
     state.last_clear_ms = None;
     state.last_ace_ms = None;

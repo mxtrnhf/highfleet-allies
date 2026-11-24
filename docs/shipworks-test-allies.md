@@ -1,4 +1,41 @@
-# Shipworks test allies and enemies (hf_ally v1.3.3)
+# Shipworks test encounters
+
+**v1.3.16 — Missile Defense deployment and nukes:** the selector now also has an
+**AIRBORNE / GROUND** button above **LAUNCH**.
+
+- **AIRBORNE** keeps the stock four-slot deployment and places additional ships
+  in rows beyond those slots.
+- **GROUND** asks the native spawner for a landed mode-3 ship and supplies a
+  below-surface Y; the native ground-height and hull-height code clamps each
+  ship onto the generated terrain. Defenders are spaced in one row, starting at
+  the native entry edge and continuing inward.
+
+Nuclear impacts now deal tactical blast damage. The game's kind-4 detonation
+branch only runs the strategic/visual nuclear handler and returns, so the mod
+runs that handler and then continues into the ordinary tactical blast with the
+yield clamped to the stock `OL.seria` nuclear value (`4e+07`). In the same
+scene the strategic map-impact call is skipped because it would mutate the
+campaign Profile and the staged escadra. The late battle pass that a nuke
+enables keeps its effect but selects the stock `ps_mainNoFishEye` technique
+instead of the map CRT warp, which fixes the skewed and clipped battle frame.
+Flash, cloud and shockwave effects are unchanged.
+
+**v1.3.15 — Missile Defense:** In standalone Shipworks, choose **A.C.E. →
+MISSILE DEFENSE**. Click the upper right-hand button to cycle through strategic
+missiles from the game's live part definitions, then **LAUNCH**. No **TEST**
+click is required. Launch starts one missile encounter:
+
+| Added ships | Encounter |
+|---|---|
+| None | Fly the current editor design against the incoming missile. |
+| Allies only | Fly the editor design with the added AI-controlled defenders. |
+| Enemies only | Watch the selected missile strike the added enemy ships. The editor design is not deployed. |
+| Allies and enemies | Fly the editor design with both rosters present; the missile starts out aimed at your side. |
+
+This uses the game's actual missile-defense scene. Ships deploy at the start
+rather than using the normal FIGHT reserve delay and `max_allies` setting.
+The editor design and saved roster snapshots remain available on return.
+**AIRSTRIKE** and **SILENT STRIKE** still only close the dropdown.
 
 **v1.3.14 — A.C.E. menu preview:** **A.C.E.** sits after **CLEAR** and before
 the optional **CRASH** button. It uses TEST's button style and opens a dropdown
@@ -126,7 +163,6 @@ Read-only verification against the live Ghidra program
 | `0x140194b80` / `0x140194d20` | Native Link copy construction registers the destination address with its Node; destruction unregisters that address. Retention unregisters each overwritten destination, copy-constructs live Links in order, destroys the discarded tail, then shortens end. Source Links remain initialized until overwritten or destroyed. Both call entries are byte-checked. |
 | `0x1401351b7..0x1401353d3` | LANDING test sets the editor-test flag `0x147fc6fb6` and requests **City_generated.seria**, not a hypothetical Landing.seria. |
 
-New native function entries and both hook sites are byte-checked at install.
 Existing complete-list GUI membership/root checks protect retained GUI addresses;
 no retained editor Creature/part pointers survive a callback. Native GUI
 constructors, initializers, string assignment and resource loading own all
@@ -134,7 +170,38 @@ game-side allocations. Covered offsets/sizes derive from the pinned highfleet-rs
 layouts; `Creature+0xa90` (design name), `+0x1a20` (initial morale), editor globals
 and GUI geometry `+0x218/+0x21c` remain locally documented RE contracts.
 
+### Missile Defense (Steam 1.163)
+
+Read-only Ghidra findings for the new adapter:
+
+| Address | Contract |
+|---|---|
+| `0x143a33bf0`, `0x140281e00`, `0x140281fa0` | Live `Stats*` vector and native OID lookup. OID at `Stats+0x48`, category bit `0x08000000` is strategic launch, homing mode and yield at `+0x164` / `+0x168`. `DefinePart` (`0x14021b190`) resolves that OID through `ALL_PARTS` (`0x143a139f0`) virtual `+0xc8`; the picker requires a matching Body there. Native localization is at `0x1401ae090`. |
+| `0x14013d7b7`, `0x14013dcf1`, `0x14013e05e` | An accepted LAUNCH matches the FIGHT click branch, which saves and clones the editor design. Skip the default enemy generator (it expects the TEST checkboxes). At the final loader call use the staged test fleets and request `Missile.seria` instead of `Combat.seria`. Ordinary FIGHT uses the original compare, generator and level. |
+| `0x1402c4dfc` → `0x1402d45c0` | SCR_MISSILE state 1 expects the defenders in A (`0x143a158e0`) and the map Missile in B[0] (`0x143a159c0`). For the test, allocate and construct a temporary Missile with the native `0x1400e48a0` (`0x308` bytes, as in the strategic launch caller `0x1400ecf80`). Do not add it to any profile. It lives through the tactical scene because logic 10 links back to it. |
+| `0x1402d4902` / `0x1402d46a1` / `0x1402d4b21` / `0x1402d4c7e` | In the custom scene preserve roster order rather than sorting by anti-air score, force the native airborne/landed choice for AIRBORNE/GROUND, place landed and extra airborne ships before the native ground-height clamp, and bound the loop to the two Shipworks rosters plus the editor ship. `0x1402d4b21` must keep `MOVSD [RBP+0x67],XMM0`. Native world-list registration reads the ship's AI flag, so set it before spawning each staged template. |
+| `0x140029c02` → `0x14002bb50` | `Body_Explode` (`0x140029b60`) sends `m_explosive_type == 4` through the nuclear handler and returns. The hook calls that handler, then continues at `0x140029c0c` with `XMM1` set to the clamped `m_explosive` (`Body+0x2dc`), which is the yield the tactical blast radius and `0x14002cdc0` area damage consume. Outside the scene it returns zero and takes the stock `AL=1` exit. |
+| `0x14002bd72` → `0x1400f11b0` | The nuclear handler's strategic impact call adds a Profile `BLAST`, damages the escadra at `Body+0x4b0` and can raise escalation. It is skipped while the Shipworks scene is active; the tactical blast above supplies the sandbox damage. |
+| `0x140309b94` | A nuke makes the late battle pass apply `ShaderMapPostProcessing`'s `ps_main` (`+0x118`) to the whole frame, including its `pullPower` trapezoid and 0.9 scale. The hook reads the technique pointer from the shader in `RCX` and selects `+0x120` (`ps_mainNoFishEye`) only in the Shipworks scene. |
+| `0x1402d4e80` → `0x140263700` | The original call configures logic 1 for `_CONV` and 10 otherwise. The custom call uses that split but explicitly picks a defender on the opposite side and binds native Links. Logic 10 (`0x140037fb7`) only homes on that target when the map missile is within 100 map units of its waypoint (`0x1400f8e00`); both map vectors start equal for the test. |
+| `0x1402c5102`, `0x14025aff4` | Native SCR_MISSILE teardown is followed by a Map request; send the test back to `Editor.seria`. The loader seam clears the staged Links and calls the map Missile's deleting destructor (`0x1400e81d0`) only when the current B[0] still identifies the object the mod allocated. Native campaign Missile paths still use their original calls. |
+
 ## Validation
+
+v1.3.16 needs a Steam 1.163 playtest. Open Shipworks and launch directly,
+without opening TEST. Check button placement and text fit for the missile type,
+AIRBORNE/GROUND and LAUNCH rows, and cycle through conventional and nuclear
+options. Try all four roster rows above once with AIRBORNE and once with
+GROUND; use at least five total ships in one run to exercise the extra slots.
+On GROUND, confirm every defender starts on the terrain rather than in the air
+or below it. Impact a nuclear missile and verify ships and parts take blast and
+radiation damage, the battle frame stays unwarped and unclipped during the
+flash/cloud pass, and the scene still returns naturally. Also verify AI defense,
+missile homing and interception, spectator view with enemies only, Esc → Return
+to Shipworks, and a second launch. Finish with an ordinary TEST/FIGHT to check
+that nothing from Missile Defense leaked into its roster. If anything goes
+wrong, keep the newest `Highfleet_*.log` (look for `Shipworks Missile Defense`
+and `Shipworks missile ... armed`).
 
 v1.3.14: The maintainer confirmed the A.C.E. menu working in game. For retesting
 in standalone Shipworks, verify order, font, and all three dropdown rows
