@@ -33,7 +33,13 @@ const ENEMY_LIMIT: usize = 8;
 const ADD_NAME: &[u8] = b"SW_ALLY_ADD\0";
 const ENEMY_ADD_NAME: &[u8] = b"SW_ENEMY_ADD\0";
 const CLEAR_NAME: &[u8] = b"SW_ALLY_CLEAR\0";
+const ACE_NAME: &CStr = c"SW_ACE";
 const CRASH_NAME: &[u8] = b"SW_ALLY_CRASH\0";
+const ACE_OPTIONS: [(&CStr, &CStr); 3] = [
+    (c"SW_ACE_AIR", c"AIRSTRIKE"),
+    (c"SW_ACE_DEFENSE", c"MISSILE DEFENSE"),
+    (c"SW_ACE_SILENT", c"SILENT STRIKE"),
+];
 const ROW_NAMES: [&[u8]; ROSTER_LIMIT] = [
     b"SW_ALLY_1\0",
     b"SW_ALLY_2\0",
@@ -57,6 +63,7 @@ const ENEMY_ROW_NAMES: [&[u8]; ENEMY_LIMIT] = [
 const STATUS_NAME: &[u8] = b"SW_ALLY_STATUS\0";
 const ENEMY_STATUS_NAME: &[u8] = b"SW_ENEMY_STAT\0";
 const BUTTON_GAP: f32 = 12.0;
+const ACE_OPTION_GAP: f32 = 4.0;
 const ROW_HEIGHT: f32 = 24.0;
 const LIST_WIDTH: f32 = 480.0;
 /// Gap between the button row and the first row of the lists (GUI units).
@@ -193,6 +200,7 @@ struct Session {
     last_add_ms: Option<u64>,
     last_enemy_add_ms: Option<u64>,
     last_clear_ms: Option<u64>,
+    last_ace_ms: Option<u64>,
     saved_mask: Option<u32>,
     /// The enemy Escadra created by the last custom FIGHT, so it can be pruned from the
     /// profile's escadra vector before the next battle (it would otherwise accumulate).
@@ -208,6 +216,7 @@ static SESSION: Mutex<Session> = Mutex::new(Session {
     last_add_ms: None,
     last_enemy_add_ms: None,
     last_clear_ms: None,
+    last_ace_ms: None,
     saved_mask: None,
     enemy_escadra: 0,
 });
@@ -216,6 +225,10 @@ static CONTROLS_VISIBLE: AtomicBool = AtomicBool::new(false);
 static ADD_GUI: AtomicUsize = AtomicUsize::new(0);
 static ENEMY_ADD_GUI: AtomicUsize = AtomicUsize::new(0);
 static CLEAR_GUI: AtomicUsize = AtomicUsize::new(0);
+static ACE_GUI: AtomicUsize = AtomicUsize::new(0);
+static ACE_OPEN: AtomicBool = AtomicBool::new(false);
+static ACE_OPTION_GUIS: [AtomicUsize; ACE_OPTIONS.len()] =
+    [const { AtomicUsize::new(0) }; ACE_OPTIONS.len()];
 static CRASH_GUI: AtomicUsize = AtomicUsize::new(0);
 static CRASH_BUTTON: AtomicBool = AtomicBool::new(false);
 static ROW_GUIS: [AtomicUsize; ROSTER_LIMIT] = [const { AtomicUsize::new(0) }; ROSTER_LIMIT];
@@ -374,8 +387,11 @@ pub(crate) unsafe fn tick() {
     if !READY.load(Ordering::Relaxed) {
         return;
     }
-    if read::<u8>(EDITOR_MODE) == 0 && !CONTROLS_VISIBLE.load(Ordering::Relaxed) {
-        return;
+    if read::<u8>(EDITOR_MODE) == 0 {
+        ACE_OPEN.store(false, Ordering::Relaxed);
+        if !CONTROLS_VISIBLE.load(Ordering::Relaxed) {
+            return;
+        }
     }
     let scan = precombat::scan_gui_list();
     if !scan.complete {
@@ -386,6 +402,7 @@ pub(crate) unsafe fn tick() {
             && precombat::cstr_is(gui + offset_of!(Gui, identifier), b"EDC_TEST")
     });
     let Some(template) = template else {
+        ACE_OPEN.store(false, Ordering::Relaxed);
         hide_controls(&scan.elements);
         CONTROLS_VISIBLE.store(false, Ordering::Relaxed);
         return;
@@ -393,6 +410,10 @@ pub(crate) unsafe fn tick() {
     let Ok(state) = SESSION.try_lock() else {
         return;
     };
+    let ace_open = ACE_OPEN.load(Ordering::Relaxed);
+    if !ace_open {
+        hide_ace_options(&scan.elements);
+    }
     let width = read::<f32>(template + 0x218);
     let height = read::<f32>(template + 0x21c);
     let x = read::<f32>(template + offset_of!(Body, position_x)) + width + BUTTON_GAP;
@@ -400,7 +421,7 @@ pub(crate) unsafe fn tick() {
     if ![x, y, width, height].iter().all(|v| v.is_finite()) || width <= 0.0 || height <= 0.0 {
         return;
     }
-    // The four buttons stand in one row at the template's height, each one button width further right.
+    // Top-row controls follow TEST at the template's height and width.
     let button_size = [width, height];
     let button = |position: [f32; 2]| ControlGeometry {
         position,
@@ -433,6 +454,16 @@ pub(crate) unsafe fn tick() {
         button([x + 2.0 * (width + BUTTON_GAP), y]),
         BUTTON_STYLE,
     );
+    let ace_x = x + 3.0 * (width + BUTTON_GAP);
+    show_control(
+        ACE_NAME.to_bytes_with_nul(),
+        &ACE_GUI,
+        &scan.elements,
+        template,
+        c"A.C.E.",
+        button([ace_x, y]),
+        BUTTON_STYLE,
+    );
     if CRASH_BUTTON.load(Ordering::Relaxed) {
         show_control(
             CRASH_NAME,
@@ -440,9 +471,29 @@ pub(crate) unsafe fn tick() {
             &scan.elements,
             template,
             c"CRASH",
-            button([x + 3.0 * (width + BUTTON_GAP), y]),
+            button([ace_x + width + BUTTON_GAP, y]),
             BUTTON_STYLE,
         );
+    }
+    if ace_open {
+        // Give the longer labels two button widths, lined up with A.C.E.'s left edge.
+        for (index, ((name, text), kept)) in ACE_OPTIONS.iter().zip(&ACE_OPTION_GUIS).enumerate() {
+            show_control(
+                name.to_bytes_with_nul(),
+                kept,
+                &scan.elements,
+                template,
+                text,
+                ControlGeometry {
+                    position: [
+                        ace_x + width * 0.5,
+                        y + (index + 1) as f32 * (height + ACE_OPTION_GAP),
+                    ],
+                    dimensions: [2.0 * width, height],
+                },
+                BUTTON_STYLE,
+            );
+        }
     }
 
     // One list column below the buttons: ally rows, ally status, enemy rows, enemy status.
@@ -653,7 +704,24 @@ unsafe fn hide_member(gui: usize, listed: &[usize]) {
     }
 }
 
+/// Hide only active options verified against this input callback's complete GUI scan.
+unsafe fn hide_ace_options(listed: &[usize]) {
+    for ((name, _), kept) in ACE_OPTIONS.iter().zip(&ACE_OPTION_GUIS) {
+        let gui = kept.load(Ordering::Relaxed);
+        // SAFETY: Membership, exact name and active state are checked against this game-thread
+        // scan before writing. The pointer is borrowed and no game-owned object is moved.
+        if precombat::listed_shown(listed, gui, name.to_bytes_with_nul()) {
+            precombat::set_gui_active(gui, false);
+        }
+    }
+}
+
 unsafe fn hide_controls(listed: &[usize]) {
+    let ace_gui = ACE_GUI.load(Ordering::Relaxed);
+    if precombat::listed_shown(listed, ace_gui, ACE_NAME.to_bytes_with_nul()) {
+        precombat::set_gui_active(ace_gui, false);
+    }
+    hide_ace_options(listed);
     hide_member(ADD_GUI.load(Ordering::Relaxed), listed);
     hide_member(ENEMY_ADD_GUI.load(Ordering::Relaxed), listed);
     hide_member(CLEAR_GUI.load(Ordering::Relaxed), listed);
@@ -670,17 +738,35 @@ unsafe fn hide_controls(listed: &[usize]) {
 
 /// Called from the existing native click dispatcher, on the game thread.
 pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
-    if !matches!(
-        name,
-        "SW_ALLY_ADD" | "SW_ENEMY_ADD" | "SW_ALLY_CLEAR" | "SW_ALLY_CRASH"
-    ) || !READY.load(Ordering::Relaxed)
+    if !READY.load(Ordering::Relaxed) {
+        return false;
+    }
+    let ace_button = name.as_bytes() == ACE_NAME.to_bytes();
+    let ace_option = ACE_OPTIONS
+        .iter()
+        .any(|(id, _)| name.as_bytes() == id.to_bytes());
+    let left_click = button as u32 == 1;
+    let closed_ace = left_click && !ace_button && ACE_OPEN.swap(false, Ordering::Relaxed);
+    if !ace_button
+        && !ace_option
+        && !matches!(
+            name,
+            "SW_ALLY_ADD" | "SW_ENEMY_ADD" | "SW_ALLY_CLEAR" | "SW_ALLY_CRASH"
+        )
     {
         return false;
     }
-    if button as u32 != 1 {
+    if !left_click {
         return true;
     }
     if read::<u8>(EDITOR_MODE) == 0 || !CONTROLS_VISIBLE.load(Ordering::Relaxed) {
+        return true;
+    }
+    if ace_option {
+        // UI only: selecting any option dismisses the menu without changing the encounter.
+        if closed_ace {
+            sound::button("Shipworks A.C.E. option");
+        }
         return true;
     }
     if name == "SW_ALLY_CRASH" {
@@ -715,7 +801,9 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     let now = now_ms();
     let clear = name == "SW_ALLY_CLEAR";
     let enemy_add = name == "SW_ENEMY_ADD";
-    let last_click_ms = if clear {
+    let last_click_ms = if ace_button {
+        &mut state.last_ace_ms
+    } else if clear {
         &mut state.last_clear_ms
     } else if enemy_add {
         &mut state.last_enemy_add_ms
@@ -726,6 +814,12 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
         return true;
     }
     *last_click_ms = Some(now);
+    if ace_button {
+        drop(state);
+        ACE_OPEN.fetch_xor(true, Ordering::Relaxed);
+        sound::button("Shipworks A.C.E.");
+        return true;
+    }
     if clear {
         let allies = state.entries.len();
         let enemies = state.enemy_entries.len();
@@ -1110,6 +1204,7 @@ unsafe extern "C" fn on_enemy_append(escadra: usize) {
 
 unsafe extern "C" fn on_level(path: usize) {
     let _hook = diag::scope("Shipworks level");
+    ACE_OPEN.store(false, Ordering::Relaxed);
     let mut level_path = Vec::new();
     for index in 0..LEVEL_PATH_LIMIT {
         let Some(byte) = diag::rd::<u8>(path + index) else {
@@ -1137,6 +1232,7 @@ unsafe extern "C" fn on_level(path: usize) {
     }
     clear_roster(&mut state);
     state.last_clear_ms = None;
+    state.last_ace_ms = None;
     drop(state);
     dump_enemy_state("leaving shipworks");
     prune_enemy_escadra();

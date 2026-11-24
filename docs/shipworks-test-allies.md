@@ -1,5 +1,10 @@
 # Shipworks test allies and enemies (hf_ally v1.3.3)
 
+**v1.3.14 — A.C.E. menu preview:** **A.C.E.** sits after **CLEAR** and before
+the optional **CRASH** button. It uses TEST's button style and opens a dropdown
+with **AIRSTRIKE**, **MISSILE DEFENSE** and **SILENT STRIKE**. Each choice only
+closes the menu; none changes the test fight.
+
 **v1.3.3 — underlying accumulation bug:** the enemy-append hook copied the
 RIP-relative `LEA RCX,[0x143a159c0]` bytes into its trampoline without relocation.
 The following native clear therefore received the wrong vector address, leaving
@@ -130,6 +135,13 @@ layouts; `Creature+0xa90` (design name), `+0x1a20` (initial morale), editor glob
 and GUI geometry `+0x218/+0x21c` remain locally documented RE contracts.
 
 ## Validation
+
+v1.3.14: The maintainer confirmed the A.C.E. menu working in game. For retesting
+in standalone Shipworks, verify order, font, and all three dropdown rows
+with CRASH enabled and disabled. Check that a second A.C.E. click, choosing an
+option, or clicking another control dismisses the list. Leave and re-enter
+Shipworks with the list open and confirm it starts closed. Check that normal
+TEST/FIGHT behavior is unchanged after choosing a placeholder.
 
 v1.3.13: Shipworks deployment-limit changes require in-game validation. Set
 `max_allies` below the number of added allies and a nonzero `ally_delay_seconds`;
