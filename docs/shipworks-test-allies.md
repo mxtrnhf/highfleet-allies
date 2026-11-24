@@ -1,5 +1,19 @@
 # Shipworks test encounters
 
+**v1.3.19 — Missile Defense damage:** Enable **Preserve Damage** before
+launching to carry surviving ships and their damage into the next launch with
+the same roster. Destroyed ships stay out of subsequent runs. Turn it off before
+launching to start fresh; adding a roster entry or clearing the roster invalidates
+the replay. The editor design and original roster files are not overwritten.
+
+**v1.3.20 — Static vanilla module panels:** **DMG VIEW**, under **LAUNCH**,
+shows the last encounter regardless of the checkbox. **PREV** and **NEXT**
+cycle through all deployed ships. The vanilla renderer captures one live
+defender per battle frame, including with the HUD hidden as of v1.3.21.
+Shipworks shows each ship's last captured panel with stock module art and damage colours. Destroyed
+ships keep their last available panel and a **DESTROYED** label; a ship that
+never rendered still has a page.
+
 **v1.3.16 — Missile Defense deployment and nukes:** the selector now also has an
 **AIRBORNE / GROUND** button above **LAUNCH**.
 
@@ -12,9 +26,17 @@
 
 Nuclear impacts now deal tactical blast damage. The game's kind-4 detonation
 branch only runs the strategic/visual nuclear handler and returns, so the mod
-runs that handler and then continues into the ordinary tactical blast with the
-yield clamped to the stock `OL.seria` nuclear value (`4e+07`). In the same
-scene the strategic map-impact call is skipped because it would mutate the
+runs that handler and supplies the sandbox damage itself. Vanilla kind 4 never
+applies the area pass; the campaign result measured in v1.3.29 is about
+1.8k-2.9k hull and 11-24 destroyed parts per defending ship, i.e. a limited
+number of heavily damaged or destroyed modules rather than a uniform blast.
+As of v1.3.31 the sandbox spends a per-ship HP budget of 2,500 scaled by the
+ship's part count (so a 533-part Sevastopol takes more than a 381-part Moral),
+applied nearest-first at each part's actual HP with a linear distance falloff
+inside `sqrt(4e7)` = 6325 units. A near hit costs about 2.5k-3.5k hull with
+visible destroyed modules; campaign kind-4 behavior is untouched.
+See the [blast damage RE notes](https://github.com/mxtrnhf/hf_notes/blob/master/docs/findings/combat/explosion-damage-1151-vs-1163.md).
+In the same scene the strategic map-impact call is skipped because it would mutate the
 campaign Profile and the staged escadra. The late battle pass that a nuke
 enables keeps its effect but selects the stock `ps_mainNoFishEye` technique
 instead of the map CRT warp, which fixes the skewed and clipped battle frame.
@@ -180,10 +202,15 @@ Read-only Ghidra findings for the new adapter:
 | `0x14013d7b7`, `0x14013dcf1`, `0x14013e05e` | An accepted LAUNCH matches the FIGHT click branch, which saves and clones the editor design. Skip the default enemy generator (it expects the TEST checkboxes). At the final loader call use the staged test fleets and request `Missile.seria` instead of `Combat.seria`. Ordinary FIGHT uses the original compare, generator and level. |
 | `0x1402c4dfc` → `0x1402d45c0` | SCR_MISSILE state 1 expects the defenders in A (`0x143a158e0`) and the map Missile in B[0] (`0x143a159c0`). For the test, allocate and construct a temporary Missile with the native `0x1400e48a0` (`0x308` bytes, as in the strategic launch caller `0x1400ecf80`). Do not add it to any profile. It lives through the tactical scene because logic 10 links back to it. |
 | `0x1402d4902` / `0x1402d46a1` / `0x1402d4b21` / `0x1402d4c7e` | In the custom scene preserve roster order rather than sorting by anti-air score, force the native airborne/landed choice for AIRBORNE/GROUND, place landed and extra airborne ships before the native ground-height clamp, and bound the loop to the two Shipworks rosters plus the editor ship. `0x1402d4b21` must keep `MOVSD [RBP+0x67],XMM0`. Native world-list registration reads the ship's AI flag, so set it before spawning each staged template. |
-| `0x140029c02` → `0x14002bb50` | `Body_Explode` (`0x140029b60`) sends `m_explosive_type == 4` through the nuclear handler and returns. The hook calls that handler, then continues at `0x140029c0c` with `XMM1` set to the clamped `m_explosive` (`Body+0x2dc`), which is the yield the tactical blast radius and `0x14002cdc0` area damage consume. Outside the scene it returns zero and takes the stock `AL=1` exit. |
+| `0x140029c02` → `0x14002bb50` | `Body_Explode` (`0x140029b60`) sends `m_explosive_type == 4` through the nuclear handler and returns. In Shipworks, call that handler and continue at `0x140029c0c` with the clamped configured yield in `XMM1` for the tactical blast. Read it from the projectile's Link to the encounter's map Missile (`Body+0x4b0` → `Missile+0x2f0`), not `Body+0x2dc`: logic 10 overwrites the Body field with `100` at `0x140038426` when selecting kind 4. The actual projectile fields stay unchanged. Campaign keeps the stock `AL=1` exit. |
 | `0x14002bd72` → `0x1400f11b0` | The nuclear handler's strategic impact call adds a Profile `BLAST`, damages the escadra at `Body+0x4b0` and can raise escalation. It is skipped while the Shipworks scene is active; the tactical blast above supplies the sandbox damage. |
+| `0x1402d4bdf` → `0x140079b20` | AIRBORNE uses the native retract command, then snaps the landing gear into the folded pose via `ShipLink_SnapAllBodies` (`0x1401bccb0`), like the normal combat spawner (`0x1402d21f0`). GROUND never reaches this call, and campaign Missile Defense only replays the original command. |
+| `0x1402c5067` | After combat ends, the native nuke-effect flag (`0x1403c2b6b`, set at `0x14002cccb`) causes SCR_MISSILE to enter shared state 10, which has no Missile teardown case. In Shipworks only, continue through the normal countdown, fade and state-100 teardown. Keep the explosion and campaign branch unchanged. |
 | `0x140309b94` | A nuke makes the late battle pass apply `ShaderMapPostProcessing`'s `ps_main` (`+0x118`) to the whole frame, including its `pullPower` trapezoid and 0.9 scale. The hook reads the technique pointer from the shader in `RCX` and selects `+0x120` (`ps_mainNoFishEye`) only in the Shipworks scene. |
 | `0x1402d4e80` → `0x140263700` | The original call configures logic 1 for `_CONV` and 10 otherwise. The custom call uses that split but explicitly picks a defender on the opposite side and binds native Links. Logic 10 (`0x140037fb7`) only homes on that target when the map missile is within 100 map units of its waypoint (`0x1400f8e00`); both map vectors start equal for the test. |
+| `0x1402c50f1` → `0x1402d4f20` | Save before teardown clears the live roster and moves the ships to map properties. Native `SaveVolume` (`0x14024ecc0`) writes surviving assemblies, including part health. Match surviving ships by combat roster identity and Node ID, not by name or position. |
+| `0x140309a9a`, `0x1402fe09a` | Capture one live defender into a private 350×300 target before the stock panel call. Capture runs before the branch that skips panel rendering when the HUD is hidden. Use the stock mode-2 renderer and substitute the ship lookup only during the mod's draw, without changing the player or target links. After capture the native panel pass rebinds its own targets; the separate stock HUD composite still respects the real HUD flag. |
+| `0x140303fc2` → `0x140083b50` | Composite the last captured native panel before the editor label target flush, without accessing combat objects. This does not replace QoL's elevation hint at `0x140303fb4`. |
 | `0x1402c5102`, `0x14025aff4` | Native SCR_MISSILE teardown is followed by a Map request; send the test back to `Editor.seria`. The loader seam clears the staged Links and calls the map Missile's deleting destructor (`0x1400e81d0`) only when the current B[0] still identifies the object the mod allocated. Native campaign Missile paths still use their original calls. |
 
 ## Validation
@@ -202,6 +229,60 @@ to Shipworks, and a second launch. Finish with an ordinary TEST/FIGHT to check
 that nothing from Missile Defense leaked into its roster. If anything goes
 wrong, keep the newest `Highfleet_*.log` (look for `Shipworks Missile Defense`
 and `Shipworks missile ... armed`).
+
+For damage, launch with **Preserve Damage** enabled, damage a survivor and
+destroy another ship, then return to Shipworks. Verify that **DMG VIEW**
+shows both ships with stock module art and frozen colours; the destroyed
+ship's page should retain its last available panel and display **DESTROYED**. Launch again with the same
+roster and check that only survivors return and retain their damage. Repeat
+with the checkbox off and after changing the enemy list, and check that normal
+TEST/FIGHT still uses the original designs.
+
+For the landing gear, watch a leg-equipped defender from the first AIRBORNE
+frame and check that its gear is folded. Repeat in GROUND to verify the stock
+deployed pose and use the GEAR control to check that deployment still works.
+
+To check the nuclear and spectator fixes, add three enemies (no allies) and
+launch `MDL_NUKE_01` in AIRBORNE mode. After detonation, verify it returns to
+Shipworks without GAME OVER and that DMG VIEW shows captured panels. Repeat
+with `MDL_NUKE_01_CONV` to check the normal return still works. The capture log
+reports native panel count and how many frames ran with the HUD hidden.
+
+For nuclear blast balance, repeat the KH-15N (`MDL_NUKE_01`) Strike / AIRBORNE
+run with six fresh Morals, then try A-100N (`MDL_NUKE_03`) and a conventional
+missile against the same fresh roster. Leave Preserve Damage off for the
+comparison and check DMG VIEW after each run. For the stock nuclear missiles,
+the detonation log should report projectile power `100`, warhead yield
+`40000000`, tactical power `40000000`. The `nuclear blast at (x,y), D units
+from defender N, radius 6324.5` lines show the actual reach. Expect a handful
+of destroyed modules and roughly 2-3.5k hull loss per ship inside the radius,
+matching the measured campaign result, without the formation-wide wipe of
+v1.3.23. To check saved HP, enable Preserve Damage
+before a fresh run and inspect the `.seria` files afterward. Do not relaunch a
+preserved nuclear result while investigating the separate replay freeze
+(`5dhr`).
+
+v1.3.25 adds Preserve Damage diagnostics (no behavior change). Launch twice
+with Preserve Damage on and read the newest `Highfleet_*.log`:
+`Shipworks preserve replay: N saved`, `staged preserved snapshot <ship>:
+A/B parts below max health`, `spawned <ship> as <slot> with A/B parts below
+max health`, and `capturing <ship> with A/B parts below max health`. The
+combination shows whether the next launch consumed the volumes, whether the
+loaded ship still had damage, and whether spawning or capture lost it.
+v1.3.26 adds the summed hull HP to those lines plus one
+`nuclear blast at (x,y), D units from defender N, radius R` line per live
+defender, so the blast's actual reach can be compared with the ship positions.
+
+v1.3.28 adds log-only campaign nuke instrumentation (no behavior change).
+A kind-4 detonation logs `campaign nuke detonation` with the projectile power,
+linked map missile, warhead yield and position. The strategic handler logs
+`campaign nuclear impact` with the target yield/position, scale, angle and
+escalation, then `campaign nuclear impact done` and one `campaign explosion
+mark` line with `power`, `radius`, `yield`, `nuclear` and `ship damaged`.
+Capture the newest `Highfleet_*.log`, plus `client.log` and `error.log` from
+the game root, and state what happened on the map (ship loss, city damage,
+GAME OVER, escalation). A vanilla run without this build cannot answer the
+campaign nuke question because the stock logs do not record it.
 
 v1.3.14: The maintainer confirmed the A.C.E. menu working in game. For retesting
 in standalone Shipworks, verify order, font, and all three dropdown rows

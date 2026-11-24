@@ -2,6 +2,7 @@
 //! pointers. The existing FIGHT builder transfers fresh native copies into its player fleet.
 //! Native evidence and manual validation checklist: docs/shipworks-test-allies.md.
 
+mod damage;
 mod design;
 mod missile_defense;
 
@@ -175,6 +176,7 @@ const ESCADRA_SHIP_COUNT: usize = 0x56c;
 /// Sanity bound for list scans in diagnostics/prune.
 const LIST_ENTRY_LIMIT: usize = 64;
 
+#[derive(Clone)]
 struct Entry {
     name: CString,
     path: CString,
@@ -882,6 +884,7 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     let serial = state.serial;
     match design::snapshot(serial) {
         Ok(entry) => {
+            damage::invalidate_replay();
             log::info!(
                 "hf_ally: Shipworks {} {}",
                 if enemy_add { "ADD ENEMY" } else { "ADD" },
@@ -917,12 +920,15 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
 
 unsafe extern "C" fn on_fleet(fleet: usize) {
     let _hook = diag::scope("Shipworks test fleet");
+    if missile_defense::requested() {
+        return;
+    }
     let Ok(mut state) = SESSION.try_lock() else {
         return;
     };
     let mut added = 0;
     for entry in &state.entries {
-        if design::append(fleet, &entry.path, SIDE_ALLY) {
+        if design::append(fleet, &entry.path, SIDE_ALLY).is_some() {
             added += 1;
         } else {
             log::warn!(
@@ -931,7 +937,7 @@ unsafe extern "C" fn on_fleet(fleet: usize) {
             );
         }
     }
-    if added > 0 && !missile_defense::requested() {
+    if added > 0 {
         let mask = ((1u32 << added) - 1) << 2;
         let previous = precombat::replace_selected_mask(mask);
         state.saved_mask.get_or_insert(previous);
@@ -1216,12 +1222,15 @@ unsafe extern "C" fn on_enemy_fleet(
 /// init, before the fleet lists are linked.
 unsafe extern "C" fn on_enemy_append(escadra: usize) {
     let _hook = diag::scope("Shipworks test enemies");
+    if missile_defense::requested() {
+        return;
+    }
     let Ok(state) = SESSION.try_lock() else {
         return;
     };
     let mut added = 0;
     for entry in &state.enemy_entries {
-        if design::append(escadra, &entry.path, SIDE_ENEMY) {
+        if design::append(escadra, &entry.path, SIDE_ENEMY).is_some() {
             added += 1;
         } else {
             log::warn!(
@@ -1251,6 +1260,7 @@ unsafe extern "C" fn on_level(path: usize) {
     if level_path == b"Missile.seria" && missile_defense::active() {
         return;
     }
+    let missile_return = missile_defense::active();
     missile_defense::leave();
     if level_path == b"Combat.seria"
         || (level_path == b"City_generated.seria" && read::<u8>(TEST_FIGHT_FLAG) != 0)
@@ -1263,8 +1273,10 @@ unsafe extern "C" fn on_level(path: usize) {
     if let Some(mask) = state.saved_mask.take() {
         precombat::replace_selected_mask(mask);
     }
-    state.defense.close();
     if level_path == b"Editor.seria" {
+        if !missile_return {
+            state.defense.close();
+        }
         return;
     }
     state.defense = missile_defense::Panel::new();
@@ -1279,6 +1291,7 @@ unsafe extern "C" fn on_level(path: usize) {
 /// Drop both rosters' snapshots and statuses; keep the editor ship and capture serial intact.
 /// Called for both explicit CLEAR and leaving Shipworks.
 fn clear_roster(state: &mut Session) {
+    damage::clear();
     for entry in state.entries.drain(..).chain(state.enemy_entries.drain(..)) {
         if let Ok(path) = entry.path.to_str() {
             if let Err(error) = std::fs::remove_file(path) {

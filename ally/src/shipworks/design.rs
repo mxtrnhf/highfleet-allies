@@ -14,7 +14,7 @@ use crate::{
     native_layout::{Body, Creature, Link, Node, SentinelList, NODE_OWNER},
 };
 
-use super::{native_string, write, Entry};
+use super::{missile_defense::vector_span, native_string, write, Entry};
 
 const NEW: usize = 0x1_4033_4094;
 const NODE_CTOR: usize = 0x1_4027_f200;
@@ -29,11 +29,13 @@ const HAS_THRUST: usize = 0x1_4007_3450;
 const PART_HAS_FLAG: usize = 0x1_4004_9470;
 const BODY_ARRAY: usize = 0x1_43a3_3c90;
 const BODY_COUNT: usize = 0x1_43a5_1150;
+const GLOBAL_NODE: usize = 0x1_47fc_6f88;
 const BODY_LIMIT: usize = 15_000;
 const PART_LIMIT: usize = 4096;
 const CODE_BODY: u64 = 0xf;
 const CODE_FRAME: u64 = 0x1f;
 const CODE_CREATURE: u64 = 0x2f;
+pub(super) const MASTER_TARGET: usize = offset_of!(Node, master) + offset_of!(Link, target);
 /// Uncovered Creature fields, verified in the FIGHT/save branch (see feature notes).
 const SHIP_NAME: usize = 0xa90;
 const INITIAL_MORALE: usize = 0x1a20;
@@ -45,7 +47,7 @@ const _: () = {
     assert!(offset_of!(Node, children) == 0x100);
     assert!(offset_of!(SentinelList<usize>, length) == 8);
     assert!(offset_of!(SentinelListNode<usize>, value) == 0x10);
-    assert!(offset_of!(Node, master) + offset_of!(Link, target) == 0x88);
+    assert!(MASTER_TARGET == 0x88);
 };
 
 /// Verify every additional native call entry before the feature can be used.
@@ -109,8 +111,7 @@ unsafe fn editor_ship() -> Result<EditorShip, &'static str> {
         let Some(bridge) = find_bridge(body, has_flag)? else {
             continue;
         };
-        let root = diag::rd::<usize>(bridge + offset_of!(Node, master) + offset_of!(Link, target))
-            .ok_or("unreadable bridge master")?;
+        let root = diag::rd::<usize>(bridge + MASTER_TARGET).ok_or("unreadable bridge master")?;
         if !diag::readable_span(root, size_of::<Body>())
             || read::<u64>(root + OFF_CODE) & CODE_BODY != CODE_BODY
         {
@@ -170,32 +171,71 @@ unsafe fn find_bridge(body: usize, has_flag: PartHasFlag) -> Result<Option<usize
 }
 
 /// Collect top-level ship parts plus the root, as ShipDesign_LoadFromFile/SaveVolume does.
-unsafe fn volume_roots(selected: &EditorShip) -> Option<Vec<usize>> {
-    let header = selected.creature + offset_of!(Creature, parts);
-    let begin = diag::rd::<usize>(header)?;
-    let end = diag::rd::<usize>(header + size_of::<usize>())?;
-    let bytes = end.checked_sub(begin)?;
-    if bytes == 0 || !bytes.is_multiple_of(LINK_STRIDE) || bytes / LINK_STRIDE > PART_LIMIT {
-        return None;
-    }
-    if !diag::readable_span(begin, bytes) {
-        return None;
-    }
+unsafe fn volume_roots(ship: usize, root: usize) -> Option<Vec<usize>> {
     let mut roots = Vec::new();
-    for index in 0..bytes / LINK_STRIDE {
-        let part: usize = read(begin + index * LINK_STRIDE + offset_of!(Link, target));
-        if part == 0 {
-            continue;
-        }
-        let parent = diag::rd::<usize>(part + offset_of!(Node, master) + offset_of!(Link, target))?;
-        if diag::rd::<u64>(parent + OFF_CODE)? & CODE_BODY != CODE_BODY {
+    for part in parts(ship)? {
+        let parent = diag::rd::<usize>(part + MASTER_TARGET)?;
+        if parent != 0 && diag::rd::<u64>(parent + OFF_CODE)? & CODE_BODY != CODE_BODY {
             roots.push(part);
         }
     }
-    if !roots.contains(&selected.root) {
-        roots.push(selected.root);
+    if !roots.contains(&root) {
+        roots.push(root);
     }
     Some(roots)
+}
+
+/// Borrowed part identities from a live editor or combat ship, on the game thread.
+pub(super) unsafe fn parts(ship: usize) -> Option<impl Iterator<Item = usize>> {
+    let (begin, count) = vector_span(ship + offset_of!(Creature, parts), LINK_STRIDE, PART_LIMIT)?;
+    Some(
+        (0..count)
+            .map(move |index| read::<usize>(begin + index * LINK_STRIDE + offset_of!(Link, target)))
+            .filter(move |&part| {
+                diag::readable_span(part, size_of::<Body>())
+                    && read::<usize>(part + NODE_OWNER) == ship
+            }),
+    )
+}
+
+/// Diagnostics for Preserve Damage: count live gameplay parts and those below max HP,
+/// plus the summed current and maximum hull health. Read-only; the caller supplies a
+/// Creature validated against the current roster.
+pub(super) unsafe fn health_summary(ship: usize) -> Option<(usize, usize, f32, f32)> {
+    let mut total = 0usize;
+    let mut damaged = 0usize;
+    let mut health_total = 0.0f32;
+    let mut max_total = 0.0f32;
+    for part in parts(ship)? {
+        let health = read::<f32>(part + offset_of!(Body, health));
+        let health_max = read::<f32>(part + offset_of!(Body, health_max));
+        if !health.is_finite() || !health_max.is_finite() || health_max <= 0.0 {
+            continue;
+        }
+        total += 1;
+        health_total += health;
+        max_total += health_max;
+        if health < health_max {
+            damaged += 1;
+        }
+    }
+    Some((total, damaged, health_total, max_total))
+}
+
+pub(super) unsafe fn display_name(ship: usize) -> CString {
+    let name = native_string(ship + SHIP_NAME);
+    let display: Vec<u8> = name
+        .as_deref()
+        .unwrap_or(c"")
+        .to_bytes()
+        .iter()
+        .copied()
+        .filter(|&byte| byte >= 0x20 && !matches!(byte, b'@' | b'{' | b'}'))
+        .collect();
+    if display.is_empty() {
+        return c"UNNAMED SHIP".into();
+    }
+    CString::new(display).unwrap_or_else(|_| c"UNNAMED SHIP".into())
 }
 
 /// Capture into a mod-owned, session-temporary file. Serialization is entirely game-native.
@@ -205,29 +245,59 @@ unsafe fn volume_roots(selected: &EditorShip) -> Option<Vec<usize>> {
 /// temporarily reparents the validated roots and restores them before returning.
 pub(super) unsafe fn snapshot(serial: u64) -> Result<Entry, String> {
     let selected = editor_ship().map_err(str::to_owned)?;
-    let roots = volume_roots(&selected).ok_or_else(|| {
+    let roots = volume_roots(selected.creature, selected.root).ok_or_else(|| {
         format!(
             "invalid design part/root collection: creature={:#x}, bridge_master={:#x}",
             selected.creature, selected.root,
         )
     })?;
-    let name = native_string(selected.creature + SHIP_NAME)
-        .ok_or_else(|| "invalid current ship name".to_owned())?;
-    // Prevent native text markup / line breaks in a design name from altering the roster layout.
-    let display: Vec<u8> = name
-        .as_bytes()
-        .iter()
-        .copied()
-        .filter(|&byte| byte >= 0x20 && !matches!(byte, b'@' | b'{' | b'}'))
-        .collect();
-    let name = if display.is_empty() {
-        c"UNNAMED SHIP".into()
-    } else {
-        CString::new(display).map_err(|error| format!("invalid display name: {error}"))?
-    };
+    let name = display_name(selected.creature);
+    let path = save_volume(roots, &name, &serial.to_string())?;
+    Ok(Entry { name, path })
+}
+
+/// Save the surviving assembly before SCR_MISSILE teardown moves it into map properties.
+/// Caller established the live Creature against the current battle roster on the game thread.
+pub(super) unsafe fn snapshot_damage(
+    ship: usize,
+    name: &CStr,
+    serial: usize,
+) -> Result<CString, String> {
+    // As in native design save, the bridge owns the Creature, and its enclosing
+    // assembly must be serialized as a root to keep the original property layout.
+    let bridge = diag::rd::<usize>(ship + MASTER_TARGET)
+        .filter(|&part| diag::readable_span(part, size_of::<Body>()))
+        .filter(|&part| read::<usize>(part + NODE_OWNER) == ship)
+        .ok_or("no live bridge on damaged ship")?;
+    let mut root = bridge;
+    for _ in 0..PART_LIMIT {
+        let parent = diag::rd::<usize>(root + MASTER_TARGET).ok_or("unreadable ship master")?;
+        let code = diag::rd::<u64>(parent.wrapping_add(OFF_CODE)).ok_or("missing ship master")?;
+        if code & CODE_BODY != CODE_BODY {
+            // SaveVolume restores roots to GlobalNode_, so only pass roots that already live
+            // there. Never detach a map property or another ship's assembly.
+            let global = read::<usize>(GLOBAL_NODE);
+            if parent != global {
+                return Err("damaged ship is not in the global battle volume".into());
+            }
+            let mut roots = volume_roots(ship, root).ok_or("invalid damaged ship roots")?;
+            roots.retain(|&part| read::<usize>(part + MASTER_TARGET) == global);
+            return save_volume(roots, name, &format!("damage_{serial}"));
+        }
+        if !diag::readable_span(parent, size_of::<Body>())
+            || read::<usize>(parent + NODE_OWNER) != ship
+        {
+            break;
+        }
+        root = parent;
+    }
+    Err("invalid damaged ship master chain".into())
+}
+
+unsafe fn save_volume(roots: Vec<usize>, name: &CStr, suffix: &str) -> Result<CString, String> {
     std::fs::create_dir_all(SNAPSHOT_DIR)
         .map_err(|error| format!("cannot create snapshot directory: {error}"))?;
-    let path_string = format!("{SNAPSHOT_DIR}/{}_{}.seria", std::process::id(), serial);
+    let path_string = format!("{SNAPSHOT_DIR}/{}_{suffix}.seria", std::process::id());
     let path = CString::new(path_string.as_bytes())
         .map_err(|error| format!("invalid snapshot path: {error}"))?;
 
@@ -253,15 +323,13 @@ pub(super) unsafe fn snapshot(serial: u64) -> Result<Entry, String> {
         let _ = std::fs::remove_file(&path_string);
         return Err(format!("native SaveVolume failed for {path_string}"));
     }
-    let metadata = std::fs::metadata(&path_string)
-        .map_err(|error| format!("cannot verify saved snapshot {path_string}: {error}"))?;
-    if metadata.len() == 0 {
+    if !std::fs::metadata(&path_string).is_ok_and(|metadata| metadata.len() != 0) {
         let _ = std::fs::remove_file(&path_string);
         return Err(format!(
             "native SaveVolume produced an empty file: {path_string}"
         ));
     }
-    Ok(Entry { name, path })
+    Ok(path)
 }
 
 /// Deserialize one fresh volume, then transfer ownership to the already-live FIGHT fleet.
@@ -271,21 +339,21 @@ pub(super) unsafe fn snapshot(serial: u64) -> Result<Entry, String> {
 /// # Safety
 /// Only the verified FIGHT seams supply `fleet`, on the game thread. The volume's native
 /// constructor/deserializer/init/load and deleting destructor retain allocator/Link ownership.
-pub(super) unsafe fn append(fleet: usize, path: &CStr, side: f32) -> bool {
+pub(super) unsafe fn append(fleet: usize, path: &CStr, side: f32) -> Option<usize> {
     if !diag::readable_span(fleet, 0x618) {
-        return false;
+        return None;
     }
     let allocate: unsafe extern "C" fn(usize) -> usize = std::mem::transmute(NEW);
     let construct: unsafe extern "C" fn(usize) -> usize = std::mem::transmute(NODE_CTOR);
     let memory = allocate(size_of::<Node>());
     if memory == 0 {
-        return false;
+        return None;
     }
     let volume = construct(memory);
     let load: unsafe extern "C" fn(usize, *const i8) -> u8 = std::mem::transmute(LOAD_SERIA);
     if load(volume, path.as_ptr()) == 0 {
         delete_volume(volume);
-        return false;
+        return None;
     }
     let vtable: usize = read(volume);
     let initialize: unsafe extern "C" fn(usize, usize) =
@@ -300,14 +368,14 @@ pub(super) unsafe fn append(fleet: usize, path: &CStr, side: f32) -> bool {
     let ship = get_ship(volume);
     if ship == 0 || !diag::readable_span(ship, size_of::<Creature>()) {
         delete_volume(volume);
-        return false;
+        return None;
     }
     let stats: unsafe extern "C" fn(usize, u8, u8) = std::mem::transmute(CALCULATE_STATS);
     let has_thrust: unsafe extern "C" fn(usize) -> u8 = std::mem::transmute(HAS_THRUST);
     stats(ship, 0, 0);
     if has_thrust(ship) == 0 {
         delete_volume(volume);
-        return false;
+        return None;
     }
     write(ship + INITIAL_MORALE, 10.0f32);
     write(ship + OFF_SIDE, side);
@@ -315,7 +383,7 @@ pub(super) unsafe fn append(fleet: usize, path: &CStr, side: f32) -> bool {
     let add: unsafe extern "C" fn(usize, usize, usize, usize) =
         std::mem::transmute(read::<usize>(fleet_vtable + 0x50));
     add(fleet, volume, 0, 0);
-    true
+    Some(ship)
 }
 
 unsafe fn delete_volume(volume: usize) {
