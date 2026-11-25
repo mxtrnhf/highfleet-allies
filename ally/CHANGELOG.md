@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.48 (Airstrike header and scrollbar):** puts the setup and damage buttons on two wider rows so their labels don't overlap. The loadout scrollbar uses the game's native vertical slider input; arrows and mouse-wheel scrolling remain available. Four plane groups still fit per page.
+
 * **v1.3.47 (Airstrike loadout browser):** fits four plane groups per page. The three-line loadout list supports dragging a scrollbar as well as the existing arrows and mouse wheel, and shows the live per-plane payload counts (for example, `2x BOMBS 250` and `4x BOMBS 250`).
 
 * **v1.3.46 (Airstrike damage and replay):** **DMG VIEW** shows the native defender module panels from the last Airstrike. **PRESERVE DAMAGE** carries surviving ships and their damage into subsequent Airstrikes on the same roster and leaves destroyed defenders out. Results and replay are separate from Missile Defense; neither edits original designs. Large raids compress aircraft wave spacing, while campaign Bombers keep the stock spacing. In-game validation pending.

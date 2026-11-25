@@ -143,8 +143,6 @@ const ALL_PARTS: usize = 0x1_43a1_39f0;
 const HGE: usize = 0x1_43a1_19e0;
 const GET_MOUSE_POS: usize = 0x1_4017_3870;
 const GET_MOUSE_WHEEL: usize = 0x1_4017_3890;
-const GET_KEY_DOWN: usize = 0x1_4017_38b0;
-const MOUSE_LEFT: i32 = 1;
 const MEDIA: usize = 0x1_43a1_19e8;
 const GET_ANIMATION: usize = 0x1_4017_0230;
 const HGE_RENDERER: usize = 0x1_439e_8670;
@@ -157,7 +155,6 @@ const ANIMATION_DIMENSIONS: usize = 0x188;
 const ALPHA_BLEND: u32 = 2;
 const ICON_COLOR: u32 = 0xffe4_d9ac;
 const TRACK_COLOR: u32 = 0xff6a_7074;
-const ACTIVE_THUMB_COLOR: u32 = 0xffa4_d77a;
 
 struct Craft {
     key: CString,
@@ -178,6 +175,24 @@ struct Entry {
     count: u8,
     multiplier: u8,
     first_loadout: usize,
+    restore_scroll: bool,
+}
+
+#[derive(Clone, Copy)]
+enum SliderKind {
+    Count,
+    Multiplier,
+    Scroll,
+}
+
+impl SliderKind {
+    fn bounds(self) -> (f32, f32) {
+        match self {
+            Self::Count => (1.0, f32::from(MAX_PLANES)),
+            Self::Multiplier => (1.0, f32::from(MAX_MULTIPLIER)),
+            Self::Scroll => (0.0, 1.0),
+        }
+    }
 }
 
 struct Flight {
@@ -204,8 +219,6 @@ pub(super) struct Panel {
     ground: bool,
     preserve: bool,
     damage_page: Option<usize>,
-    scroll_drag: Option<ScrollDrag>,
-    left_was_down: bool,
     error: Option<&'static CStr>,
     last_click: Option<(&'static CStr, u64)>,
 }
@@ -216,17 +229,6 @@ struct OverlaySprite {
     area: ControlGeometry,
     color: u32,
     keep_aspect: bool,
-}
-
-struct PointerInput {
-    position: [f32; 2],
-    wheel: i32,
-    left_down: bool,
-}
-
-struct ScrollDrag {
-    group: usize,
-    grab_offset: f32,
 }
 
 // Icon, scrollbar track, and thumb for each group.
@@ -244,8 +246,6 @@ impl Panel {
             ground: false,
             preserve: false,
             damage_page: None,
-            scroll_drag: None,
-            left_was_down: false,
             error: None,
             last_click: None,
         }
@@ -284,7 +284,6 @@ impl Panel {
     pub(super) fn close(&mut self) {
         self.open = false;
         self.damage_page = None;
-        self.scroll_drag = None;
         self.error = None;
         clear_overlays();
         damage::preview(Airstrike, None);
@@ -301,7 +300,6 @@ impl Panel {
         dropdown_open: bool,
     ) {
         if !self.open || dropdown_open {
-            self.scroll_drag = None;
             hide(listed);
             return;
         }
@@ -341,7 +339,6 @@ impl Panel {
             c"[ ] PRESERVE DAMAGE"
         };
         if let Some(index) = self.damage_page {
-            self.scroll_drag = None;
             show(6, preserve_label, cell(0.0, 0.65, top), BUTTON_STYLE);
             show(7, c"BACK", cell(0.65, 1.0, top), BUTTON_STYLE);
             for control in 0..6 {
@@ -399,17 +396,12 @@ impl Panel {
             );
         }
         damage::preview(Airstrike, None);
-        show(0, c"ADD PLANE", cell(0.0, 0.23, top), BUTTON_STYLE);
-        show(1, c"RESET", cell(0.23, 0.40, top), BUTTON_STYLE);
-        show(6, preserve_label, cell(0.40, 0.77, top), BUTTON_STYLE);
-        show(7, c"DMG VIEW", cell(0.77, 1.0, top), BUTTON_STYLE);
-        let pointer = pointer_input([frame_width, frame_height]);
-        let left_down = pointer.as_ref().is_some_and(|input| input.left_down);
-        let new_press = left_down && !self.left_was_down;
-        self.left_was_down = left_down;
-        if !left_down {
-            self.scroll_drag = None;
-        }
+        show(0, c"ADD PLANE", cell(0.0, 0.55, top), BUTTON_STYLE);
+        show(1, c"RESET", cell(0.55, 1.0, top), BUTTON_STYLE);
+        let top = top + step;
+        show(6, preserve_label, cell(0.0, 0.65, top), BUTTON_STYLE);
+        show(7, c"DMG VIEW", cell(0.65, 1.0, top), BUTTON_STYLE);
+        let wheel = wheel_input([frame_width, frame_height]);
         let screen_area = |mut area: ControlGeometry| {
             area.position[0] += frame_width * 0.5;
             area.position[1] += frame_height * 0.5;
@@ -467,50 +459,54 @@ impl Panel {
                 group_cell(0.39, 0.47, 0.21, 0.42),
                 BUTTON_STYLE,
             );
-            for (control, value, max, suffix, offset) in [
-                (FINE, &mut entry.count, MAX_PLANES, c" PLANES", 0.57),
+            for (control, value, kind, offset) in [
+                (FINE, &mut entry.count, SliderKind::Count, 0.57),
                 (
                     MULTIPLIER,
                     &mut entry.multiplier,
-                    MAX_MULTIPLIER,
-                    c"x",
+                    SliderKind::Multiplier,
                     0.85,
                 ),
             ] {
-                show_slider(
+                *value = show_slider(
                     names[control],
                     &guis[control],
                     listed,
                     template,
                     group_cell(0.0, 0.47, offset, 0.23),
-                    value,
-                    max,
-                    suffix,
+                    f32::from(*value),
+                    kind,
                     self.restore_counts,
-                );
+                )
+                .floor() as u8;
             }
             let list_left = left + panel_width * 0.47;
             let list_bottom = y + group_height;
-            if let Some(input) = &pointer {
-                let [x, mouse_y] = input.position;
+            if let Some(([x, mouse_y], delta)) = wheel {
                 if (list_left..right).contains(&x) && (y..list_bottom).contains(&mouse_y) {
-                    entry.scroll_loadouts(craft, -(input.wheel as isize));
+                    entry.scroll_loadouts(craft, -(delta as isize));
                 }
             }
             let scroll_limit = craft.loadouts.len().saturating_sub(LOADOUT_LINES);
             if scroll_limit != 0 {
                 let mut track = group_cell(0.88, 0.95, 0.5, 0.96);
-                // Keep the invisible native hit control wider than the visible track.
-                show(SCROLL_BAR, c"", track, LOADOUT_STYLE);
-                let thumb = scrollbar_thumb(
+                // Slider_DragValueToCursor (0x14012e8d0) chooses the longer
+                // axis and handles the editor's native cursor coordinates.
+                track.dimensions[0] = track.dimensions[0].min(track.dimensions[1] * 0.75);
+                let limit = scroll_limit as f32;
+                let value = show_slider(
+                    names[SCROLL_BAR],
+                    &guis[SCROLL_BAR],
+                    listed,
+                    template,
                     track,
-                    scroll_limit,
-                    &mut entry.first_loadout,
-                    pointer.as_ref(),
-                    new_press,
-                    first + index,
-                    &mut self.scroll_drag,
+                    entry.first_loadout as f32 / limit,
+                    SliderKind::Scroll,
+                    self.restore_counts || entry.restore_scroll,
                 );
+                entry.restore_scroll = false;
+                entry.first_loadout = (value * limit).round() as usize;
+                let thumb = scrollbar_thumb(track, scroll_limit, entry.first_loadout);
                 track.dimensions[0] *= 0.56;
                 *track_art = Some(OverlaySprite {
                     name: c"white16",
@@ -521,15 +517,7 @@ impl Panel {
                 *thumb_art = Some(OverlaySprite {
                     name: c"white16",
                     area: screen_area(thumb),
-                    color: if self
-                        .scroll_drag
-                        .as_ref()
-                        .is_some_and(|drag| drag.group == first + index)
-                    {
-                        ACTIVE_THUMB_COLOR
-                    } else {
-                        ICON_COLOR
-                    },
+                    color: ICON_COLOR,
                     keep_aspect: false,
                 });
             } else {
@@ -668,13 +656,13 @@ impl Panel {
                 count: 1,
                 multiplier: 1,
                 first_loadout: 0,
+                restore_scroll: true,
             });
             let page = (self.entries.len() - 1) / ROWS_PER_PAGE;
             self.restore_counts = true;
             self.page = page;
         } else if id == RESET {
             self.entries.clear();
-            self.scroll_drag = None;
             self.page = 0;
             self.restore_counts = true;
             self.ground = false;
@@ -684,7 +672,6 @@ impl Panel {
             let pages = self.entries.len().div_ceil(ROWS_PER_PAGE);
             if pages > 1 {
                 self.page = (self.page + 1) % pages;
-                self.scroll_drag = None;
                 self.restore_counts = true;
             }
         } else if id == LAUNCH {
@@ -753,12 +740,8 @@ impl Panel {
             .find_map(|(row, names)| names.iter().position(|&name| name == id).map(|i| (row, i)))
         {
             let index = self.page * ROWS_PER_PAGE + row;
-            if control == SCROLL_BAR {
-                return false;
-            }
             if control == REMOVE && index < self.entries.len() {
                 self.entries.remove(index);
-                self.scroll_drag = None;
                 self.page = self
                     .page
                     .min(self.entries.len().saturating_sub(1) / ROWS_PER_PAGE);
@@ -768,6 +751,7 @@ impl Panel {
                     entry.craft = (entry.craft + 1) % self.crafts.len();
                     entry.loadout = 0;
                     entry.first_loadout = 0;
+                    entry.restore_scroll = true;
                 } else if let Some(craft) = self.crafts.get(entry.craft) {
                     match control {
                         SCROLL_UP => entry.scroll_loadouts(craft, -1),
@@ -790,57 +774,29 @@ impl Panel {
 
 impl Entry {
     fn scroll_loadouts(&mut self, craft: &Craft, lines: isize) {
-        self.first_loadout = self
+        let target = self
             .first_loadout
             .saturating_add_signed(lines)
             .min(craft.loadouts.len().saturating_sub(LOADOUT_LINES));
+        self.restore_scroll |= target != self.first_loadout;
+        self.first_loadout = target;
     }
 }
 
-fn scrollbar_thumb(
-    track: ControlGeometry,
-    limit: usize,
-    first: &mut usize,
-    pointer: Option<&PointerInput>,
-    new_press: bool,
-    group: usize,
-    drag: &mut Option<ScrollDrag>,
-) -> ControlGeometry {
+fn scrollbar_thumb(track: ControlGeometry, limit: usize, first: usize) -> ControlGeometry {
     let [x, y] = track.position;
     let [width, height] = track.dimensions;
-    let top = y - height * 0.5;
     let visible_fraction = LOADOUT_LINES as f32 / (limit + LOADOUT_LINES) as f32;
     let thumb_height = height * visible_fraction.max(0.20);
     let travel = height - thumb_height;
-    let offset = |first| travel * first as f32 / limit as f32;
-    if let Some(pointer) = pointer {
-        let [mouse_x, mouse_y] = pointer.position;
-        let mouse_offset = mouse_y - top;
-        if new_press && (x - mouse_x).abs() <= width * 0.5 && (0.0..=height).contains(&mouse_offset)
-        {
-            let on_thumb = mouse_offset - offset(*first);
-            *drag = Some(ScrollDrag {
-                group,
-                grab_offset: if (0.0..=thumb_height).contains(&on_thumb) {
-                    on_thumb
-                } else {
-                    thumb_height * 0.5
-                },
-            });
-        }
-        if let Some(drag) = drag.as_ref().filter(|drag| drag.group == group) {
-            let ratio = ((mouse_offset - drag.grab_offset) / travel).clamp(0.0, 1.0);
-            *first = (ratio * limit as f32).round() as usize;
-        }
-    }
     ControlGeometry {
-        position: [x, top + offset(*first) + thumb_height * 0.5],
+        position: [x, y + travel * (first as f32 / limit as f32 - 0.5)],
         dimensions: [width * 0.75, thumb_height],
     }
 }
 
 /// Read the live editor input cached by HGE. GUI positions are screen-centered.
-unsafe fn pointer_input([width, height]: [f32; 2]) -> Option<PointerInput> {
+unsafe fn wheel_input([width, height]: [f32; 2]) -> Option<([f32; 2], i32)> {
     let hge = read::<usize>(HGE);
     if hge == 0 {
         return None;
@@ -848,16 +804,15 @@ unsafe fn pointer_input([width, height]: [f32; 2]) -> Option<PointerInput> {
     // SAFETY: Shipworks' frame pass runs on the HGE owner thread. These getters
     // read scalar fields only; the position getter fills two local f32s.
     let wheel: unsafe extern "C" fn(usize) -> i32 = std::mem::transmute(GET_MOUSE_WHEEL);
-    let key_down: unsafe extern "C" fn(usize, i32) -> u8 = std::mem::transmute(GET_KEY_DOWN);
+    let delta = wheel(hge);
+    if delta == 0 {
+        return None;
+    }
     let position: unsafe extern "C" fn(usize, *mut f32, *mut f32) =
         std::mem::transmute(GET_MOUSE_POS);
     let (mut x, mut y) = (0.0, 0.0);
     position(hge, &mut x, &mut y);
-    (x.is_finite() && y.is_finite()).then(|| PointerInput {
-        position: [x - width * 0.5, y - height * 0.5],
-        wheel: wheel(hge),
-        left_down: key_down(hge, MOUSE_LEFT) != 0,
-    })
+    (x.is_finite() && y.is_finite()).then_some(([x - width * 0.5, y - height * 0.5], delta))
 }
 
 fn selection(crafts: &[Craft], entry: Entry) -> Option<(&Craft, &Loadout)> {
@@ -938,9 +893,9 @@ fn click_control(name: &str) -> Option<&'static CStr> {
         .filter(|&id| id != STATUS && id != RESULT)
         // The native sliders own their own input, including drag interactions.
         .chain(ROW_CONTROLS.into_iter().flat_map(|row| {
-            row.into_iter()
-                .enumerate()
-                .filter_map(|(index, id)| (index != FINE && index != MULTIPLIER).then_some(id))
+            row.into_iter().enumerate().filter_map(|(index, id)| {
+                (!matches!(index, FINE | MULTIPLIER | SCROLL_BAR)).then_some(id)
+            })
         }))
         .find(|id| id.to_bytes() == name.as_bytes())
 }
@@ -982,11 +937,10 @@ unsafe fn show_slider(
     listed: &[usize],
     template: usize,
     area: ControlGeometry,
-    amount: &mut u8,
-    max: u8,
-    suffix: &CStr,
+    value: f32,
+    kind: SliderKind,
     restore: bool,
-) {
+) -> f32 {
     let visible = precombat::listed_shown(
         listed,
         slot.load(Ordering::Relaxed),
@@ -994,10 +948,10 @@ unsafe fn show_slider(
     );
     let Some((gui, created)) =
         precombat::get_or_make_with(name.to_bytes_with_nul(), slot, listed, true, || {
-            make_slider(name, area, template, max, suffix)
+            make_slider(name, area, template, kind)
         })
     else {
-        return;
+        return value;
     };
     precombat::set_gui_active(gui, true);
     if !created {
@@ -1005,11 +959,15 @@ unsafe fn show_slider(
     }
     if restore || !visible || created {
         let set: unsafe extern "C" fn(usize, f32) = std::mem::transmute(SLIDER_SET_VALUE);
-        set(gui, f32::from(*amount));
+        set(gui, value);
+        value
     } else {
-        let value = read::<f32>(gui + offset_of!(Gui, value));
-        if value.is_finite() {
-            *amount = value.floor().clamp(1.0, f32::from(max)) as u8;
+        let native_value = read::<f32>(gui + offset_of!(Gui, value));
+        if native_value.is_finite() {
+            let (min, max) = kind.bounds();
+            native_value.clamp(min, max)
+        } else {
+            value
         }
     }
 }
@@ -1018,8 +976,7 @@ unsafe fn make_slider(
     name: &CStr,
     area: ControlGeometry,
     template: usize,
-    max: u8,
-    suffix: &CStr,
+    kind: SliderKind,
 ) -> *mut u8 {
     // SAFETY: duplicates Shipworks' native Slider recipe (0x1400ceade). Allocate
     // and initialize on the GUI thread; the root then owns its strings and art.
@@ -1044,6 +1001,15 @@ unsafe fn make_slider(
     }
     let gui = ctor(storage);
     precombat::attach_gui(gui);
+    let (min, max) = kind.bounds();
+    let (bar, background, suffix) = match kind {
+        // The native scrollbar slider captures input only; we draw its track
+        // and thumb above the editor through the same pass as the plane icons.
+        SliderKind::Scroll => (c"", c"", c""),
+        // The bar art covers the right (unfilled) end of its background.
+        SliderKind::Count => (c"slider_std", c"slider_green", c" PLANES"),
+        SliderKind::Multiplier => (c"slider_std", c"slider_green", c"x"),
+    };
     init(
         gui,
         name.as_ptr(),
@@ -1052,11 +1018,10 @@ unsafe fn make_slider(
         area.dimensions[0],
         area.dimensions[1],
         c"".as_ptr(),
-        1.0,
-        f32::from(max),
-        // Slider's bar art covers the right (unfilled) end of its background.
-        c"slider_std".as_ptr(),
-        c"slider_green".as_ptr(),
+        min,
+        max,
+        bar.as_ptr(),
+        background.as_ptr(),
     );
     let address = gui as usize;
     write(
@@ -1072,15 +1037,18 @@ unsafe fn make_slider(
         address + offset_of!(Gui, text_color),
         read::<u32>(template + offset_of!(Gui, text_color)),
     );
-    write(address + SLIDER_RENDER_VALUE, 1u8);
-    write(address + SLIDER_IS_FLOAT, 0u8);
-    let assign: unsafe extern "C" fn(usize, *const i8, usize) -> usize =
-        std::mem::transmute(COPY_STRING);
-    assign(
-        address + offset_of!(Gui, note),
-        suffix.as_ptr(),
-        suffix.to_bytes().len(),
-    );
+    let scroll = matches!(kind, SliderKind::Scroll);
+    write(address + SLIDER_RENDER_VALUE, u8::from(!scroll));
+    write(address + SLIDER_IS_FLOAT, u8::from(scroll));
+    if !suffix.to_bytes().is_empty() {
+        let assign: unsafe extern "C" fn(usize, *const i8, usize) -> usize =
+            std::mem::transmute(COPY_STRING);
+        assign(
+            address + offset_of!(Gui, note),
+            suffix.as_ptr(),
+            suffix.to_bytes().len(),
+        );
+    }
     precombat::load_gui(address);
     gui
 }
