@@ -1558,7 +1558,10 @@ unsafe fn apply_sandbox_nuclear_damage(body: usize, yield_power: f32) {
         log::info!(
             "hf_ally: sandbox nuke ship {index}: side {ship_side:+.0}, distance {distance:.1}, cap {cap:.0}, per-part {per_part:.4}"
         );
-        damage_ship_parts(ship, (blast_x, blast_y), per_part);
+        let (hits, destroyed, lost) = damage_ship_parts(ship, (blast_x, blast_y), per_part);
+        log::info!(
+            "hf_ally: sandbox nuke ship {index}: {hits} parts hit, {destroyed} destroyed, {lost:.0} hull"
+        );
     }
 }
 
@@ -1568,15 +1571,21 @@ unsafe fn apply_sandbox_nuclear_damage(body: usize, yield_power: f32) {
 /// bounding boxes; that exact spread is undecoded. A nearest-first pass
 /// over-destroys because the ship's core is mostly 10-40 HP modules. Instead,
 /// take an evenly spaced sample through the distance-sorted parts and apply at
-/// most the campaign per-part damage to each. On `Moral.seria` (379 parts) a
-/// close hit gives ~24 destroyed parts and ~2,190 hull, matching the measured
+/// most the campaign per-part damage to each. The master/root part is skipped:
+/// the campaign `0x1400e6aa0` never kills it, and killing it removes the whole
+/// ship even when the hull loss is small. On `Moral.seria` (379 parts) a close
+/// hit gives ~24 destroyed parts and ~2,190 hull, matching the measured
 /// campaign 11-24 / 1.8k-2.9k.
-unsafe fn damage_ship_parts(ship: usize, center: (f32, f32), per_part: f32) {
+unsafe fn damage_ship_parts(ship: usize, center: (f32, f32), per_part: f32) -> (usize, usize, f32) {
     let Some(parts) = design::parts(ship) else {
-        return;
+        return (0, 0, 0.0);
     };
+    let bridge = diag::rd::<usize>(ship.wrapping_add(design::MASTER_TARGET)).unwrap_or(0);
     let mut candidates: Vec<(usize, f32, f32)> = Vec::new();
     for part in parts {
+        if part == bridge {
+            continue;
+        }
         let health = diag::rd::<f32>(part.wrapping_add(offset_of!(Body, health))).unwrap_or(0.0);
         if !health.is_finite() || health <= 0.0 {
             continue;
@@ -1590,7 +1599,7 @@ unsafe fn damage_ship_parts(ship: usize, center: (f32, f32), per_part: f32) {
     }
     candidates.sort_by(|left, right| left.1.total_cmp(&right.1));
     if candidates.is_empty() {
-        return;
+        return (0, 0, 0.0);
     }
     let size_scale = (candidates.len() as f32 / SANDBOX_NUKE_REFERENCE_PARTS).clamp(0.75, 1.5);
     let count = ((SANDBOX_NUKE_DAMAGE_PER_MORAL / CAMPAIGN_NUKE_REFERENCE_DAMAGE) * size_scale)
@@ -1598,6 +1607,9 @@ unsafe fn damage_ship_parts(ship: usize, center: (f32, f32), per_part: f32) {
         .max(1.0) as usize;
     let stride = candidates.len() as f32 / count as f32;
     let mut budget = per_part * count as f32;
+    let mut hits = 0usize;
+    let mut destroyed = 0usize;
+    let mut lost = 0.0f32;
     for index in 0..count {
         if budget <= 0.0 {
             break;
@@ -1606,8 +1618,16 @@ unsafe fn damage_ship_parts(ship: usize, center: (f32, f32), per_part: f32) {
         let (part, _, health) = candidates[candidate];
         let damage = per_part.min(health).min(budget);
         let spent = damage_part(part, damage);
+        if spent > 0.0 {
+            hits += 1;
+            lost += spent;
+            if health - spent <= 0.0 {
+                destroyed += 1;
+            }
+        }
         budget -= spent;
     }
+    (hits, destroyed, lost)
 }
 
 /// Call the native Body damage slot (vtable +0x210) and return the HP actually lost.
