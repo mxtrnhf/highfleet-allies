@@ -25,9 +25,9 @@ use crate::{
 
 use super::{
     damage::{self, Replay, Slot},
-    design, native_string, prune_enemy_escadra, show_control, write, ControlGeometry, BUTTON_STYLE,
-    CLICK_DEBOUNCE_MS, ENEMY_LIMIT, ENEMY_LIST, LINK_CLEAR_VECTOR, LINK_NODE_STRIDE, LINK_TARGET,
-    ROSTER_LIMIT, ROW_STYLE, SESSION, SIDE_ALLY, SIDE_ENEMY, TEST_FIGHT_FLAG,
+    design, native_string, prune_enemy_escadra, show_control, write, ControlGeometry, BUTTON_GAP,
+    BUTTON_STYLE, CLICK_DEBOUNCE_MS, ENEMY_LIMIT, ENEMY_LIST, LINK_CLEAR_VECTOR, LINK_NODE_STRIDE,
+    LINK_TARGET, ROSTER_LIMIT, ROW_STYLE, SESSION, SIDE_ALLY, SIDE_ENEMY, TEST_FIGHT_FLAG,
 };
 
 const TYPE_NAME: &CStr = c"SW_ACE_MSL";
@@ -44,7 +44,7 @@ const FRAME_WIDTH: usize = 0x1_43a1_58fc;
 const FRAME_HEIGHT: usize = 0x1_43a1_3e5c;
 const SCHEMATIC_HEIGHT: f32 = 220.0;
 const PANEL_RIGHT_MARGIN: f32 = 36.0;
-const PANEL_TOP_GAP: f32 = 32.0;
+const PANEL_WIDTH_IN_TEST_BUTTONS: f32 = 2.4;
 const PANEL_ROW_GAP: f32 = 8.0;
 static TYPE_GUI: AtomicUsize = AtomicUsize::new(0);
 static START_GUI: AtomicUsize = AtomicUsize::new(0);
@@ -292,19 +292,27 @@ impl Panel {
         template: usize,
         [width, height]: [f32; 2],
         top: f32,
+        toolbar_right: f32,
     ) {
         if !self.open {
             hide(listed);
             return;
         }
         let frame_width = read::<i32>(FRAME_WIDTH) as f32;
-        let panel_width = (width * 3.2).min(frame_width - 2.0 * PANEL_RIGHT_MARGIN);
+        let panel_width =
+            (width * PANEL_WIDTH_IN_TEST_BUTTONS).min(frame_width - 2.0 * PANEL_RIGHT_MARGIN);
         if panel_width <= 0.0 {
             hide(listed);
             return;
         }
-        let x = (frame_width - panel_width) * 0.5 - PANEL_RIGHT_MARGIN;
-        let y = top + height + PANEL_TOP_GAP;
+        let panel_right = frame_width * 0.5 - PANEL_RIGHT_MARGIN;
+        let x = panel_right - panel_width * 0.5;
+        // Start level with TEST unless the right-hand stack would cover the toolbar.
+        let y = if panel_right - panel_width >= toolbar_right + BUTTON_GAP {
+            top
+        } else {
+            top + height + PANEL_ROW_GAP
+        };
         let row = |y| ControlGeometry {
             position: [x, y],
             dimensions: [panel_width, height],

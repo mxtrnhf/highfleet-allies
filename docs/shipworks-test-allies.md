@@ -48,9 +48,10 @@ instead of the map CRT warp, which fixes the skewed and clipped battle frame.
 Flash, cloud and shockwave effects are unchanged.
 
 **v1.3.15 — Missile Defense:** In standalone Shipworks, choose **A.C.E. →
-MISSILE DEFENSE**. Click the upper right-hand button to cycle through strategic
-missiles from the game's live part definitions, then **LAUNCH**. No **TEST**
-click is required. Launch starts one missile encounter:
+MISSILE DEFENSE**. The panel on the right starts level with **TEST** when
+there's room beside the toolbar. Click its first button to cycle through
+strategic missiles from the game's live part definitions, then **LAUNCH**. No
+**TEST** click is required. Launch starts one missile encounter:
 
 | Added ships | Encounter |
 |---|---|
@@ -135,9 +136,13 @@ error. The reported v1.2.0 failure was observed in
 `Highfleet_2026-11-13_13-11-27.log`; its generic warnings did not identify which
 capture guard returned. The maintainer subsequently confirmed v1.2.1 working in game.
 
-In standalone Shipworks, **ADD** is on the top row, immediately right of **TEST**.
-It captures the currently edited ship, including unsaved changes. Each press adds
-another copy, and the ship names appear below the button.
+In standalone Shipworks, click `>` immediately right of **TEST** to reveal the
+mod's tools. Click `<` to hide them again. The tools start collapsed in a new
+Shipworks session. Hiding them does not clear the rosters or change which ships
+join **FIGHT**.
+
+**ADD** captures the currently edited ship, including unsaved changes. Each press
+adds another copy, and the ship names appear below the buttons.
 
 Choose the usual TEST enemy settings and press the existing **FIGHT** button.
 The edited ship remains your player ship; the added ships join its friendly

@@ -680,8 +680,8 @@ unsafe fn gui_reusable(gui: usize, name: &[u8]) -> bool {
 /// Use the current game-thread scan with no intervening GUI mutations; `name` must include its NUL.
 pub(super) unsafe fn listed_shown(listed: &[usize], gui: usize, name: &[u8]) -> bool {
     listed.contains(&gui)
-        && cstr(gui + GUI_NAME).as_bytes() == &name[..name.len() - 1]
         && read::<i32>(gui + OFF_ACTIVE) == 2
+        && cstr_is(gui + GUI_NAME, &name[..name.len() - 1])
 }
 
 /// Calls the element's vtable slot +0x88 (`GUI::Load`): resolves the element's own media names and loads the

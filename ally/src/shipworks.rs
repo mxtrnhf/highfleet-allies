@@ -32,6 +32,7 @@ const ROSTER_LIMIT: usize = 8;
 const ENEMY_LIMIT: usize = 8;
 /// GUI identifiers must stay within the 15-char inline (SSO) string storage: `cstr` reads the
 /// identifier bytes in place, so a longer heap-allocated name would never compare equal.
+const PANEL_TOGGLE_NAME: &CStr = c"SW_ALLY_TOGGLE";
 const ADD_NAME: &[u8] = b"SW_ALLY_ADD\0";
 const ENEMY_ADD_NAME: &[u8] = b"SW_ENEMY_ADD\0";
 const CLEAR_NAME: &[u8] = b"SW_ALLY_CLEAR\0";
@@ -201,6 +202,8 @@ struct Session {
     status: Option<CString>,
     enemy_status: Option<CString>,
     serial: u64,
+    panel_expanded: bool,
+    last_panel_toggle_ms: Option<u64>,
     last_add_ms: Option<u64>,
     last_enemy_add_ms: Option<u64>,
     last_clear_ms: Option<u64>,
@@ -218,6 +221,8 @@ static SESSION: Mutex<Session> = Mutex::new(Session {
     status: None,
     enemy_status: None,
     serial: 0,
+    panel_expanded: false,
+    last_panel_toggle_ms: None,
     last_add_ms: None,
     last_enemy_add_ms: None,
     last_clear_ms: None,
@@ -228,6 +233,7 @@ static SESSION: Mutex<Session> = Mutex::new(Session {
 });
 static READY: AtomicBool = AtomicBool::new(false);
 static CONTROLS_VISIBLE: AtomicBool = AtomicBool::new(false);
+static PANEL_TOGGLE_GUI: AtomicUsize = AtomicUsize::new(0);
 static ADD_GUI: AtomicUsize = AtomicUsize::new(0);
 static ENEMY_ADD_GUI: AtomicUsize = AtomicUsize::new(0);
 static CLEAR_GUI: AtomicUsize = AtomicUsize::new(0);
@@ -394,7 +400,8 @@ pub(crate) unsafe fn tick() {
     if !READY.load(Ordering::Relaxed) {
         return;
     }
-    if read::<u8>(EDITOR_MODE) == 0 {
+    let in_editor = read::<u8>(EDITOR_MODE) != 0;
+    if !in_editor {
         ACE_OPEN.store(false, Ordering::Relaxed);
         if !CONTROLS_VISIBLE.load(Ordering::Relaxed) {
             return;
@@ -407,30 +414,59 @@ pub(crate) unsafe fn tick() {
         return;
     }
     let template = scan.elements.iter().copied().find(|&gui| {
-        read::<i32>(gui + OFF_ACTIVE) == 2
+        in_editor
+            && read::<i32>(gui + OFF_ACTIVE) == 2
             && precombat::cstr_is(gui + offset_of!(Gui, identifier), b"EDC_TEST")
     });
     let Some(template) = template else {
         ACE_OPEN.store(false, Ordering::Relaxed);
-        hide_controls(&scan.elements);
+        hide_control(
+            PANEL_TOGGLE_NAME.to_bytes_with_nul(),
+            &PANEL_TOGGLE_GUI,
+            &scan.elements,
+        );
+        hide_panel(&scan.elements);
         CONTROLS_VISIBLE.store(false, Ordering::Relaxed);
         return;
     };
     let Ok(state) = SESSION.try_lock() else {
         return;
     };
+    let width = read::<f32>(template + 0x218);
+    let height = read::<f32>(template + 0x21c);
+    let test_right = read::<f32>(template + offset_of!(Body, position_x)) + width * 0.5;
+    let y = read::<f32>(template + offset_of!(Body, position_y));
+    if ![test_right, y, width, height].iter().all(|v| v.is_finite())
+        || width <= 0.0
+        || height <= 0.0
+    {
+        return;
+    }
+    // Buttons use center coordinates. Keep TEST in place and insert a narrow toggle after it.
+    let toggle_width = height.min(width * 0.5);
+    let toggle_left = test_right + BUTTON_GAP;
+    show_control(
+        PANEL_TOGGLE_NAME.to_bytes_with_nul(),
+        &PANEL_TOGGLE_GUI,
+        &scan.elements,
+        template,
+        if state.panel_expanded { c"<" } else { c">" },
+        ControlGeometry {
+            position: [toggle_left + toggle_width * 0.5, y],
+            dimensions: [toggle_width, height],
+        },
+        BUTTON_STYLE,
+    );
+    if !state.panel_expanded {
+        hide_panel(&scan.elements);
+        CONTROLS_VISIBLE.store(true, Ordering::Relaxed);
+        return;
+    }
     let ace_open = ACE_OPEN.load(Ordering::Relaxed);
     if !ace_open {
         hide_ace_options(&scan.elements);
     }
-    let width = read::<f32>(template + 0x218);
-    let height = read::<f32>(template + 0x21c);
-    let x = read::<f32>(template + offset_of!(Body, position_x)) + width + BUTTON_GAP;
-    let y = read::<f32>(template + offset_of!(Body, position_y));
-    if ![x, y, width, height].iter().all(|v| v.is_finite()) || width <= 0.0 || height <= 0.0 {
-        return;
-    }
-    // Top-row controls follow TEST at the template's height and width.
+    let x = toggle_left + toggle_width + BUTTON_GAP + width * 0.5;
     let button_size = [width, height];
     let button = |position: [f32; 2]| ControlGeometry {
         position,
@@ -473,14 +509,17 @@ pub(crate) unsafe fn tick() {
         button([ace_x, y]),
         BUTTON_STYLE,
     );
+    let mut toolbar_right = ace_x + width * 0.5;
     if CRASH_BUTTON.load(Ordering::Relaxed) {
+        let crash_x = ace_x + width + BUTTON_GAP;
+        toolbar_right = crash_x + width * 0.5;
         show_control(
             CRASH_NAME,
             &CRASH_GUI,
             &scan.elements,
             template,
             c"CRASH",
-            button([ace_x + width + BUTTON_GAP, y]),
+            button([crash_x, y]),
             BUTTON_STYLE,
         );
     }
@@ -506,7 +545,7 @@ pub(crate) unsafe fn tick() {
     }
     state
         .defense
-        .draw(&scan.elements, template, [width, height], y);
+        .draw(&scan.elements, template, [width, height], y, toolbar_right);
 
     // One list column below the buttons: ally rows, ally status, enemy rows, enemy status.
     let left = x - width * 0.5;
@@ -526,8 +565,8 @@ pub(crate) unsafe fn tick() {
             ROW_STYLE,
         );
     }
-    for gui in &ROW_GUIS[state.entries.len()..] {
-        hide_member(gui.load(Ordering::Relaxed), &scan.elements);
+    for (&name, gui) in ROW_NAMES.iter().zip(&ROW_GUIS).skip(state.entries.len()) {
+        hide_control(name, gui, &scan.elements);
     }
     let mut next_row = state.entries.len();
     if let Some(status) = &state.status {
@@ -542,7 +581,7 @@ pub(crate) unsafe fn tick() {
         );
         next_row += 1;
     } else {
-        hide_member(STATUS_GUI.load(Ordering::Relaxed), &scan.elements);
+        hide_control(STATUS_NAME, &STATUS_GUI, &scan.elements);
     }
     for (index, entry) in state.enemy_entries.iter().enumerate() {
         show_control(
@@ -555,8 +594,12 @@ pub(crate) unsafe fn tick() {
             ENEMY_ROW_STYLE,
         );
     }
-    for gui in &ENEMY_ROW_GUIS[state.enemy_entries.len()..] {
-        hide_member(gui.load(Ordering::Relaxed), &scan.elements);
+    for (&name, gui) in ENEMY_ROW_NAMES
+        .iter()
+        .zip(&ENEMY_ROW_GUIS)
+        .skip(state.enemy_entries.len())
+    {
+        hide_control(name, gui, &scan.elements);
     }
     next_row += state.enemy_entries.len();
     if let Some(status) = &state.enemy_status {
@@ -570,7 +613,7 @@ pub(crate) unsafe fn tick() {
             ENEMY_ROW_STYLE,
         );
     } else {
-        hide_member(ENEMY_STATUS_GUI.load(Ordering::Relaxed), &scan.elements);
+        hide_control(ENEMY_STATUS_NAME, &ENEMY_STATUS_GUI, &scan.elements);
     }
     CONTROLS_VISIBLE.store(true, Ordering::Relaxed);
 }
@@ -705,13 +748,13 @@ unsafe fn write<T>(address: usize, value: T) {
     (address as *mut T).write_unaligned(value);
 }
 
-unsafe fn hide_member(gui: usize, listed: &[usize]) {
-    if listed.contains(&gui)
-        && native_string(gui + offset_of!(Gui, identifier)).is_some_and(|name| {
-            let bytes = name.to_bytes();
-            bytes.starts_with(b"SW_ALLY_") || bytes.starts_with(b"SW_ENEMY_")
-        })
-    {
+/// # Safety
+/// `listed` is the current complete game-thread scan, and `name` includes its NUL.
+unsafe fn hide_control(name: &[u8], kept: &AtomicUsize, listed: &[usize]) {
+    let gui = kept.load(Ordering::Relaxed);
+    // SAFETY: Only a listed, active GUI with this exact identifier is written. The game
+    // retains the object and its resources; this only changes its active state.
+    if precombat::listed_shown(listed, gui, name) {
         precombat::set_gui_active(gui, false);
     }
 }
@@ -719,33 +762,25 @@ unsafe fn hide_member(gui: usize, listed: &[usize]) {
 /// Hide only active options verified against this input callback's complete GUI scan.
 unsafe fn hide_ace_options(listed: &[usize]) {
     for ((name, _), kept) in ACE_OPTIONS.iter().zip(&ACE_OPTION_GUIS) {
-        let gui = kept.load(Ordering::Relaxed);
-        // SAFETY: Membership, exact name and active state are checked against this game-thread
-        // scan before writing. The pointer is borrowed and no game-owned object is moved.
-        if precombat::listed_shown(listed, gui, name.to_bytes_with_nul()) {
-            precombat::set_gui_active(gui, false);
-        }
+        hide_control(name.to_bytes_with_nul(), kept, listed);
     }
 }
 
-unsafe fn hide_controls(listed: &[usize]) {
-    let ace_gui = ACE_GUI.load(Ordering::Relaxed);
-    if precombat::listed_shown(listed, ace_gui, ACE_NAME.to_bytes_with_nul()) {
-        precombat::set_gui_active(ace_gui, false);
-    }
+unsafe fn hide_panel(listed: &[usize]) {
+    hide_control(ACE_NAME.to_bytes_with_nul(), &ACE_GUI, listed);
     hide_ace_options(listed);
     missile_defense::hide(listed);
-    hide_member(ADD_GUI.load(Ordering::Relaxed), listed);
-    hide_member(ENEMY_ADD_GUI.load(Ordering::Relaxed), listed);
-    hide_member(CLEAR_GUI.load(Ordering::Relaxed), listed);
-    hide_member(CRASH_GUI.load(Ordering::Relaxed), listed);
-    hide_member(STATUS_GUI.load(Ordering::Relaxed), listed);
-    hide_member(ENEMY_STATUS_GUI.load(Ordering::Relaxed), listed);
-    for gui in &ROW_GUIS {
-        hide_member(gui.load(Ordering::Relaxed), listed);
+    hide_control(ADD_NAME, &ADD_GUI, listed);
+    hide_control(ENEMY_ADD_NAME, &ENEMY_ADD_GUI, listed);
+    hide_control(CLEAR_NAME, &CLEAR_GUI, listed);
+    hide_control(CRASH_NAME, &CRASH_GUI, listed);
+    hide_control(STATUS_NAME, &STATUS_GUI, listed);
+    hide_control(ENEMY_STATUS_NAME, &ENEMY_STATUS_GUI, listed);
+    for (&name, gui) in ROW_NAMES.iter().zip(&ROW_GUIS) {
+        hide_control(name, gui, listed);
     }
-    for gui in &ENEMY_ROW_GUIS {
-        hide_member(gui.load(Ordering::Relaxed), listed);
+    for (&name, gui) in ENEMY_ROW_NAMES.iter().zip(&ENEMY_ROW_GUIS) {
+        hide_control(name, gui, listed);
     }
 }
 
@@ -754,6 +789,7 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     if !READY.load(Ordering::Relaxed) {
         return false;
     }
+    let panel_toggle = name.as_bytes() == PANEL_TOGGLE_NAME.to_bytes();
     let ace_button = name.as_bytes() == ACE_NAME.to_bytes();
     let ace_option = ACE_OPTIONS
         .iter()
@@ -765,7 +801,8 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
         return false;
     }
     let defense_control = missile_defense::is_control(name);
-    if !ace_button
+    if !panel_toggle
+        && !ace_button
         && !ace_option
         && !defense_control
         && !matches!(
@@ -781,21 +818,42 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     if read::<u8>(EDITOR_MODE) == 0 || !CONTROLS_VISIBLE.load(Ordering::Relaxed) {
         return true;
     }
+    let Ok(mut state) = SESSION.try_lock() else {
+        return true;
+    };
+    if panel_toggle {
+        let now = now_ms();
+        if state
+            .last_panel_toggle_ms
+            .is_some_and(|last| now.wrapping_sub(last) <= CLICK_DEBOUNCE_MS)
+        {
+            return true;
+        }
+        state.last_panel_toggle_ms = Some(now);
+        state.panel_expanded = !state.panel_expanded;
+        drop(state);
+        sound::button("Shipworks tools toggle");
+        return true;
+    }
+    // Consume stale custom click events before they can act on hidden controls.
+    if !state.panel_expanded {
+        return true;
+    }
     if ace_option {
         if closed_ace {
-            if let Ok(mut state) = SESSION.try_lock() {
-                if name.as_bytes() == ACE_DEFENSE_NAME.to_bytes() {
-                    state.defense.open();
-                } else {
-                    // The other two modes are still placeholders.
-                    state.defense.close();
-                }
+            if name.as_bytes() == ACE_DEFENSE_NAME.to_bytes() {
+                state.defense.open();
+            } else {
+                // The other two modes are still placeholders.
+                state.defense.close();
             }
+            drop(state);
             sound::button("Shipworks A.C.E. option");
         }
         return true;
     }
     if name == "SW_ALLY_CRASH" {
+        drop(state);
         if CRASH_BUTTON.load(Ordering::Relaxed) {
             log::error!("hf_ally: deliberate Shipworks fail-fast requested");
             // SAFETY: Both strings are static and NUL-terminated; a null owner is valid.
@@ -821,9 +879,6 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
         }
         return true;
     }
-    let Ok(mut state) = SESSION.try_lock() else {
-        return true;
-    };
     if defense_control {
         let has_allies = !state.entries.is_empty();
         let has_enemies = !state.enemy_entries.is_empty();
@@ -1280,6 +1335,8 @@ unsafe extern "C" fn on_level(path: usize) {
         return;
     }
     state.defense = missile_defense::Panel::new();
+    state.panel_expanded = false;
+    state.last_panel_toggle_ms = None;
     clear_roster(&mut state);
     state.last_clear_ms = None;
     state.last_ace_ms = None;

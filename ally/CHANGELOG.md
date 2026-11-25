@@ -1,5 +1,9 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.39 (compact Missile Defense panel):** the right-hand A.C.E. Missile Defense buttons are 25% narrower and start level with **TEST** when there's room beside the toolbar. On narrow screens they sit below the toolbar.
+
+* **v1.3.38 (collapsible Shipworks tools):** the compact `>` button after **TEST** reveals **ADD**, **ADD ENEMY**, **CLEAR**, **A.C.E.**, and **CRASH** when enabled. Click `<` to hide the mod's controls and lists without clearing the test rosters. The toolbar starts collapsed in each new Shipworks session.
+
 * **v1.3.37 (campaign-style part kill in the sandbox nuke):** v1.3.36 still removed loaded campaign ships (5 lutyagem1, 167 parts: only ~1.7k hull and 7-11 parts per ship, yet 0 saved). The sandbox used `Body_ApplyDamage` (vtable +0x210), whose death path can explode ammo/fuel and remove the ship. The campaign map blast `0x1400e6aa0` subtracts part HP directly and calls only the part kill slot (vtable +0x48), with no death explosion. The sandbox now does that; the master part remains skipped. Expected on lutyagem1: ~46 parts hit, ~10 destroyed, ~1.7k hull, ship survives. Campaign behavior unchanged. In-game validation pending.
 
 * **v1.3.36 (do not kill the ship master part in the sandbox nuke):** v1.3.35 damaged every part in the spread sample, including the ship's master/root part. Killing that part removes the whole ship even when the hull loss is only ~1.8-2.2k, which is why the ACE test still vaporized loaded campaign ships (5 Moral -> 3 saved; 3 lutyagem1 -> 1 saved). The campaign `0x1400e6aa0` explicitly excludes the master from the kill; the sandbox now skips the master part and logs parts hit/destroyed/hull per ship. Expected on lutyagem1: ~47 parts hit, ~10 destroyed, ~1,755 hull, ship survives. Campaign behavior unchanged. In-game validation pending.
