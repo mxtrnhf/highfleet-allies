@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.49 (Shipworks roster counts):** identical same-name snapshots appear as one row with a count, e.g. `Nomad x2`. Allies and enemies are grouped separately. Same-name refits stay on separate rows, and each copy still uses a roster slot and deploys separately.
+
 * **v1.3.48 (Airstrike header and scrollbar):** puts the setup and damage buttons on two wider rows so their labels don't overlap. The loadout scrollbar uses the game's native vertical slider input; arrows and mouse-wheel scrolling remain available. Four plane groups still fit per page.
 
 * **v1.3.47 (Airstrike loadout browser):** fits four plane groups per page. The three-line loadout list supports dragging a scrollbar as well as the existing arrows and mouse wheel, and shows the live per-plane payload counts (for example, `2x BOMBS 250` and `4x BOMBS 250`).

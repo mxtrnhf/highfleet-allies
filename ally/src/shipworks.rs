@@ -196,6 +196,52 @@ struct Entry {
     path: CString,
 }
 
+struct RosterRow {
+    first_entry: usize,
+    count: usize,
+    label: CString,
+}
+
+struct Roster {
+    /// One snapshot per ADD, in deployment order. Grouping only affects `rows`.
+    entries: Vec<Entry>,
+    rows: Vec<RosterRow>,
+}
+
+impl Roster {
+    const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            rows: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, entry: Entry) {
+        if let Some(row) = self.rows.iter_mut().find(|row| {
+            self.entries.get(row.first_entry).is_some_and(|first| {
+                first.name == entry.name && design::same_snapshot(&first.path, &entry.path)
+            })
+        }) {
+            row.count += 1;
+            let suffix = format!(" x{}", row.count);
+            row.label = CString::new([entry.name.to_bytes(), suffix.as_bytes()].concat())
+                .unwrap_or_else(|_| entry.name.clone());
+        } else {
+            self.rows.push(RosterRow {
+                first_entry: self.entries.len(),
+                count: 1,
+                label: entry.name.clone(),
+            });
+        }
+        self.entries.push(entry);
+    }
+
+    fn drain(&mut self) -> impl Iterator<Item = Entry> + '_ {
+        self.rows.clear();
+        self.entries.drain(..)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ControlGeometry {
     position: [f32; 2],
@@ -211,8 +257,8 @@ struct ControlStyle {
 }
 
 struct Session {
-    entries: Vec<Entry>,
-    enemy_entries: Vec<Entry>,
+    allies: Roster,
+    enemies: Roster,
     status: Option<CString>,
     enemy_status: Option<CString>,
     serial: u64,
@@ -231,8 +277,8 @@ struct Session {
 }
 
 static SESSION: Mutex<Session> = Mutex::new(Session {
-    entries: Vec::new(),
-    enemy_entries: Vec::new(),
+    allies: Roster::new(),
+    enemies: Roster::new(),
     status: None,
     enemy_status: None,
     serial: 0,
@@ -680,21 +726,30 @@ pub(crate) unsafe fn tick() {
         position: [left, list_top + index as f32 * ROW_HEIGHT],
         dimensions: [LIST_WIDTH, ROW_HEIGHT],
     };
-    for (index, entry) in state.entries.iter().enumerate() {
+    for (index, ((&name, gui), group)) in ROW_NAMES
+        .iter()
+        .zip(&ROW_GUIS)
+        .zip(&state.allies.rows)
+        .enumerate()
+    {
         show_control(
-            ROW_NAMES[index],
-            &ROW_GUIS[index],
+            name,
+            gui,
             &scan.elements,
             template,
-            &entry.name,
+            &group.label,
             row(index),
             ROW_STYLE,
         );
     }
-    for (&name, gui) in ROW_NAMES.iter().zip(&ROW_GUIS).skip(state.entries.len()) {
+    for (&name, gui) in ROW_NAMES
+        .iter()
+        .zip(&ROW_GUIS)
+        .skip(state.allies.rows.len())
+    {
         hide_control(name, gui, &scan.elements);
     }
-    let mut next_row = state.entries.len();
+    let mut next_row = state.allies.rows.len();
     if let Some(status) = &state.status {
         show_control(
             STATUS_NAME,
@@ -709,13 +764,18 @@ pub(crate) unsafe fn tick() {
     } else {
         hide_control(STATUS_NAME, &STATUS_GUI, &scan.elements);
     }
-    for (index, entry) in state.enemy_entries.iter().enumerate() {
+    for (index, ((&name, gui), group)) in ENEMY_ROW_NAMES
+        .iter()
+        .zip(&ENEMY_ROW_GUIS)
+        .zip(&state.enemies.rows)
+        .enumerate()
+    {
         show_control(
-            ENEMY_ROW_NAMES[index],
-            &ENEMY_ROW_GUIS[index],
+            name,
+            gui,
             &scan.elements,
             template,
-            &entry.name,
+            &group.label,
             row(next_row + index),
             ENEMY_ROW_STYLE,
         );
@@ -723,11 +783,11 @@ pub(crate) unsafe fn tick() {
     for (&name, gui) in ENEMY_ROW_NAMES
         .iter()
         .zip(&ENEMY_ROW_GUIS)
-        .skip(state.enemy_entries.len())
+        .skip(state.enemies.rows.len())
     {
         hide_control(name, gui, &scan.elements);
     }
-    next_row += state.enemy_entries.len();
+    next_row += state.enemies.rows.len();
     if let Some(status) = &state.enemy_status {
         show_control(
             ENEMY_STATUS_NAME,
@@ -1024,14 +1084,14 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
         return true;
     }
     if defense_control {
-        let has_allies = !state.entries.is_empty();
-        let has_enemies = !state.enemy_entries.is_empty();
+        let has_allies = !state.allies.entries.is_empty();
+        let has_enemies = !state.enemies.entries.is_empty();
         // A valid LAUNCH falls through to the native click dispatcher and aliases FIGHT.
         return !state.defense.click(name, has_allies, has_enemies);
     }
     if air_control {
-        let allies = state.entries.len();
-        let enemies = state.enemy_entries.len();
+        let allies = state.allies.entries.len();
+        let enemies = state.enemies.entries.len();
         return !state.airstrike.click(name, allies, enemies);
     }
     let now = now_ms();
@@ -1057,8 +1117,8 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
         return true;
     }
     if clear {
-        let allies = state.entries.len();
-        let enemies = state.enemy_entries.len();
+        let allies = state.allies.entries.len();
+        let enemies = state.enemies.entries.len();
         clear_roster(&mut state);
         drop(state);
         // Also drop the last test enemy Escadra from the profile so a later FIGHT (or a
@@ -1071,9 +1131,9 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     }
     let limit = if enemy_add { ENEMY_LIMIT } else { ROSTER_LIMIT };
     let len = if enemy_add {
-        state.enemy_entries.len()
+        state.enemies.entries.len()
     } else {
-        state.entries.len()
+        state.allies.entries.len()
     };
     if len == limit {
         if enemy_add {
@@ -1095,10 +1155,10 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
                 entry.name.to_string_lossy()
             );
             if enemy_add {
-                state.enemy_entries.push(entry);
+                state.enemies.push(entry);
                 state.enemy_status = None;
             } else {
-                state.entries.push(entry);
+                state.allies.push(entry);
                 state.status = None;
             }
             sound::button(if enemy_add {
@@ -1131,7 +1191,7 @@ unsafe extern "C" fn on_fleet(fleet: usize) {
         return;
     };
     let mut added = 0;
-    for entry in &state.entries {
+    for entry in &state.allies.entries {
         if design::append(fleet, &entry.path, SIDE_ALLY).is_some() {
             added += 1;
         } else {
@@ -1373,7 +1433,7 @@ unsafe extern "C" fn on_enemy_fleet(
         || airstrike::requested()
         || SESSION
             .try_lock()
-            .map(|state| !state.enemy_entries.is_empty())
+            .map(|state| !state.enemies.entries.is_empty())
             .unwrap_or(false);
     if custom {
         // The native FIGHT handler clears the enemy list right after this seam and links the
@@ -1434,7 +1494,7 @@ unsafe extern "C" fn on_enemy_append(escadra: usize) {
         return;
     };
     let mut added = 0;
-    for entry in &state.enemy_entries {
+    for entry in &state.enemies.entries {
         if design::append(escadra, &entry.path, SIDE_ENEMY).is_some() {
             added += 1;
         } else {
@@ -1511,7 +1571,7 @@ unsafe extern "C" fn on_level(path: usize) {
 /// Called for both explicit CLEAR and leaving Shipworks.
 fn clear_roster(state: &mut Session) {
     damage::clear();
-    for entry in state.entries.drain(..).chain(state.enemy_entries.drain(..)) {
+    for entry in state.allies.drain().chain(state.enemies.drain()) {
         if let Ok(path) = entry.path.to_str() {
             if let Err(error) = std::fs::remove_file(path) {
                 log::warn!("hf_ally: cannot remove test snapshot {path}: {error}");

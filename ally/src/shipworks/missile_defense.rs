@@ -873,7 +873,7 @@ unsafe fn stage_defenders(launch: &mut Launch) -> Result<(), &'static str> {
     }
     let (ally_entries, enemy_entries) = {
         let state = SESSION.try_lock().map_err(|_| "Shipworks roster is busy")?;
-        (state.entries.clone(), state.enemy_entries.clone())
+        (state.allies.entries.clone(), state.enemies.entries.clone())
     };
     if !matches!(launch.roster, Roster::Strike) {
         if let Some(ship) = damage::stage_editor(allies, &launch.replay)? {

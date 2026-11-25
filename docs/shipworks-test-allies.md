@@ -181,7 +181,9 @@ Shipworks session. Hiding them does not clear the rosters or change which ships
 join **FIGHT**.
 
 **ADD** captures the currently edited ship, including unsaved changes. Each press
-adds another copy, and the ship names appear below the buttons.
+adds another copy, and the ship names appear below the buttons. Identical copies
+of the same design share a row, such as `Nomad x2`. Allies and enemies are grouped
+separately. Same-name refits stay on separate rows; each copy still uses a slot.
 
 Choose the usual TEST enemy settings and press the existing **FIGHT** button.
 The edited ship remains your player ship; the added ships join its friendly
@@ -207,6 +209,11 @@ Snapshots are temporary `.seria` files under
 number. Only files created for the current roster are removed on CLEAR or exit. A game
 crash may leave unused files behind; those files are never used to restore a
 roster.
+
+Grouping compares the original snapshot bytes except for the temporary volume
+Node's `m_id` and references to that same ID in `m_master_id` and `m_master.id`.
+Those were the only differences across repeated Steam 1.163 captures of unchanged
+Moral, Gepard and Fenek designs. The snapshots used for deployment are not modified.
 
 ## Native evidence (Steam 1.163)
 

@@ -256,6 +256,41 @@ pub(super) unsafe fn snapshot(serial: u64) -> Result<Entry, String> {
     Ok(Entry { name, path })
 }
 
+/// Compare ADD captures byte for byte, apart from SaveVolume's temporary wrapper ID.
+/// Read only on ADD, not during drawing. Unreadable or unfamiliar captures stay separate.
+pub(super) fn same_snapshot(first: &CStr, second: &CStr) -> bool {
+    let read = |path: &CStr| std::fs::read(path.to_str().ok()?).ok();
+    let (Some(first), Some(second)) = (read(first), read(second)) else {
+        return false;
+    };
+    let (Some(first), Some(second)) = (snapshot_body(&first), snapshot_body(&second)) else {
+        return false;
+    };
+    first.eq(second)
+}
+
+fn snapshot_body(bytes: &[u8]) -> Option<impl Iterator<Item = &[u8]>> {
+    // Steam 1.163 ADD captures start with a fresh Node wrapper. Its generated ID
+    // also appears in direct master links (see docs/shipworks-test-allies.md).
+    let mut lines = bytes
+        .strip_prefix(b"{\r\nm_classname=Node\r\nm_code=7\r\nm_id=")?
+        .split_inclusive(|&byte| byte == b'\n');
+    let volume_id = lines.next()?;
+    std::str::from_utf8(volume_id.strip_suffix(b"\r\n")?)
+        .ok()?
+        .parse::<i64>()
+        .ok()
+        .filter(|&id| id != 0)?;
+    Some(lines.map(move |line| {
+        for key in [b"m_master_id=".as_slice(), b"m_master.id="] {
+            if line.strip_prefix(key) == Some(volume_id) {
+                return key;
+            }
+        }
+        line
+    }))
+}
+
 /// Save the surviving assembly before SCR_MISSILE teardown moves it into map properties.
 /// Caller established the live Creature against the current battle roster on the game thread.
 pub(super) unsafe fn snapshot_damage(

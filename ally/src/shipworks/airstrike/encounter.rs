@@ -141,14 +141,14 @@ unsafe fn stage_defenders(launch: &mut Launch) -> Result<(), &'static str> {
             (
                 enemy_fleet,
                 SIDE_ENEMY,
-                state.enemy_entries.clone(),
+                state.enemies.entries.clone(),
                 Slot::Enemy as fn(usize) -> Slot,
             )
         } else {
             (
                 editor_fleet,
                 SIDE_ALLY,
-                state.entries.clone(),
+                state.allies.entries.clone(),
                 Slot::Ally as fn(usize) -> Slot,
             )
         }
