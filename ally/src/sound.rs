@@ -77,13 +77,19 @@ const SND_SHELL: [&[u8]; 4] = [
     b"shell_out_big_far_04\0",
 ];
 const SHELL_VOLUME: f32 = 45.0;
-const RAID_IMPACT_VOLUME: f32 = 28.0;
-const SND_RAID_IMPACT: [&[u8]; 4] = [
+const SND_RAID_DISTANT: [&[u8]; 4] = [
     b"explosion_small_far_01\0",
     b"explosion_small_far_02\0",
     b"explosion_small_far_03\0",
     b"explosion_small_far_04\0",
 ];
+const SND_RAID_CRACK: [&[u8]; 4] = [
+    b"explosion_med_01\0",
+    b"explosion_med_02\0",
+    b"explosion_med_03\0",
+    b"explosion_med_04\0",
+];
+const SND_RAID_METAL: [&[u8]; 2] = [b"metall_hit_01\0", b"metall_hit_02\0"];
 
 /// Checks that the game function this module calls is the expected build, then logs why it is off otherwise.
 ///
@@ -119,7 +125,7 @@ pub(crate) fn configure_shelling(enabled: bool) {
 /// Call on the game thread after [`verify`] accepts the supported image, while its GUI root
 /// remains live. `name` must contain one NUL-terminated resource name.
 unsafe fn play_sfx(name: &[u8], volume: f32, what: &str) {
-    let result = play_sfx_silent(name, volume);
+    let result = play_sfx_silent(name, volume, 1.0);
     log::info!(
         "ALLY sound ({what}) {} -> {result}",
         String::from_utf8_lossy(&name[..name.len() - 1])
@@ -131,7 +137,7 @@ unsafe fn play_sfx(name: &[u8], volume: f32, what: &str) {
 /// # Safety
 /// Call on the game thread after [`verify`] accepts the supported image, with a live GUI
 /// root and a NUL-terminated resource name.
-unsafe fn play_sfx_silent(name: &[u8], volume: f32) -> f32 {
+unsafe fn play_sfx_silent(name: &[u8], volume: f32, pitch: f32) -> f32 {
     let node: usize = read(GUI_ROOT);
     if node == 0 {
         return -1.0;
@@ -145,7 +151,7 @@ unsafe fn play_sfx_silent(name: &[u8], volume: f32) -> f32 {
         name.as_ptr(),
         node,
         volume,
-        1.0,
+        pitch,
         slot.as_ptr() as *mut f32,
         0,
         0,
@@ -192,17 +198,25 @@ pub(crate) unsafe fn shelling_volley() {
     if !SHELLING_SOUNDS.load(Ordering::Relaxed) {
         return;
     }
-    let _ = play_sfx_silent(SND_SHELL[pick(SND_SHELL.len())], SHELL_VOLUME);
+    let _ = play_sfx_silent(SND_SHELL[pick(SND_SHELL.len())], SHELL_VOLUME, 1.0);
 }
 
-/// A single quiet report for a tactical impact; its stock visual emitter is muted.
-pub(crate) unsafe fn shelling_impact(ordinal: u32) {
-    if SHELLING_SOUNDS.load(Ordering::Relaxed) {
-        let _ = play_sfx_silent(
-            SND_RAID_IMPACT[(ordinal as usize) % SND_RAID_IMPACT.len()],
-            RAID_IMPACT_VOLUME,
-        );
+/// Alternate soft dirt thumps with close, crunchy reports. Use stock sample transients rather
+/// than overdriving the mixer when several shots land together.
+pub(crate) unsafe fn shelling_impact(ground: bool, intensity: f32, cue: u32) {
+    if !SHELLING_SOUNDS.load(Ordering::Relaxed) {
+        return;
     }
+    let variant = (cue >> 8) as usize;
+    let strength = ((cue >> 16) & 0xff) as f32 / 255.0;
+    let pitch = 0.9 + ((cue >> 24) & 0xff) as f32 * (0.23 / 255.0);
+    let (sample, gain) = match (ground, cue & 7) {
+        (true, 0) => return, // Far enough away to see the dirt before hearing another report.
+        (false, 0..=1) => (SND_RAID_METAL[variant % SND_RAID_METAL.len()], 14.0),
+        (false, 2..=6) | (true, 1) => (SND_RAID_CRACK[variant % SND_RAID_CRACK.len()], 19.0),
+        _ => (SND_RAID_DISTANT[variant % SND_RAID_DISTANT.len()], 9.0),
+    };
+    let _ = play_sfx_silent(sample, gain + 6.0 * strength + 6.0 * intensity, pitch);
 }
 
 /// Plays the danger line (the fuel retreat and the retreat key).

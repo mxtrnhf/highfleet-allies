@@ -15,8 +15,9 @@ each mount's output using its live rate, magazine and reload. The estimate
 assumes a full starting magazine, reloads one round at a time, and skips
 tactical crew/perk modifiers. The range (270 km landed, 450 km at cruise
 altitude), travel time and hit model are provisional **game balance** values,
-not real-world ballistics. ETA is the first round's flight time on the map
-timeline for the chosen barrage duration.
+not real-world ballistics. ETA is the first round's flight time at a fixed
+strategic speed of 1 km/s (five seconds minimum). It depends only on distance,
+not on the firing window, battery size or altitude.
 
 Each shell has a small, range-dependent chance of damaging a useful target
 inside the city; most rounds land in the built-up area and count for nothing.
@@ -31,13 +32,17 @@ range-dependent probability shown by the preview. Bright native-geometry tracers
 travel from the firing fleet to the city. When an effective round lands, it is
 counted toward the raid. Long time-compression jumps count all intervening
 landed hits, not just the currently drawn frame.
+The firing window lasts the selected 10, 30 or 60 minutes; the last shells
+are still in flight when it ends. The map shows **LANDING** until they arrive.
 
 At the end of an uninterrupted barrage with effective hits and a hostile
 garrison, a short tactical spectator scene shows incoming rounds and localized
-hits. One fixed shot frames the opening defender group and nearby ground. The
-native impact effect supplies flash, smoke and flying debris. Occasional
-rounds hit the dirt when clear terrain is available in frame; these misses
-are cosmetic and do not consume an effective strategic hit. The raid
+hits. One raised, fixed shot frames the opening defender group and nearby ground.
+The native impact effect supplies flash, smoke and flying debris. Representative
+dirt strikes are spread over clear terrain in the shot and scale with the
+number of rounds that missed (up to 24 displayed ground strikes). Misses
+are cosmetic and do not consume an effective strategic hit. Bursts overlap
+and alternate with quiet gaps instead of landing on a fixed beat. The raid
 represents the barrage rather than replaying all rounds: native
 defender setup deploys up to four ships, with at most three representative
 impacts per ship. Later rounds assigned to a lost ship are skipped.
@@ -46,14 +51,17 @@ falls off from that point and armour reduces exposure behind it. Any real
 module can be hit, including bridges, engines and other critical parts.
 Zero-HP parts use silent native removal; a critical loss can kill a ship.
 No player ship is deployed, and no campaign missile is spawned or consumed.
-Impact reports play one quiet stock sample and follow the same
+The sound mix varies between distant thumps, close cracks and occasional
+metal impacts, with bigger barrages sounding fuller. It follows the same
 `shelling_sounds` setting as the map.
 
 After the last impact, the encounter returns through native missile-scene
-teardown so damaged ships go back to the campaign. No damage is queued for
-normal enemy combat spawns. `shelling raid impact` records local hull changes;
-`shelling raid native return completed` records the teardown, not proof of
-save/reload persistence.
+teardown so damaged ships go back to the campaign. Garrison fleets that take
+actual damage keep full ship records; the campaign no longer discards their
+damage by replacing them with pristine compact designs. No damage is queued
+for normal enemy combat spawns. `shelling raid impact` records local hull
+changes, `shelling campaign damage retained` records the unload opt-out, and
+`shelling raid native return completed` records the teardown.
 
 ## Barrage behaviour
 
@@ -61,8 +69,8 @@ save/reload persistence.
   barrage is under way.
 - The firing fleet's speed is forced to zero every input frame and again after
   the simulation on the map render seam. Its waypoint, move order and altitude
-  are left untouched, so the fleet resumes its original course after the
-  barrage and never lands because of the hold.
+  are left untouched, so the fleet resumes its original course when it stops
+  firing, even while the last rounds are airborne.
 - Barrage time uses the campaign clock (`hourCount_`, `0x143a119c8`), so time
   compression advances the countdown. Leaving the map early or aborting discards
   the barrage; no delayed normal-combat hit remains.
@@ -109,6 +117,14 @@ save/reload persistence.
   The setup (`0x1402d45c0`) and teardown (`0x1402d4f20`) otherwise remain native.
   Teardown moves surviving creatures back into the campaign and recomputes fleet
   state. The normal Combat spawners are untouched.
+- `UpdateStrategicFleet` calls its unload helper at `0x1401126ec`. When
+  `Escadra+0x52c` is enabled and the unload deadline has expired, it can replace
+  expanded ships with a compact design (`0x140111f3e`); the gate checks the
+  timed `m_damageCounter`, not each part's remaining HP. The raid clears the
+  native `canBeUnloaded` flag only on a garrison that takes damage, through the
+  ship's own fleet link. That flag is serialized by `Escadra_RegisterProperties`
+  (`0x14010085b`) and keeps the whole fleet resident, trading memory for
+  preserved ship state without a second damage path.
 - The level is a host for the native encounter contract, not the owner of
   the raid presentation. There is no `Shelling.seria`: cloning the asset
   would still run `SCR_MISSILE`, and a new script would need its own setup and
@@ -177,13 +193,15 @@ cities alone.
   preview control should appear. Select a different fleet with 180 mm guns
   and check that it appears.
 - Left-click a city in preview mode and cycle the duration. Rounds and expected
-  hits should increase; ETA matches the first map burst. Check a target just inside and
-  outside range, landed and airborne.
+  hits should increase while ETA stays the same and matches the first map burst.
+  Change the distance and check a target just inside and outside range,
+  landed and airborne.
 - Press **FIRE**. The fleet's speed must read zero while its waypoint stays
   unchanged, and it must keep its current altitude (airborne stays airborne,
   landed stays landed). The countdown must advance with time compression and
   the gunfire must stop when another fleet is selected. **ABORT** must stop the
-  countdown and let the fleet resume its original course.
+  countdown and let the fleet resume its original course. A completed firing
+  window should also release the fleet while the **LANDING** timer runs.
 - Press **FIRE** and keep both the fleet and target in view. Bright native-line
   shell tracers must visibly travel the whole route, not sit at the muzzle or
   city. Pale bursts are misses; orange bursts are effective hits. Select another
@@ -192,11 +210,11 @@ cities alone.
   Verify the camera frames the whole group and neither chases impacts nor
   shakes. Check that rounds visibly end in stock flashes, smoke and flying
   debris on hulls and dirt, and that it then returns to the map without an
-  ordinary battle. Check the
-  preparation, impact and native-return logs. Compare a deck-armoured hull
-  with an exposed bridge or engine; surviving hit and unhit defenders should
-  return. Verify damaged defenders after the return;
-  save/reload, then enter normal combat and confirm the same damage with no
+  ordinary battle. Compare a single mount and a heavy battery: the latter
+  should have more ground bursts, denser groups and a less uniform sound mix.
+  Check the preparation, impact, unload opt-out and native-return logs.
+  Re-shell the same garrison; damaged survivors should not need expansion.
+  Save/reload, then enter ordinary combat and confirm the same damage and no
   extra hit at spawn. Also check a city with no garrison and a normal missile
   attack, neither of which should open a shelling raid.
 - Compare equally sized groups of 1-180s, Sarmats and Squalls. The installed

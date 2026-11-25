@@ -36,11 +36,27 @@ const COMBAT_EVENTS: usize = 0x1_4029_a7d0;
 const COMBAT_EVENTS_CALL: usize = 0x1_4030_93fa;
 const MAX_DEFENDERS: usize = 4; // Native setup limit.
 const MAX_ROUNDS_PER_DEFENDER: u32 = 3;
-const HITS_PER_COSMETIC_MISS: u32 = 3;
-const OPENING_SECONDS: f64 = 0.8;
-const FLIGHT_SECONDS: f64 = 0.32;
-const IMPACT_GAP_SECONDS: f64 = 0.36;
+const MAX_GROUND_ROUNDS: u32 = 24;
+const MAX_IN_FLIGHT: usize = 6;
+const OPENING_SECONDS: f64 = 0.65;
 const AFTERMATH_SECONDS: f64 = 1.2;
+
+#[derive(Clone, Copy)]
+pub(super) struct Bombardment {
+    pub hits: u32,
+    pub rounds: u32,
+    pub seed: u64,
+}
+
+impl Bombardment {
+    fn ground_rounds(self) -> u32 {
+        let misses = self.rounds.saturating_sub(self.hits);
+        // Compress thousands of real misses into a short scene without making a single gun
+        // and a full battery look alike.
+        let volume_bands = (1 + misses / 100).ilog2();
+        (2 + 3 * volume_bands).min(MAX_GROUND_ROUNDS).min(misses)
+    }
+}
 
 #[derive(Clone, Copy)]
 struct ShipTarget {
@@ -55,6 +71,8 @@ struct Flight {
     direction: f32,
     point: Point,
     fired_at: f64,
+    lands_at: f64,
+    cue: u32,
 }
 
 struct Raid {
@@ -64,19 +82,34 @@ struct Raid {
     hit_impacts: u32,
     ground_impacts: u32,
     opening_count: u8,
-    miss_due: bool,
+    ground_left: u32,
+    intensity: f32,
+    random: u64,
     next_at: f64,
     time: f64,
     finish_at: Option<f64>,
-    flight: Option<Flight>,
+    flights: Vec<Flight>,
     frame: Option<Frame>,
     destroyed: usize,
 }
 
+impl Raid {
+    fn roll(&mut self) -> u32 {
+        self.random ^= self.random << 13;
+        self.random ^= self.random >> 7;
+        self.random ^= self.random << 17;
+        (self.random >> 32) as u32
+    }
+
+    fn sample(&mut self) -> f64 {
+        f64::from(self.roll()) / 4_294_967_296.0
+    }
+}
+
 enum State {
     Idle,
-    Loading(u32),
-    Active(Raid),
+    Loading(Bombardment),
+    Active(Box<Raid>),
 }
 
 static RAID: Mutex<State> = Mutex::new(State::Idle);
@@ -87,8 +120,8 @@ static RAID: Mutex<State> = Mutex::new(State::Idle);
 /// # Safety
 /// Game-thread map input callback with a live campaign, no pending transition,
 /// and borrowed fleets from the current profile.
-pub(super) unsafe fn start(fleets: &[usize], hits: u32) -> bool {
-    if fleets.is_empty() || hits == 0 || read::<u8>(SCENE_FLAGS[2]) != 0 {
+pub(super) unsafe fn start(fleets: &[usize], volume: Bombardment) -> bool {
+    if fleets.is_empty() || volume.hits == 0 || read::<u8>(SCENE_FLAGS[2]) != 0 {
         return false;
     }
     for vector in [SIDE_A, SIDE_B] {
@@ -121,7 +154,7 @@ pub(super) unsafe fn start(fleets: &[usize], hits: u32) -> bool {
         if !matches!(*raid, State::Idle) {
             return false;
         }
-        *raid = State::Loading(hits);
+        *raid = State::Loading(volume);
     }
     let clear: unsafe extern "C" fn(usize) = std::mem::transmute(LINK_VEC_CLEAR);
     let load: unsafe extern "C" fn(*const i8, u8, u8) = std::mem::transmute(LOAD_LEVEL);
@@ -133,8 +166,11 @@ pub(super) unsafe fn start(fleets: &[usize], hits: u32) -> bool {
         push_link(SIDE_A, fleet);
     }
     log::info!(
-        "hf_ally: shelling raid loading: {hits} effective map hits; {} defender fleets",
-        fleets.len()
+        "hf_ally: shelling raid loading: {} effective map hits from {} rounds; {} representative ground rounds; {} defender fleets",
+        volume.hits,
+        volume.rounds,
+        volume.ground_rounds(),
+        fleets.len(),
     );
     load(c"Missile.seria".as_ptr(), 0, 0);
     true
@@ -261,23 +297,27 @@ extern "C" fn is_raid() -> bool {
 
 unsafe extern "C" fn after_setup() -> u8 {
     if let Ok(mut state) = RAID.lock() {
-        if let State::Loading(hits) = *state {
+        if let State::Loading(volume) = *state {
             let now = read::<f64>(CLOCK);
-            *state = State::Active(Raid {
-                hits,
+            let ground_left = volume.ground_rounds();
+            // Allocate raid-local storage once, at native setup, not in the render callback.
+            *state = State::Active(Box::new(Raid {
+                hits: volume.hits,
                 opening_defenders: [0; MAX_DEFENDERS],
                 next_hit: 0,
                 hit_impacts: 0,
                 ground_impacts: 0,
                 opening_count: 0,
-                miss_due: false,
+                ground_left,
+                intensity: ground_left as f32 / MAX_GROUND_ROUNDS as f32,
+                random: volume.seed.rotate_right(23).max(1),
                 next_at: now + OPENING_SECONDS,
                 time: now,
                 finish_at: None,
-                flight: None,
+                flights: Vec::with_capacity(MAX_IN_FLIGHT),
                 frame: None,
                 destroyed: 0,
-            });
+            }));
             return 1;
         }
     }
@@ -348,107 +388,160 @@ unsafe extern "C" fn tick() -> u8 {
     let total = raid
         .hits
         .min(defender_count as u32 * MAX_ROUNDS_PER_DEFENDER);
-    let mut impact = None;
-    if let Some(flight) = raid.flight.as_mut() {
-        let live_target = flight.ship.and_then(|target| {
-            let ship = ship_by_id(&ships, target.ship_id)?;
-            let [x, y] = center(ship)?;
-            flight.point = [x + target.contact_offset[0], y + target.contact_offset[1]];
-            Some((ship, [x + target.aim_offset[0], y + target.aim_offset[1]]))
-        });
-        if now >= flight.fired_at + FLIGHT_SECONDS {
-            if flight.ship.is_none() {
-                raid.ground_impacts += 1;
-                impact = Some((flight.point, None, raid.hit_impacts + raid.ground_impacts));
-            } else if let Some((ship, aim)) = live_target {
-                raid.hit_impacts += 1;
-                raid.miss_due = raid.hit_impacts % HITS_PER_COSMETIC_MISS == 1;
-                impact = Some((
-                    flight.point,
-                    Some((ship, aim, flight.direction)),
-                    raid.hit_impacts + raid.ground_impacts,
-                ));
+    let mut landed = [None; MAX_IN_FLIGHT];
+    let mut slots = landed.iter_mut();
+    raid.flights.retain_mut(|flight| {
+        if let Some([x, y]) = flight
+            .ship
+            .and_then(|target| ship_by_id(&ships, target.ship_id))
+            .and_then(|ship| center(ship))
+        {
+            if let Some(target) = flight.ship {
+                flight.point = [x + target.contact_offset[0], y + target.contact_offset[1]];
             }
-            raid.flight = None;
-            raid.next_at = now + IMPACT_GAP_SECONDS;
         }
+        if now < flight.lands_at {
+            return true;
+        }
+        if let Some(slot) = slots.next() {
+            *slot = Some(*flight);
+        }
+        false
+    });
+    if now >= raid.next_at && raid.flights.len() < MAX_IN_FLIGHT {
+        schedule_round(raid, &ships, defender_count, total, now);
     }
-    if raid.flight.is_none() && now >= raid.next_at {
-        if std::mem::take(&mut raid.miss_due) {
-            if let Some(point) = raid.frame.and_then(|frame| {
-                frame.miss_point(
-                    raid.ground_impacts,
-                    ships.iter().filter_map(|&ship| hull(ship)),
-                )
-            }) {
-                raid.flight = Some(Flight {
-                    ship: None,
-                    direction: if raid.ground_impacts % 2 == 0 {
-                        -1.0
-                    } else {
-                        1.0
-                    },
-                    point,
-                    fired_at: now,
-                });
-            }
-        }
-        // Round-robin over opening slots. A sunk defender's rounds are not moved onto survivors.
-        while raid.flight.is_none() && raid.next_hit < total {
-            let order = raid.next_hit;
-            raid.next_hit += 1;
-            let slot = order as usize % defender_count;
-            let Some(&id) = raid.opening_defenders.get(slot) else {
-                continue;
-            };
-            let Some(ship) = ship_by_id(&ships, id) else {
+    if raid.next_hit >= total && raid.ground_left == 0 && raid.flights.is_empty() {
+        raid.finish_at.get_or_insert(now + AFTERMATH_SECONDS);
+    }
+    let continuing = raid.finish_at.is_none_or(|finish| now < finish);
+    let intensity = raid.intensity;
+    drop(state);
+
+    let mut hits = 0;
+    let mut misses = 0;
+    let mut destroyed = 0;
+    for flight in landed.into_iter().flatten() {
+        let mut point = flight.point;
+        let ground = flight.ship.is_none();
+        if let Some(target) = flight.ship {
+            let Some(ship) = ship_by_id(&ships, target.ship_id)
+                .filter(|&ship| is_ship(ship) && crate::native::live_ship(ship))
+            else {
                 continue;
             };
             let Some([x, y]) = center(ship) else {
                 continue;
             };
-            let direction = if order % 2 == 0 { 1.0 } else { -1.0 };
-            let (aim, point) = strike::aim(ship, direction).unwrap_or(([x, y], [x, y]));
-            raid.flight = Some(Flight {
-                ship: Some(ShipTarget {
+            let aim = [x + target.aim_offset[0], y + target.aim_offset[1]];
+            let Some(report) = strike::apply_to_ship(ship, aim, flight.direction) else {
+                continue;
+            };
+            point = report.point;
+            hits += 1;
+            destroyed += report.destroyed;
+            log::info!(
+                "hf_ally: shelling raid impact: ship={ship:#x}, removed={}, hull {:.0} -> {:.0}",
+                report.destroyed,
+                report.health_before,
+                report.health_after
+            );
+        } else {
+            if !presentation::clear_of_hulls(
+                point,
+                ships
+                    .iter()
+                    .copied()
+                    .filter(|&ship| is_ship(ship) && crate::native::live_ship(ship))
+                    .filter_map(|ship| hull(ship)),
+            ) {
+                continue;
+            }
+            misses += 1;
+        }
+        if point.iter().all(|coordinate| coordinate.is_finite()) {
+            presentation::impact(point, ground, intensity, flight.cue);
+        }
+    }
+    if hits != 0 || misses != 0 {
+        if let Ok(mut state) = RAID.lock() {
+            if let State::Active(raid) = &mut *state {
+                raid.hit_impacts += hits;
+                raid.ground_impacts += misses;
+                raid.destroyed += destroyed;
+            }
+        }
+    }
+    u8::from(continuing)
+}
+
+/// Mix a bounded sample of misses into the existing hit allocation. A lost defender's allotted
+/// hits are skipped; misses never borrow or consume another ship's allocation.
+unsafe fn schedule_round(
+    raid: &mut Raid,
+    ships: &[usize],
+    defender_count: usize,
+    total: u32,
+    now: f64,
+) {
+    while raid.next_hit < total || raid.ground_left != 0 {
+        let hits_left = total - raid.next_hit;
+        let ground_ratio = f64::from(raid.ground_left) / f64::from(raid.ground_left + hits_left);
+        let ground = raid.sample() < ground_ratio;
+        let direction = if raid.sample() < 0.5 { -1.0 } else { 1.0 };
+        let (ship, point) = if ground {
+            raid.ground_left -= 1;
+            let scatter = raid.sample() as f32;
+            let Some(point) = raid.frame.and_then(|frame| {
+                frame.miss_point(scatter, ships.iter().filter_map(|&ship| hull(ship)))
+            }) else {
+                continue;
+            };
+            (None, point)
+        } else {
+            let order = raid.next_hit;
+            raid.next_hit += 1;
+            let Some(&id) = raid.opening_defenders.get(order as usize % defender_count) else {
+                continue;
+            };
+            let Some(ship) = ship_by_id(ships, id) else {
+                continue;
+            };
+            let Some([x, y]) = center(ship) else {
+                continue;
+            };
+            let Some((aim, point)) = strike::aim(ship, direction) else {
+                continue;
+            };
+            (
+                Some(ShipTarget {
                     ship_id: id,
                     aim_offset: [aim[0] - x, aim[1] - y],
                     contact_offset: [point[0] - x, point[1] - y],
                 }),
-                direction,
                 point,
-                fired_at: now,
-            });
-        }
+            )
+        };
+        let lands_at = now + 0.24 + raid.sample() * 0.25;
+        let cue = raid.roll();
+        raid.flights.push(Flight {
+            ship,
+            point,
+            direction,
+            fired_at: now,
+            lands_at,
+            cue,
+        });
+        // Allow overlapping rounds and leave an occasional lull between groups of impacts.
+        let spacing = (0.14 + 0.38 * raid.sample()) * (1.0 - 0.52 * f64::from(raid.intensity));
+        let lull = if raid.sample() < 0.13 {
+            0.28 + raid.sample() * 0.32
+        } else {
+            0.0
+        };
+        raid.next_at = now + spacing + lull;
+        return;
     }
-    if raid.next_hit >= total && raid.flight.is_none() && !raid.miss_due {
-        raid.finish_at.get_or_insert(now + AFTERMATH_SECONDS);
-    }
-    let continuing = raid.finish_at.is_none_or(|finish| now < finish);
-    drop(state);
-
-    if let Some((mut point, hit, ordinal)) =
-        impact.filter(|(point, _, _)| point.iter().all(|coordinate| coordinate.is_finite()))
-    {
-        if let Some((ship, aim, direction)) = hit {
-            if let Some(report) = strike::apply_to_ship(ship, aim, direction) {
-                point = report.point;
-                if let Ok(mut state) = RAID.lock() {
-                    if let State::Active(raid) = &mut *state {
-                        raid.destroyed += report.destroyed;
-                    }
-                }
-                log::info!(
-                    "hf_ally: shelling raid impact: ship={ship:#x}, removed={}, hull {:.0} -> {:.0}",
-                    report.destroyed,
-                    report.health_before,
-                    report.health_after
-                );
-            }
-        }
-        presentation::impact(point, hit.is_none(), ordinal);
-    }
-    u8::from(continuing)
 }
 
 extern "C" fn after_teardown() {
@@ -488,12 +581,14 @@ unsafe extern "C" fn draw_tracer() {
     let State::Active(raid) = &*state else {
         return;
     };
-    let Some(flight) = raid.flight else {
-        return;
-    };
-    let fraction = ((raid.time - flight.fired_at) / FLIGHT_SECONDS) as f32;
+    let time = raid.time;
+    let mut slots = raid.flights.iter().copied();
+    let flights: [Option<Flight>; MAX_IN_FLIGHT] = std::array::from_fn(|_| slots.next());
     drop(state);
-    if fraction.is_finite() && flight.point.iter().all(|n| n.is_finite()) {
-        presentation::tracer(flight.point, flight.direction, fraction);
+    for flight in flights.into_iter().flatten() {
+        let fraction = ((time - flight.fired_at) / (flight.lands_at - flight.fired_at)) as f32;
+        if fraction.is_finite() && flight.point.iter().all(|n| n.is_finite()) {
+            presentation::tracer(flight.point, flight.direction, fraction);
+        }
     }
 }

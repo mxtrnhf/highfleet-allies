@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::estimate::shell_hit;
+use super::estimate::{flight_seconds, shell_hit};
 
 /// Upper bound on individually rendered shells in one frame. All rounds remain simulated; at
 /// extreme cadence the drawn rounds are sampled across the entire route instead of at the muzzle.
@@ -27,9 +27,6 @@ pub const MAX_IMPACTS: usize = 24;
 const MAX_SIMULATED_ROUNDS: u32 = 250_000;
 
 const DRAW_WORLD_LINE: usize = 0x1_4024_8ba0;
-const FLIGHT_FRACTION: f64 = 0.55;
-const MIN_FLIGHT_SECONDS: f64 = 120.0;
-const MAX_FLIGHT_SECONDS: f64 = 1_800.0;
 const BURST_FRACTION: f64 = 0.06;
 const MIN_BURST_SECONDS: f64 = 15.0;
 /// Give the last bursts a visible fade even when the final campaign tick jumps.
@@ -37,12 +34,6 @@ pub(super) const BURST_TAIL: Duration = Duration::from_millis(650);
 const SHELL_LENGTH_WORLD: f32 = 2.8;
 const SHELL_CROSS_WORLD: f32 = 1.8;
 const SHELL_COLOR: u32 = 0xffff_f2a0;
-
-pub(super) fn flight_seconds(duration_seconds: f64) -> f64 {
-    (duration_seconds * FLIGHT_FRACTION)
-        .clamp(MIN_FLIGHT_SECONDS, MAX_FLIGHT_SECONDS)
-        .min(duration_seconds * 0.8)
-}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -121,9 +112,8 @@ pub struct Plan {
     origin: [f32; 2],
     target: [f32; 2],
     start_clock: f64,
-    duration_seconds: f64,
+    end_seconds: f64,
     flight_seconds: f64,
-    launch_window: f64,
     period_seconds: f64,
     rounds: u32,
     burst_lifetime: f64,
@@ -156,10 +146,9 @@ impl Plan {
         {
             return None;
         }
-        let flight_seconds = flight_seconds(duration_seconds);
-        let launch_window = (duration_seconds - flight_seconds).max(1.0);
+        let flight_seconds = flight_seconds((target[0] - origin[0]).hypot(target[1] - origin[1]));
         let rounds = composition.rounds;
-        let period_seconds = launch_window / f64::from(rounds);
+        let period_seconds = duration_seconds / f64::from(rounds);
         let effective_hits = (0..rounds)
             .filter(|&index| shell_hit(seed, index, round_hit_chance))
             .collect();
@@ -167,9 +156,8 @@ impl Plan {
             origin,
             target,
             start_clock,
-            duration_seconds,
+            end_seconds: duration_seconds + flight_seconds,
             flight_seconds,
-            launch_window,
             period_seconds,
             rounds,
             burst_lifetime: (duration_seconds * BURST_FRACTION).max(MIN_BURST_SECONDS),
@@ -189,8 +177,7 @@ impl Plan {
 
     pub fn active_at(&self, elapsed: f64) -> bool {
         elapsed >= 0.0
-            && elapsed <= self.duration_seconds + self.burst_lifetime
-            && self.launch_window > 0.0
+            && elapsed <= self.end_seconds + self.burst_lifetime
             && self.period_seconds > 0.0
             && self.flight_seconds > 0.0
     }
@@ -399,7 +386,7 @@ pub(crate) fn clear() {
 
 /// Effective shells that have landed by this campaign clock, including hits from earlier frames.
 pub(crate) fn landed_hit_count(clock: f64) -> Option<u32> {
-    let state = STATE.try_lock().ok()?;
+    let state = STATE.lock().ok()?;
     let plan = state.plan.as_ref()?;
     Some(plan.landed_hit_count(plan.elapsed(clock)?))
 }
@@ -414,7 +401,7 @@ fn sample(clock: f64) -> bool {
     let Some(elapsed) = plan.elapsed(clock) else {
         return false;
     };
-    let (duration, lifetime) = (plan.duration_seconds, plan.burst_lifetime);
+    let (duration, lifetime) = (plan.end_seconds, plan.burst_lifetime);
     if elapsed < duration {
         state.elapsed = elapsed;
         return true;

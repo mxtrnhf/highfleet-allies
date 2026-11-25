@@ -23,6 +23,10 @@ const PROFILE_FLEETS_BEGIN: usize = 0x1f8;
 const PROFILE_FLEETS_END: usize = 0x200;
 const MAX_PROFILE_FLEETS: usize = 256;
 const ESCADRA_ROLE: usize = 0x3a8;
+// Serialized as `canBeUnloaded` by Escadra_RegisterProperties at 0x14010085b.
+const ESCADRA_CAN_BE_UNLOADED: usize = 0x52c;
+// Creature's campaign Escadra Link, used by native tactical extraction at 0x14020f3d3.
+const CREATURE_ESCADRA_LINK: usize = 0xa70;
 const GARRISON_ROLE: i32 = 2;
 const SIDE_SLOT: usize = 0x178;
 const CITY_RADIUS: f32 = 5.0;
@@ -57,6 +61,7 @@ const _: () = {
     assert!(SHIP_LOAD_TIME + size_of::<f64>() <= size_of::<Creature>());
     assert!(SHIP_DESIGN_NAME + size_of::<EscadraString>() <= size_of::<Creature>());
     assert!(PART_RADIUS + size_of::<f32>() <= size_of::<Body>());
+    assert!(CREATURE_ESCADRA_LINK + size_of::<Link>() <= size_of::<Creature>());
 };
 
 static RANDOM: AtomicU64 = AtomicU64::new(0);
@@ -212,6 +217,7 @@ pub(super) unsafe fn apply_to_ship(
     if !is_ship(ship) {
         return None;
     }
+    let fleet: usize = read(ship + CREATURE_ESCADRA_LINK + offset_of!(Link, target));
     let all_parts = creature_parts(ship);
     let health_before = health_total(&all_parts);
     let parts = impact_parts(ship, all_parts);
@@ -269,12 +275,37 @@ pub(super) unsafe fn apply_to_ship(
             }
         }
     }
+    if budget < MAX_HP_PER_IMPACT {
+        preserve_campaign_damage(fleet);
+    }
     Some(ImpactReport {
         point,
         destroyed,
         health_before,
         health_after: health_total(&creature_parts(ship)),
     })
+}
+
+/// Preserve the garrison's native assembled ship records, including in the campaign save.
+///
+/// # Safety
+/// `fleet` comes from the target Creature's game-owned Escadra Link on the raid thread. Native
+/// side A owns that fleet across the encounter, including when the impacted ship is destroyed.
+unsafe fn preserve_campaign_damage(fleet: usize) {
+    if !plausible(fleet)
+        || !readable_span(fleet, ESCADRA_CAN_BE_UNLOADED + size_of::<u8>())
+        || read::<u16>(fleet + NODE_CODE) != ESCADRA_CLASS
+        || read::<i32>(fleet + ESCADRA_ROLE) != GARRISON_ROLE
+        || read::<u8>(fleet + ESCADRA_CAN_BE_UNLOADED) == 0
+    {
+        return;
+    }
+    // SAFETY: fixed scalar on the verified live fleet. This is the stock opt-out for full designs.
+    // UpdateStrategicFleet's unload helper (0x140111e27 / 0x140111f3e) would otherwise discard
+    // the assembled ship and rebuild it from the design name; partial hull HP is not consulted.
+    ((fleet + ESCADRA_CAN_BE_UNLOADED) as *mut u8).write(0);
+    let id = read::<i64>(fleet + offset_of!(Node, id));
+    log::info!("hf_ally: shelling campaign damage retained: garrison {id}, unload disabled");
 }
 
 fn relative([x, y]: Point, [ox, oy]: Point) -> Point {

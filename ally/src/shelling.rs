@@ -128,7 +128,10 @@ struct Fleet {
 struct Barrage {
     fleet: (usize, i64),
     start_clock: f64,
-    seconds: f64,
+    firing_seconds: f64,
+    flight_seconds: f64,
+    rounds: u32,
+    seed: u64,
     city: [f32; 2],
     completed_at: Option<Instant>,
 }
@@ -218,7 +221,9 @@ unsafe extern "C" fn on_map_frame() {
         };
         menu.barrage
             .as_ref()
-            .filter(|barrage| remaining(barrage, clock).is_some_and(|left| left > 0.0))
+            .filter(|barrage| {
+                remaining(barrage, clock).is_some_and(|left| left > barrage.flight_seconds)
+            })
             .map(|barrage| barrage.fleet.0)
     };
     if let Some(fleet) = firing_fleet {
@@ -260,8 +265,10 @@ unsafe fn map_ready() -> bool {
 }
 
 fn remaining(barrage: &Barrage, clock: f64) -> Option<f64> {
-    (clock.is_finite() && clock >= barrage.start_clock)
-        .then_some(barrage.seconds - (clock - barrage.start_clock) * SECONDS_PER_HOUR)
+    (clock.is_finite() && clock >= barrage.start_clock).then_some(
+        barrage.firing_seconds + barrage.flight_seconds
+            - (clock - barrage.start_clock) * SECONDS_PER_HOUR,
+    )
 }
 
 fn countdown_text(seconds: f64) -> String {
@@ -505,11 +512,9 @@ pub(crate) unsafe fn tick() {
     // Keep the firing fleet stationary every input frame, before the 200 ms paint gate:
     // a move order can arrive at any time. Only horizontal movement is cancelled; the
     // hold never writes the altitude fields, so an airborne fleet stays airborne.
-    if let Some(barrage) = menu
-        .barrage
-        .as_ref()
-        .filter(|barrage| remaining(barrage, clock).is_some_and(|left| left > 0.0))
-    {
+    if let Some(barrage) = menu.barrage.as_ref().filter(|barrage| {
+        remaining(barrage, clock).is_some_and(|left| left > barrage.flight_seconds)
+    }) {
         hold_fleet(barrage.fleet.0);
     }
     if let Some(barrage) = menu.barrage.as_mut() {
@@ -518,7 +523,14 @@ pub(crate) unsafe fn tick() {
                 let finished = *barrage.completed_at.get_or_insert(wall_now);
                 if active && wall_now.duration_since(finished) >= visual::BURST_TAIL {
                     let city = barrage.city;
-                    let hits = visual::landed_hit_count(clock).unwrap_or(0);
+                    let Some(hits) = visual::landed_hit_count(clock) else {
+                        return;
+                    };
+                    let volume = encounter::Bombardment {
+                        hits,
+                        rounds: barrage.rounds,
+                        seed: barrage.seed,
+                    };
                     menu.barrage = None;
                     menu.phase = Phase::Closed;
                     menu.next_sound = None;
@@ -530,7 +542,7 @@ pub(crate) unsafe fn tick() {
                         let fleets = strike::garrison_fleets(city);
                         if fleets.is_empty() {
                             "BARRAGE: NO GARRISON"
-                        } else if encounter::start(&fleets, hits) {
+                        } else if encounter::start(&fleets, volume) {
                             return; // The level loader may have invalidated the campaign GUI.
                         } else {
                             "BOMBARDMENT COULD NOT START"
@@ -575,7 +587,10 @@ pub(crate) unsafe fn tick() {
             .is_some_and(|fleet| fleet.identity == barrage.fleet)
     });
     let firing_left = firing.and_then(|barrage| remaining(barrage, clock));
-    let sound_gap = firing_left.filter(|left| *left > 0.0).map(|_| SOUND_GAP_MS);
+    let launch_left = firing
+        .zip(firing_left)
+        .map(|(barrage, left)| left - barrage.flight_seconds);
+    let sound_gap = launch_left.filter(|left| *left > 0.0).map(|_| SOUND_GAP_MS);
     let mut play_sound = false;
     if let Some(gap_ms) = sound_gap {
         if active && menu.next_sound.is_none_or(|next| wall_now >= next) {
@@ -605,8 +620,10 @@ pub(crate) unsafe fn tick() {
     let has_notice = notice.is_some();
     let text = fleet.as_ref().map(|fleet| {
         if let Some(left) = firing_left {
-            if left > 0.0 {
-                format!("FIRING  {} LEFT", countdown_text(left))
+            if let Some(launch) = launch_left.filter(|&launch| launch > 0.0) {
+                format!("FIRING  {} LEFT", countdown_text(launch))
+            } else if left > 0.0 {
+                format!("LANDING  {} LEFT", countdown_text(left))
             } else {
                 "SHELLS LANDING".into()
             }
@@ -618,7 +635,7 @@ pub(crate) unsafe fn tick() {
                 Display::PickCity => "SELECT A CITY ON THE MAP".into(),
                 Display::Preview { city, duration } => {
                     let distance = (fleet.position[0] - city[0]).hypot(fleet.position[1] - city[1]);
-                    match estimate(distance, fleet.altitude, fleet.rounds, duration) {
+                    match estimate(distance, fleet.altitude, fleet.rounds) {
                         Some(Estimate::OutOfRange {
                             distance_km,
                             range_km,
@@ -879,7 +896,7 @@ pub(crate) unsafe fn on_click(name: &str, gui: usize, button: usize) -> bool {
         }
         let distance = (fleet.position[0] - city[0]).hypot(fleet.position[1] - city[1]);
         let Some(Estimate::InRange { expected_hits, .. }) =
-            estimate(distance, fleet.altitude, fleet.rounds, duration)
+            estimate(distance, fleet.altitude, fleet.rounds)
         else {
             menu.notice(now, "OUT OF RANGE");
             return true;
@@ -923,7 +940,10 @@ pub(crate) unsafe fn on_click(name: &str, gui: usize, button: usize) -> bool {
         menu.barrage = Some(Barrage {
             fleet: fleet.identity,
             start_clock: clock,
-            seconds: visual_seconds,
+            firing_seconds: visual_seconds,
+            flight_seconds: estimate::flight_seconds(distance),
+            rounds: fleet.rounds,
+            seed,
             city,
             completed_at: None,
         });

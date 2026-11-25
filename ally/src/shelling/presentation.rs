@@ -19,9 +19,11 @@ const GROUND_HEIGHT_AT: usize = 0x1_402e_e0c0;
 const GROUND_POINT_COUNT: usize = 0x1_4800_ee1c;
 const SPAWN_EXPLOSION_FX: usize = 0x1_401c_7270;
 const MAX_ZOOM: f32 = 1.8;
-const FRAME_PADDING: [f32; 2] = [180.0, 150.0];
+const FRAME_PADDING: [f32; 2] = [140.0, 170.0];
+const CAMERA_LIFT: f32 = 110.0;
 const MISS_CLEARANCE: f32 = 95.0;
 const MAX_MISS_DROP: f32 = 650.0;
+const GROUND_SEARCH_SAMPLES: usize = 9;
 
 thread_local! {
     // Scope audio suppression to our synchronous FX invocation, not all explosions in a raid.
@@ -44,7 +46,8 @@ pub(super) struct Hull {
 pub(super) struct Frame {
     center: Point,
     extent: Point,
-    miss_points: [Option<Point>; 2],
+    ground_x: Point,
+    ground_y: Point,
 }
 
 impl Frame {
@@ -64,39 +67,49 @@ impl Frame {
                 max[axis] = max[axis].max(center[axis] + radius);
             }
         }
-        let miss_points = [min[0] - MISS_CLEARANCE, max[0] + MISS_CLEARANCE].map(|x| {
-            ground_point(x).filter(|&[_, y]| (min[1]..=max[1] + MAX_MISS_DROP).contains(&y))
-        });
-        for [x, y] in miss_points.into_iter().flatten() {
-            min[0] = min[0].min(x);
-            max[0] = max[0].max(x);
-            max[1] = max[1].max(y);
+        let ground_x = [min[0] - MISS_CLEARANCE, max[0] + MISS_CLEARANCE];
+        let max_drop = max[1] + MAX_MISS_DROP;
+        let mut ground_y = [min[1], max[1]];
+        for i in 0..GROUND_SEARCH_SAMPLES {
+            let fraction = i as f32 / (GROUND_SEARCH_SAMPLES - 1) as f32;
+            let x = ground_x[0] + (ground_x[1] - ground_x[0]) * fraction;
+            if let Some([_, y]) = ground_point(x).filter(|&[_, y]| (min[1]..=max_drop).contains(&y))
+            {
+                ground_y[1] = ground_y[1].max(y);
+            }
         }
         Some(Self {
-            center: [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5],
-            extent: [
-                max[0] - min[0] + FRAME_PADDING[0] * 2.0,
-                max[1] - min[1] + FRAME_PADDING[1] * 2.0,
+            center: [
+                (ground_x[0] + ground_x[1]) * 0.5,
+                (min[1] + ground_y[1]) * 0.5 - CAMERA_LIFT,
             ],
-            miss_points,
+            extent: [
+                ground_x[1] - ground_x[0] + FRAME_PADDING[0] * 2.0,
+                ground_y[1] - min[1] + FRAME_PADDING[1] * 2.0,
+            ],
+            ground_x,
+            ground_y,
         })
     }
 
-    pub(super) fn miss_point(
+    /// Sample another piece of actual terrain in the same fixed shot.
+    ///
+    /// # Safety
+    /// Same live game-thread landscape as [`Self::capture`].
+    pub(super) unsafe fn miss_point(
         self,
-        ordinal: u32,
+        scatter: f32,
         hulls: impl Iterator<Item = Hull> + Clone,
     ) -> Option<Point> {
-        let mut points = self.miss_points;
-        if !ordinal.is_multiple_of(2) {
-            points.swap(0, 1);
-        }
-        points.into_iter().flatten().find(|&[x, y]| {
-            hulls.clone().all(|hull| {
-                let [hx, hy] = hull.center;
-                (x - hx).hypot(y - hy) > hull.radius + MISS_CLEARANCE * 0.5
+        (0..GROUND_SEARCH_SAMPLES)
+            .filter_map(|i| {
+                let fraction = (scatter + i as f32 / GROUND_SEARCH_SAMPLES as f32).fract();
+                ground_point(self.ground_x[0] + (self.ground_x[1] - self.ground_x[0]) * fraction)
             })
-        })
+            .find(|&point| {
+                (self.ground_y[0]..=self.ground_y[1] + 32.0).contains(&point[1])
+                    && clear_of_hulls(point, hulls.clone())
+            })
     }
 
     /// Apply the same camera to the entire battle draw, then put stock state back.
@@ -134,6 +147,13 @@ impl Frame {
     }
 }
 
+pub(super) fn clear_of_hulls([x, y]: Point, mut hulls: impl Iterator<Item = Hull>) -> bool {
+    hulls.all(|hull| {
+        let [hx, hy] = hull.center;
+        (x - hx).hypot(y - hy) > hull.radius + MISS_CLEARANCE * 0.5
+    })
+}
+
 unsafe fn ground_point(x: f32) -> Option<Point> {
     if !x.is_finite() || read::<i32>(GROUND_POINT_COUNT) <= 0 {
         return None;
@@ -152,18 +172,23 @@ unsafe fn ground_point(x: f32) -> Option<Point> {
 /// # Safety
 /// Game-thread raid tick with the native world and effects manager initialized. `point` is a
 /// finite world coordinate. The stock effect routine owns all objects it creates.
-pub(super) unsafe fn impact(point: Point, ground: bool, ordinal: u32) {
+pub(super) unsafe fn impact(point: Point, ground: bool, intensity: f32, cue: u32) {
     // ABI from World_ThermalPass at 0x140128aee. The +0x10 request field controls
     // visual size; the last float is the light's z. Kind 0 is an ordinary burst.
     let spawn: unsafe extern "C" fn(*const Point, f32, i32, f32, f32, f32, u8, i32, f32) =
         std::mem::transmute(SPAWN_EXPLOSION_FX);
-    let size = if ground { 19.0 } else { 15.0 };
+    let variation = (cue & 0xff) as f32 / 255.0;
+    let size = if ground {
+        13.0 + 5.0 * variation + 5.0 * intensity
+    } else {
+        15.0 + 4.0 * variation
+    };
     let _ = QUIET_IMPACT.try_with(|quiet| {
         let previous = quiet.replace(true);
         spawn(&point, 0.0, 0, size, 0.0, 0.0, 0, 41, 1.0);
         quiet.set(previous);
     });
-    sound::shelling_impact(ordinal);
+    sound::shelling_impact(ground, intensity, cue);
 }
 
 extern "C" fn use_quiet_impact() -> u8 {
