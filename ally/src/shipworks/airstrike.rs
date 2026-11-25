@@ -174,9 +174,9 @@ pub(super) struct Panel {
     last_click: Option<(&'static CStr, u64)>,
 }
 
-// Icon, scrollbar track, and thumb for each group.
-static OVERLAYS: Mutex<[[Option<OverlaySprite>; 3]; ROWS_PER_PAGE]> =
-    Mutex::new([[None; 3]; ROWS_PER_PAGE]);
+// Icon, selected loadout, scrollbar track, and thumb for each group.
+static OVERLAYS: Mutex<[[Option<OverlaySprite>; 4]; ROWS_PER_PAGE]> =
+    Mutex::new([[None; 4]; ROWS_PER_PAGE]);
 
 impl Panel {
     pub(super) const fn new() -> Self {
@@ -355,14 +355,14 @@ impl Panel {
         let group_height =
             (available / ROWS_PER_PAGE as f32 - ROW_GAP).clamp(height * 0.75, height * 1.4);
         let list_step = group_height / LOADOUT_LINES as f32;
-        let mut overlays = [[None; 3]; ROWS_PER_PAGE];
+        let mut overlays = [[None; 4]; ROWS_PER_PAGE];
         for (index, ((names, guis), art)) in ROW_CONTROLS
             .iter()
             .zip(&ROW_GUIS)
             .zip(&mut overlays)
             .enumerate()
         {
-            let [icon, track_art, thumb_art] = art;
+            let [icon, selected_art, track_art, thumb_art] = art;
             let Some(entry) = self.entries.get_mut(first + index) else {
                 hide_row(listed, names, guis);
                 continue;
@@ -475,16 +475,13 @@ impl Panel {
                     let list_right = if scroll_limit == 0 { 1.0 } else { 0.88 };
                     let mut area = cell(0.47, list_right, y + list_step * (line as f32 + 0.5));
                     area.dimensions[1] = list_step;
-                    show(
-                        control,
-                        &option.label,
-                        area,
-                        if loadout == entry.loadout {
-                            PICKER_SELECTED_STYLE
-                        } else {
-                            PICKER_ROW_STYLE
-                        },
-                    );
+                    let style = if loadout == entry.loadout {
+                        *selected_art = Some(OverlaySprite::selection(area, frame_size));
+                        PICKER_SELECTED_STYLE
+                    } else {
+                        PICKER_ROW_STYLE
+                    };
+                    show(control, &option.label, area, style);
                 } else {
                     hide_control(names[control].to_bytes_with_nul(), &guis[control], listed);
                 }
@@ -835,11 +832,11 @@ unsafe fn hide_row(
 
 fn clear_overlays() {
     if let Ok(mut frame) = OVERLAYS.try_lock() {
-        frame.fill([None; 3]);
+        frame.fill([None; 4]);
     }
 }
 
-/// Draw the atlas silhouettes and scrollbar overlays in the editor label pass.
+/// Draw silhouettes, selection highlights, and scrollbars in the editor label pass.
 pub(super) unsafe fn render_overlays() {
     let Some(frame) = OVERLAYS.try_lock().ok().map(|frame| *frame) else {
         return;

@@ -36,6 +36,7 @@ const ANIMATION_DIMENSIONS: usize = 0x188;
 const ALPHA_BLEND: u32 = 2;
 const TRACK_COLOR: u32 = 0xff6a_7074;
 const PICKER_COLOR: u32 = 0xffe4_d9ac;
+const PICKER_SELECTION_TINT: u32 = 0x40a4_d77a;
 
 pub(super) const PICKER_ROW_STYLE: ControlStyle = ControlStyle {
     button: false,
@@ -86,6 +87,21 @@ impl OverlaySprite {
             keep_aspect: true,
         }
     }
+
+    /// Paint inside the selected row without creating a native input control.
+    pub(super) fn selection(mut row: ControlGeometry, frame: [f32; 2]) -> Self {
+        row.dimensions[1] *= 0.9;
+        Self::solid_rect(row, frame, PICKER_SELECTION_TINT)
+    }
+
+    fn solid_rect(area: ControlGeometry, frame: [f32; 2], color: u32) -> Self {
+        Self {
+            name: c"white16",
+            area: screen_area(area, frame),
+            color,
+            keep_aspect: false,
+        }
+    }
 }
 
 fn screen_area(mut area: ControlGeometry, [width, height]: [f32; 2]) -> ControlGeometry {
@@ -117,12 +133,8 @@ pub(super) fn scrollbar_art(
         dimensions: [width * 0.75, thumb_height],
     };
     track.dimensions[0] *= 0.56;
-    [(track, TRACK_COLOR), (thumb, PICKER_COLOR)].map(|(area, color)| OverlaySprite {
-        name: c"white16",
-        area: screen_area(area, frame),
-        color,
-        keep_aspect: false,
-    })
+    [(track, TRACK_COLOR), (thumb, PICKER_COLOR)]
+        .map(|(area, color)| OverlaySprite::solid_rect(area, frame, color))
 }
 
 /// Read the live editor input cached by HGE. GUI positions are screen-centered.

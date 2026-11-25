@@ -75,7 +75,8 @@ static CHOICE_GUIS: [AtomicUsize; CHOICE_NAMES.len()] =
 static SCROLL_UP_GUI: AtomicUsize = AtomicUsize::new(0);
 static SCROLL_DOWN_GUI: AtomicUsize = AtomicUsize::new(0);
 static SCROLL_BAR_GUI: AtomicUsize = AtomicUsize::new(0);
-static SCROLLBAR_ART: Mutex<Option<[OverlaySprite; 2]>> = Mutex::new(None);
+// Selected row, scrollbar track, and thumb.
+static PICKER_OVERLAYS: Mutex<[Option<OverlaySprite>; 3]> = Mutex::new([None; 3]);
 
 const STATS_TABLE: usize = 0x1_43a3_3bf0;
 const STATS_LIMIT: usize = 4096;
@@ -288,7 +289,7 @@ impl Panel {
         self.open = false;
         self.picker = None;
         self.page = None;
-        set_scrollbar_art(None);
+        set_picker_overlays([None; 3]);
         damage::preview(MissileDefense, None);
     }
 
@@ -487,7 +488,7 @@ impl Panel {
         self.last_click = Some((id, now));
         if id == TYPE_NAME && !self.choices.is_empty() {
             self.picker = if self.picker.is_some() {
-                set_scrollbar_art(None);
+                set_picker_overlays([None; 3]);
                 None
             } else {
                 Some(Picker {
@@ -514,7 +515,7 @@ impl Panel {
             {
                 self.selected = picker.first + row;
                 self.picker = None;
-                set_scrollbar_art(None);
+                set_picker_overlays([None; 3]);
             } else {
                 return false;
             }
@@ -643,7 +644,9 @@ impl Picker {
         } else {
             0.0
         };
-        let art = if limit > 0 {
+        let mut overlays = [None; 3];
+        let [selected_art, track_art, thumb_art] = &mut overlays;
+        if limit > 0 {
             let track = vertical_slider(ControlGeometry {
                 position: [right - gutter * 0.75, y],
                 dimensions: [gutter * 0.5, height],
@@ -659,38 +662,42 @@ impl Picker {
                 first != self.first || rows != self.visible,
             );
             self.first = (value * limit as f32).round() as usize;
-            Some(scrollbar_art(track, frame_size, rows, limit, self.first))
+            let [track, thumb] = scrollbar_art(track, frame_size, rows, limit, self.first);
+            *track_art = Some(track);
+            *thumb_art = Some(thumb);
         } else {
             hide_control(SCROLL_BAR.to_bytes_with_nul(), &SCROLL_BAR_GUI, listed);
             self.first = 0;
-            None
-        };
+        }
         self.visible = rows;
-        set_scrollbar_art(art);
 
         for (row, (name, gui)) in CHOICE_NAMES.into_iter().zip(&CHOICE_GUIS).enumerate() {
             let index = self.first + row;
             if let Some(choice) = choices.get(index).filter(|_| row < rows) {
+                let row_area = ControlGeometry {
+                    position: [x - gutter * 0.5, top + row_height * (row as f32 + 0.5)],
+                    dimensions: [width - gutter, row_height],
+                };
+                let style = if index == selected {
+                    *selected_art = Some(OverlaySprite::selection(row_area, frame_size));
+                    PICKER_SELECTED_STYLE
+                } else {
+                    PICKER_ROW_STYLE
+                };
                 show_control(
                     name.to_bytes_with_nul(),
                     gui,
                     listed,
                     template,
                     &choice.label,
-                    ControlGeometry {
-                        position: [x - gutter * 0.5, top + row_height * (row as f32 + 0.5)],
-                        dimensions: [width - gutter, row_height],
-                    },
-                    if index == selected {
-                        PICKER_SELECTED_STYLE
-                    } else {
-                        PICKER_ROW_STYLE
-                    },
+                    row_area,
+                    style,
                 );
             } else {
                 hide_control(name.to_bytes_with_nul(), gui, listed);
             }
         }
+        set_picker_overlays(overlays);
         let arrow_height = row_height.min(height * 0.5);
         for (name, gui, label, visible, arrow_y) in [
             (
@@ -775,18 +782,18 @@ unsafe fn hide_picker(listed: &[usize]) {
     ]) {
         hide_control(name.to_bytes_with_nul(), gui, listed);
     }
-    set_scrollbar_art(None);
+    set_picker_overlays([None; 3]);
 }
 
-fn set_scrollbar_art(art: Option<[OverlaySprite; 2]>) {
-    if let Ok(mut frame) = SCROLLBAR_ART.try_lock() {
+fn set_picker_overlays(art: [Option<OverlaySprite>; 3]) {
+    if let Ok(mut frame) = PICKER_OVERLAYS.try_lock() {
         *frame = art;
     }
 }
 
 pub(super) unsafe fn render_overlays() {
-    if let Some(art) = SCROLLBAR_ART.try_lock().ok().and_then(|frame| *frame) {
-        draw_sprites(art.into_iter());
+    if let Some(art) = PICKER_OVERLAYS.try_lock().ok().map(|frame| *frame) {
+        draw_sprites(art.into_iter().flatten());
     }
 }
 

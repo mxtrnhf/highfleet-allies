@@ -3,8 +3,9 @@
 **v1.3.48 — Airstrike:** In standalone Shipworks, expand **>** and choose
 **A.C.E. → AIRSTRIKE**. **ADD PLANE** adds a group. Click its plane name to
 cycle craft types; click a loadout row to equip it. The list shows up to three
-options at a time; drag the native scrollbar or use the mouse wheel or arrows. The
-label includes each weapon's per-plane count, so `2x BOMBS 250` and
+options at a time; drag the native scrollbar or use the mouse wheel or arrows.
+The selected loadout has a translucent green highlight when its row is visible.
+Each label includes the per-plane weapon count, so `2x BOMBS 250` and
 `4x BOMBS 250` show up separately. Each page holds four plane groups. Set the number
 with the **1–15** slider and multiply it with the **1–8x** slider, up to 120
 planes per group. **X** removes one group and **RESET** clears all air groups,
@@ -92,6 +93,7 @@ MISSILE DEFENSE**. The panel on the right starts level with **TEST** when
 there's room beside the toolbar. Click the current missile to open a list of
 strategic missiles from the game's live part definitions. Click a row to
 select it, or scroll with the mouse wheel, arrows, or draggable scrollbar.
+The selected missile has a translucent green highlight when its row is visible.
 **CLOSE MISSILE LIST** keeps the current selection. Then click **LAUNCH**;
 no **TEST** click is required. Launch starts one missile encounter:
 
@@ -317,7 +319,9 @@ and LAUNCH rows. Open the missile list; select a conventional type and a
 nuclear type by clicking their rows. With more than five live types, scroll
 to both ends using the wheel, arrows, and scrollbar. Reopen the list to
 check the highlight and close it without changing the selection. Switch
-to Airstrike and verify its loadout picker still scrolls.
+to Airstrike; change the selected loadout in two groups and scroll the
+selected rows out of and back into view. The highlight follows each
+selection without covering the scrollbar or interfering with clicks.
 
 For deployment, try all four roster rows above once with AIRBORNE and once with
 GROUND; use at least five total ships in one run to exercise the extra slots.
