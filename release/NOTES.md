@@ -1,8 +1,8 @@
 # HighFleet Allies v@PACK_VERSION@
 
-**Experimental prerelease — not stable.** Features and balance may change, and
-some new encounters have not been validated in game. Back up your saves and
-configuration before trying it.
+**Experimental prerelease — not stable.** The maintainer has validated the
+changes in game, but features and balance may still change. Back up your saves
+and configuration before trying it.
 
 Includes **hf_ally v@ALLY_VERSION@**, **hf_ai v@AI_VERSION@**, **hf_qol v@QOL_VERSION@**, and the updated **Allies Manual V2** (`Allies_Manual_V2.pdf`).
 
@@ -15,9 +15,8 @@ Includes **hf_ally v@ALLY_VERSION@**, **hf_ai v@AI_VERSION@**, **hf_qol v@QOL_VE
 - **Shipworks usability:** Identical same-name roster snapshots are grouped with counts; different refits remain separate. Missile and aircraft-loadout pickers have scrolling and selected-row highlights.
 - **Diagnostics and compatibility:** Improved hang diagnostics and hook lock handling; QoL pre-fire warnings now use patchy source validation.
 
-Many of the latest Airstrike, Silent Strike, damage-preservation and nuclear
-changes still need in-game validation. Nuclear damage may differ from campaign
-results. Please report reproducible problems with logs.
+Nuclear damage may differ from campaign results and remains under investigation.
+Please report reproducible problems with logs.
 
 ## Install
 
