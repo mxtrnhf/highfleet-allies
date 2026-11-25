@@ -635,7 +635,7 @@ unsafe extern "C" fn render() {
     if read::<u8>(EDITOR_MODE) == 0 {
         return;
     }
-    super::airstrike::render_icons();
+    airstrike::render_overlays();
     let Some(preview) = PREVIEWS
         .try_lock()
         .ok()

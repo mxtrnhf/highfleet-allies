@@ -116,6 +116,21 @@ pub struct Arm {
     kind: Kind,
 }
 
+impl Arm {
+    /// Shipworks has no inventory display. Show the actual per-plane payload
+    /// quantities so variants with the same ordnance type remain distinguishable.
+    pub(crate) fn airstrike_label(&self) -> String {
+        if self.parts.is_empty() {
+            return self.label.clone();
+        }
+        self.parts
+            .iter()
+            .map(|(name, count)| format!("{count}x {}", item_label(name)))
+            .collect::<Vec<_>>()
+            .join(" + ")
+    }
+}
+
 /// A plane type of the game's craft table (`PLANE_TLL`): vanilla T-7 and LA-29, and whatever a mod registered (qol `planes`).
 pub struct Craft {
     /// the game name (`CRAFT_SB15`)

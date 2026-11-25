@@ -1,9 +1,11 @@
 # Shipworks test encounters
 
-**v1.3.45 — Airstrike:** In standalone Shipworks, expand **>** and choose
+**v1.3.47 — Airstrike:** In standalone Shipworks, expand **>** and choose
 **A.C.E. → AIRSTRIKE**. **ADD PLANE** adds a group. Click its plane name to
 cycle craft types; click a loadout row to equip it. The list shows up to three
-options at a time; scroll with the mouse wheel or the arrows. Set the number
+options at a time; drag the scrollbar or use the mouse wheel or arrows. The
+label includes each weapon's per-plane count, so `2x BOMBS 250` and
+`4x BOMBS 250` show up separately. Each page holds four plane groups. Set the number
 with the **1–15** slider and multiply it with the **1–8x** slider, up to 120
 planes per group. **X** removes one group and **RESET** clears all air groups,
 not the ship roster. Aircraft and loadouts come from the live game tables;

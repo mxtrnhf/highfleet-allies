@@ -50,7 +50,7 @@ const HEADER_CONTROLS: [&CStr; 11] = [
 static HEADER_GUIS: [AtomicUsize; HEADER_CONTROLS.len()] =
     [const { AtomicUsize::new(0) }; HEADER_CONTROLS.len()];
 
-const ROWS_PER_PAGE: usize = 2;
+const ROWS_PER_PAGE: usize = 4;
 const ENTRY_LIMIT: usize = 8;
 const MAX_PLANES: u8 = 15;
 const MAX_MULTIPLIER: u8 = 8;
@@ -62,7 +62,8 @@ const MULTIPLIER: usize = 3;
 const FIRST_LOADOUT: usize = 4;
 const SCROLL_UP: usize = FIRST_LOADOUT + LOADOUT_LINES;
 const SCROLL_DOWN: usize = SCROLL_UP + 1;
-const GROUP_CONTROLS: usize = SCROLL_DOWN + 1;
+const SCROLL_BAR: usize = SCROLL_DOWN + 1;
+const GROUP_CONTROLS: usize = SCROLL_BAR + 1;
 const ROW_CONTROLS: [[&CStr; GROUP_CONTROLS]; ROWS_PER_PAGE] = [
     [
         c"SW_AIR_CRAFT1",
@@ -74,6 +75,7 @@ const ROW_CONTROLS: [[&CStr; GROUP_CONTROLS]; ROWS_PER_PAGE] = [
         c"SW_AIR_L1C",
         c"SW_AIR_UP1",
         c"SW_AIR_DOWN1",
+        c"SW_AIR_BAR1",
     ],
     [
         c"SW_AIR_CRAFT2",
@@ -85,6 +87,31 @@ const ROW_CONTROLS: [[&CStr; GROUP_CONTROLS]; ROWS_PER_PAGE] = [
         c"SW_AIR_L2C",
         c"SW_AIR_UP2",
         c"SW_AIR_DOWN2",
+        c"SW_AIR_BAR2",
+    ],
+    [
+        c"SW_AIR_CRAFT3",
+        c"SW_AIR_DEL3",
+        c"SW_AIR_COUNT3",
+        c"SW_AIR_MULT3",
+        c"SW_AIR_L3A",
+        c"SW_AIR_L3B",
+        c"SW_AIR_L3C",
+        c"SW_AIR_UP3",
+        c"SW_AIR_DOWN3",
+        c"SW_AIR_BAR3",
+    ],
+    [
+        c"SW_AIR_CRAFT4",
+        c"SW_AIR_DEL4",
+        c"SW_AIR_COUNT4",
+        c"SW_AIR_MULT4",
+        c"SW_AIR_L4A",
+        c"SW_AIR_L4B",
+        c"SW_AIR_L4C",
+        c"SW_AIR_UP4",
+        c"SW_AIR_DOWN4",
+        c"SW_AIR_BAR4",
     ],
 ];
 static ROW_GUIS: [[AtomicUsize; GROUP_CONTROLS]; ROWS_PER_PAGE] =
@@ -116,6 +143,8 @@ const ALL_PARTS: usize = 0x1_43a1_39f0;
 const HGE: usize = 0x1_43a1_19e0;
 const GET_MOUSE_POS: usize = 0x1_4017_3870;
 const GET_MOUSE_WHEEL: usize = 0x1_4017_3890;
+const GET_KEY_DOWN: usize = 0x1_4017_38b0;
+const MOUSE_LEFT: i32 = 1;
 const MEDIA: usize = 0x1_43a1_19e8;
 const GET_ANIMATION: usize = 0x1_4017_0230;
 const HGE_RENDERER: usize = 0x1_439e_8670;
@@ -126,6 +155,9 @@ const QUAD_BLEND: usize = 0x168;
 const QUAD_SIZE: usize = 0x170;
 const ANIMATION_DIMENSIONS: usize = 0x188;
 const ALPHA_BLEND: u32 = 2;
+const ICON_COLOR: u32 = 0xffe4_d9ac;
+const TRACK_COLOR: u32 = 0xff6a_7074;
+const ACTIVE_THUMB_COLOR: u32 = 0xffa4_d77a;
 
 struct Craft {
     key: CString,
@@ -172,18 +204,34 @@ pub(super) struct Panel {
     ground: bool,
     preserve: bool,
     damage_page: Option<usize>,
+    scroll_drag: Option<ScrollDrag>,
+    left_was_down: bool,
     error: Option<&'static CStr>,
     last_click: Option<(&'static CStr, u64)>,
 }
 
 #[derive(Clone, Copy)]
-struct Icon {
+struct OverlaySprite {
     name: &'static CStr,
-    position: [f32; 2],
-    size: f32,
+    area: ControlGeometry,
+    color: u32,
+    keep_aspect: bool,
 }
 
-static ICONS: Mutex<[Option<Icon>; ROWS_PER_PAGE]> = Mutex::new([const { None }; ROWS_PER_PAGE]);
+struct PointerInput {
+    position: [f32; 2],
+    wheel: i32,
+    left_down: bool,
+}
+
+struct ScrollDrag {
+    group: usize,
+    grab_offset: f32,
+}
+
+// Icon, scrollbar track, and thumb for each group.
+static OVERLAYS: Mutex<[[Option<OverlaySprite>; 3]; ROWS_PER_PAGE]> =
+    Mutex::new([[None; 3]; ROWS_PER_PAGE]);
 
 impl Panel {
     pub(super) const fn new() -> Self {
@@ -196,6 +244,8 @@ impl Panel {
             ground: false,
             preserve: false,
             damage_page: None,
+            scroll_drag: None,
+            left_was_down: false,
             error: None,
             last_click: None,
         }
@@ -234,8 +284,9 @@ impl Panel {
     pub(super) fn close(&mut self) {
         self.open = false;
         self.damage_page = None;
+        self.scroll_drag = None;
         self.error = None;
-        clear_icons();
+        clear_overlays();
         damage::preview(Airstrike, None);
     }
 
@@ -250,6 +301,7 @@ impl Panel {
         dropdown_open: bool,
     ) {
         if !self.open || dropdown_open {
+            self.scroll_drag = None;
             hide(listed);
             return;
         }
@@ -288,18 +340,10 @@ impl Panel {
         } else {
             c"[ ] PRESERVE DAMAGE"
         };
-        show(6, preserve_label, cell(0.0, 0.65, top), BUTTON_STYLE);
-        show(
-            7,
-            if self.damage_page.is_some() {
-                c"BACK"
-            } else {
-                c"DMG VIEW"
-            },
-            cell(0.65, 1.0, top),
-            BUTTON_STYLE,
-        );
         if let Some(index) = self.damage_page {
+            self.scroll_drag = None;
+            show(6, preserve_label, cell(0.0, 0.65, top), BUTTON_STYLE);
+            show(7, c"BACK", cell(0.65, 1.0, top), BUTTON_STYLE);
             for control in 0..6 {
                 hide_control(
                     HEADER_CONTROLS[control].to_bytes_with_nul(),
@@ -310,7 +354,7 @@ impl Panel {
             for (names, guis) in ROW_CONTROLS.iter().zip(&ROW_GUIS) {
                 hide_row(listed, names, guis);
             }
-            clear_icons();
+            clear_overlays();
             let (count, page) = damage::pages(Airstrike, index);
             let title = page.as_ref().map_or_else(
                 || c"NO COMBAT RESULTS".into(),
@@ -355,20 +399,38 @@ impl Panel {
             );
         }
         damage::preview(Airstrike, None);
-        let top = top + step;
-        show(0, c"ADD PLANE", cell(0.0, 0.55, top), BUTTON_STYLE);
-        show(1, c"RESET", cell(0.55, 1.0, top), BUTTON_STYLE);
-        let list_step = height * 0.42;
-        let mouse = wheel_input([frame_width, frame_height]);
+        show(0, c"ADD PLANE", cell(0.0, 0.23, top), BUTTON_STYLE);
+        show(1, c"RESET", cell(0.23, 0.40, top), BUTTON_STYLE);
+        show(6, preserve_label, cell(0.40, 0.77, top), BUTTON_STYLE);
+        show(7, c"DMG VIEW", cell(0.77, 1.0, top), BUTTON_STYLE);
+        let pointer = pointer_input([frame_width, frame_height]);
+        let left_down = pointer.as_ref().is_some_and(|input| input.left_down);
+        let new_press = left_down && !self.left_was_down;
+        self.left_was_down = left_down;
+        if !left_down {
+            self.scroll_drag = None;
+        }
+        let screen_area = |mut area: ControlGeometry| {
+            area.position[0] += frame_width * 0.5;
+            area.position[1] += frame_height * 0.5;
+            area
+        };
         let first = self.page * ROWS_PER_PAGE;
-        let mut y = top + step;
-        let mut icons = [const { None }; ROWS_PER_PAGE];
-        for (index, ((names, guis), icon)) in ROW_CONTROLS
+        let mut y = top + height * 0.5 + ROW_GAP;
+        // One compact left stack and three list rows side by side. Reserve the
+        // footer before sizing the four rows so it stays reachable.
+        let available = frame_height * 0.5 - y - step - height * 0.65;
+        let group_height =
+            (available / ROWS_PER_PAGE as f32 - ROW_GAP).clamp(height * 0.75, height * 1.4);
+        let list_step = group_height / LOADOUT_LINES as f32;
+        let mut overlays = [[None; 3]; ROWS_PER_PAGE];
+        for (index, ((names, guis), art)) in ROW_CONTROLS
             .iter()
             .zip(&ROW_GUIS)
-            .zip(&mut icons)
+            .zip(&mut overlays)
             .enumerate()
         {
+            let [icon, track_art, thumb_art] = art;
             let Some(entry) = self.entries.get_mut(first + index) else {
                 hide_row(listed, names, guis);
                 continue;
@@ -388,45 +450,101 @@ impl Panel {
                     style,
                 );
             };
-            show(CRAFT, &craft.label, cell(0.12, 0.44, y), BUTTON_STYLE);
-            show(REMOVE, c"X", cell(0.89, 1.0, y), BUTTON_STYLE);
+            let group_cell = |from, to, offset: f32, ratio: f32| {
+                let mut area = cell(from, to, y + group_height * offset);
+                area.dimensions[1] = group_height * ratio;
+                area
+            };
+            show(
+                CRAFT,
+                &craft.label,
+                group_cell(0.10, 0.39, 0.21, 0.42),
+                BUTTON_STYLE,
+            );
+            show(
+                REMOVE,
+                c"X",
+                group_cell(0.39, 0.47, 0.21, 0.42),
+                BUTTON_STYLE,
+            );
             for (control, value, max, suffix, offset) in [
-                (FINE, &mut entry.count, MAX_PLANES, c" PLANES", -0.23),
+                (FINE, &mut entry.count, MAX_PLANES, c" PLANES", 0.57),
                 (
                     MULTIPLIER,
                     &mut entry.multiplier,
                     MAX_MULTIPLIER,
                     c"x",
-                    0.23,
+                    0.85,
                 ),
             ] {
-                let mut area = cell(0.44, 0.89, y + height * offset);
-                area.dimensions[1] = height * 0.39;
                 show_slider(
                     names[control],
                     &guis[control],
                     listed,
                     template,
-                    area,
+                    group_cell(0.0, 0.47, offset, 0.23),
                     value,
                     max,
                     suffix,
                     self.restore_counts,
                 );
             }
-            let list_top = y + height * 0.52 + ROW_GAP;
-            let lines = craft.loadouts.len().min(LOADOUT_LINES);
-            let list_bottom = list_top + list_step * lines as f32;
-            if let Some(([x, mouse_y], scroll)) = mouse {
-                if (left..right).contains(&x) && (list_top..list_bottom).contains(&mouse_y) {
-                    entry.scroll_loadouts(craft, -(scroll as isize));
+            let list_left = left + panel_width * 0.47;
+            let list_bottom = y + group_height;
+            if let Some(input) = &pointer {
+                let [x, mouse_y] = input.position;
+                if (list_left..right).contains(&x) && (y..list_bottom).contains(&mouse_y) {
+                    entry.scroll_loadouts(craft, -(input.wheel as isize));
                 }
+            }
+            let scroll_limit = craft.loadouts.len().saturating_sub(LOADOUT_LINES);
+            if scroll_limit != 0 {
+                let mut track = group_cell(0.88, 0.95, 0.5, 0.96);
+                // Keep the invisible native hit control wider than the visible track.
+                show(SCROLL_BAR, c"", track, LOADOUT_STYLE);
+                let thumb = scrollbar_thumb(
+                    track,
+                    scroll_limit,
+                    &mut entry.first_loadout,
+                    pointer.as_ref(),
+                    new_press,
+                    first + index,
+                    &mut self.scroll_drag,
+                );
+                track.dimensions[0] *= 0.56;
+                *track_art = Some(OverlaySprite {
+                    name: c"white16",
+                    area: screen_area(track),
+                    color: TRACK_COLOR,
+                    keep_aspect: false,
+                });
+                *thumb_art = Some(OverlaySprite {
+                    name: c"white16",
+                    area: screen_area(thumb),
+                    color: if self
+                        .scroll_drag
+                        .as_ref()
+                        .is_some_and(|drag| drag.group == first + index)
+                    {
+                        ACTIVE_THUMB_COLOR
+                    } else {
+                        ICON_COLOR
+                    },
+                    keep_aspect: false,
+                });
+            } else {
+                hide_control(
+                    names[SCROLL_BAR].to_bytes_with_nul(),
+                    &guis[SCROLL_BAR],
+                    listed,
+                );
             }
             for line in 0..LOADOUT_LINES {
                 let control = FIRST_LOADOUT + line;
                 let loadout = entry.first_loadout + line;
                 if let Some(option) = craft.loadouts.get(loadout) {
-                    let mut area = cell(0.0, 0.89, list_top + list_step * (line as f32 + 0.5));
+                    let list_right = if scroll_limit == 0 { 1.0 } else { 0.88 };
+                    let mut area = cell(0.47, list_right, y + list_step * (line as f32 + 0.5));
                     area.dimensions[1] = list_step;
                     show(
                         control,
@@ -452,44 +570,48 @@ impl Panel {
                 ),
             ] {
                 if visible {
-                    let mut area = cell(0.89, 1.0, list_top + list_step * line);
+                    let mut area = cell(0.95, 1.0, y + list_step * line);
                     area.dimensions[1] = list_step;
                     show(control, label, area, LOADOUT_STYLE);
                 } else {
                     hide_control(names[control].to_bytes_with_nul(), &guis[control], listed);
                 }
             }
-            *icon = Some(Icon {
+            let size = (group_height * 0.48).min(panel_width * 0.10);
+            *icon = Some(OverlaySprite {
                 name: craft.icon,
-                position: [
-                    left + panel_width * 0.06 + frame_width * 0.5,
-                    y + frame_height * 0.5,
-                ],
-                size: (height * 1.3).min(panel_width * 0.12),
+                area: screen_area(ControlGeometry {
+                    position: [left + panel_width * 0.05, y + group_height * 0.21],
+                    dimensions: [size, size],
+                }),
+                color: ICON_COLOR,
+                keep_aspect: true,
             });
-            y = list_bottom + height * 0.5 + ROW_GAP;
+            y = list_bottom + ROW_GAP;
         }
-        if let Ok(mut frame) = ICONS.try_lock() {
-            *frame = icons;
+        if let Ok(mut frame) = OVERLAYS.try_lock() {
+            *frame = overlays;
         }
         self.restore_counts = false;
 
+        let y = y + height * 0.5;
         let pages = self.entries.len().div_ceil(ROWS_PER_PAGE);
         if pages > 1 {
             if let Ok(page) = CString::new(format!("PAGE {} / {}  >", self.page + 1, pages)) {
-                show(5, &page, cell(0.0, 1.0, y), BUTTON_STYLE);
+                show(5, &page, cell(0.0, 0.30, y), BUTTON_STYLE);
             }
-            y += step;
         } else {
             hide_control(PAGE.to_bytes_with_nul(), &HEADER_GUIS[5], listed);
         }
+        let start_left = if pages > 1 { 0.30 } else { 0.0 };
+        let half = (1.0 + start_left) * 0.5;
         show(
             2,
             if self.ground { c"GROUND" } else { c"AIRBORNE" },
-            cell(0.0, 0.5, y),
+            cell(start_left, half, y),
             BUTTON_STYLE,
         );
-        show(3, c"LAUNCH", cell(0.5, 1.0, y), BUTTON_STYLE);
+        show(3, c"LAUNCH", cell(half, 1.0, y), BUTTON_STYLE);
         if let Some(error) = self
             .error
             .or(self.crafts.is_empty().then_some(c"NO AIRCRAFT AVAILABLE"))
@@ -552,6 +674,7 @@ impl Panel {
             self.page = page;
         } else if id == RESET {
             self.entries.clear();
+            self.scroll_drag = None;
             self.page = 0;
             self.restore_counts = true;
             self.ground = false;
@@ -561,6 +684,7 @@ impl Panel {
             let pages = self.entries.len().div_ceil(ROWS_PER_PAGE);
             if pages > 1 {
                 self.page = (self.page + 1) % pages;
+                self.scroll_drag = None;
                 self.restore_counts = true;
             }
         } else if id == LAUNCH {
@@ -629,8 +753,12 @@ impl Panel {
             .find_map(|(row, names)| names.iter().position(|&name| name == id).map(|i| (row, i)))
         {
             let index = self.page * ROWS_PER_PAGE + row;
+            if control == SCROLL_BAR {
+                return false;
+            }
             if control == REMOVE && index < self.entries.len() {
                 self.entries.remove(index);
+                self.scroll_drag = None;
                 self.page = self
                     .page
                     .min(self.entries.len().saturating_sub(1) / ROWS_PER_PAGE);
@@ -669,8 +797,50 @@ impl Entry {
     }
 }
 
+fn scrollbar_thumb(
+    track: ControlGeometry,
+    limit: usize,
+    first: &mut usize,
+    pointer: Option<&PointerInput>,
+    new_press: bool,
+    group: usize,
+    drag: &mut Option<ScrollDrag>,
+) -> ControlGeometry {
+    let [x, y] = track.position;
+    let [width, height] = track.dimensions;
+    let top = y - height * 0.5;
+    let visible_fraction = LOADOUT_LINES as f32 / (limit + LOADOUT_LINES) as f32;
+    let thumb_height = height * visible_fraction.max(0.20);
+    let travel = height - thumb_height;
+    let offset = |first| travel * first as f32 / limit as f32;
+    if let Some(pointer) = pointer {
+        let [mouse_x, mouse_y] = pointer.position;
+        let mouse_offset = mouse_y - top;
+        if new_press && (x - mouse_x).abs() <= width * 0.5 && (0.0..=height).contains(&mouse_offset)
+        {
+            let on_thumb = mouse_offset - offset(*first);
+            *drag = Some(ScrollDrag {
+                group,
+                grab_offset: if (0.0..=thumb_height).contains(&on_thumb) {
+                    on_thumb
+                } else {
+                    thumb_height * 0.5
+                },
+            });
+        }
+        if let Some(drag) = drag.as_ref().filter(|drag| drag.group == group) {
+            let ratio = ((mouse_offset - drag.grab_offset) / travel).clamp(0.0, 1.0);
+            *first = (ratio * limit as f32).round() as usize;
+        }
+    }
+    ControlGeometry {
+        position: [x, top + offset(*first) + thumb_height * 0.5],
+        dimensions: [width * 0.75, thumb_height],
+    }
+}
+
 /// Read the live editor input cached by HGE. GUI positions are screen-centered.
-unsafe fn wheel_input([width, height]: [f32; 2]) -> Option<([f32; 2], i32)> {
+unsafe fn pointer_input([width, height]: [f32; 2]) -> Option<PointerInput> {
     let hge = read::<usize>(HGE);
     if hge == 0 {
         return None;
@@ -678,15 +848,16 @@ unsafe fn wheel_input([width, height]: [f32; 2]) -> Option<([f32; 2], i32)> {
     // SAFETY: Shipworks' frame pass runs on the HGE owner thread. These getters
     // read scalar fields only; the position getter fills two local f32s.
     let wheel: unsafe extern "C" fn(usize) -> i32 = std::mem::transmute(GET_MOUSE_WHEEL);
-    let delta = wheel(hge);
-    if delta == 0 {
-        return None;
-    }
+    let key_down: unsafe extern "C" fn(usize, i32) -> u8 = std::mem::transmute(GET_KEY_DOWN);
     let position: unsafe extern "C" fn(usize, *mut f32, *mut f32) =
         std::mem::transmute(GET_MOUSE_POS);
     let (mut x, mut y) = (0.0, 0.0);
     position(hge, &mut x, &mut y);
-    Some(([x - width * 0.5, y - height * 0.5], delta))
+    (x.is_finite() && y.is_finite()).then(|| PointerInput {
+        position: [x - width * 0.5, y - height * 0.5],
+        wheel: wheel(hge),
+        left_down: key_down(hge, MOUSE_LEFT) != 0,
+    })
 }
 
 fn selection(crafts: &[Craft], entry: Entry) -> Option<(&Craft, &Loadout)> {
@@ -738,7 +909,7 @@ unsafe fn catalog() -> Vec<Craft> {
                 .filter_map(|arm| {
                     Some(Loadout {
                         key: CString::new(arm.key.as_str()).ok()?,
-                        label: CString::new(arm.label.as_str()).ok()?,
+                        label: CString::new(arm.airstrike_label()).ok()?,
                     })
                 })
                 .collect();
@@ -785,7 +956,7 @@ pub(super) unsafe fn hide(listed: &[usize]) {
     for (names, guis) in ROW_CONTROLS.iter().zip(&ROW_GUIS) {
         hide_row(listed, names, guis);
     }
-    clear_icons();
+    clear_overlays();
     damage::preview(Airstrike, None);
 }
 
@@ -799,9 +970,9 @@ unsafe fn hide_row(
     }
 }
 
-fn clear_icons() {
-    if let Ok(mut icons) = ICONS.try_lock() {
-        icons.fill_with(|| None);
+fn clear_overlays() {
+    if let Ok(mut frame) = OVERLAYS.try_lock() {
+        frame.fill([None; 3]);
     }
 }
 
@@ -914,13 +1085,13 @@ unsafe fn make_slider(
     gui
 }
 
-/// Draw the atlas silhouette using texture alpha and the native label colour.
+/// Draw the atlas silhouettes and scrollbar overlays in the editor label pass.
 /// Only the POD draw packet is copied; the shared animation isn't edited.
-pub(super) unsafe fn render_icons() {
-    let Some(icons) = ICONS.try_lock().ok().map(|icons| *icons) else {
+pub(super) unsafe fn render_overlays() {
+    let Some(frame) = OVERLAYS.try_lock().ok().map(|frame| *frame) else {
         return;
     };
-    if icons.iter().all(Option::is_none) {
+    if frame.iter().flatten().all(Option::is_none) {
         return;
     }
     let Some(media) = diag::rd::<usize>(MEDIA).filter(|&ptr| ptr != 0) else {
@@ -932,10 +1103,10 @@ pub(super) unsafe fn render_icons() {
     let animation: unsafe extern "C" fn(usize, *const i8) -> usize =
         std::mem::transmute(GET_ANIMATION);
     let render: unsafe extern "C" fn(usize, usize) = std::mem::transmute(GFX_RENDER_QUAD);
-    for icon in icons.iter().flatten() {
+    for sprite in frame.iter().flatten().flatten() {
         // SAFETY: the editor label pass uses the Default shader; animation and
         // texture remain live for the synchronous submit, whose vertices are copied.
-        let source = animation(media, icon.name.as_ptr());
+        let source = animation(media, sprite.name.as_ptr());
         if !diag::readable_span(source, ANIMATION_DIMENSIONS + 8)
             || read::<usize>(source + QUAD_TEXTURE) == 0
         {
@@ -946,7 +1117,14 @@ pub(super) unsafe fn render_icons() {
         if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
             continue;
         }
-        let scale = icon.size / width.max(height);
+        let ControlGeometry {
+            position,
+            mut dimensions,
+        } = sprite.area;
+        if sprite.keep_aspect {
+            let scale = (dimensions[0] / width).min(dimensions[1] / height);
+            dimensions = [width * scale, height * scale];
+        }
         let mut quad = [0u64; QUAD_SIZE / size_of::<u64>()];
         let data = quad.as_mut_ptr() as usize;
         std::ptr::copy_nonoverlapping(source as *const u8, data as *mut u8, QUAD_SIZE);
@@ -955,10 +1133,10 @@ pub(super) unsafe fn render_icons() {
             .enumerate()
         {
             let vertex = data + index * VERTEX_SIZE;
-            write(vertex, icon.position[0] + x * width * scale);
-            write(vertex + 4, icon.position[1] + y * height * scale);
+            write(vertex, position[0] + x * dimensions[0]);
+            write(vertex + 4, position[1] + y * dimensions[1]);
             write(vertex + 8, 0.0f32);
-            write(vertex + 0x18, 0xffe4_d9acu32);
+            write(vertex + 0x18, sprite.color);
         }
         write(data + QUAD_BLEND, ALPHA_BLEND);
         render(renderer, data);
