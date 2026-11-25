@@ -541,7 +541,7 @@ unsafe extern "C" fn load_fight(path: *const i8, resume: u8, flag: u8) {
 /// # Safety
 /// The caller establishes the native object's identity/lifetime on the game thread.
 /// Page checks detect malformed storage; they do not establish ownership.
-unsafe fn native_string(address: usize) -> Option<CString> {
+pub(crate) unsafe fn native_string(address: usize) -> Option<CString> {
     let length = diag::rd::<usize>(address + 0x10)?;
     let capacity = diag::rd::<usize>(address + 0x18)?;
     if length > 256 || length > capacity {

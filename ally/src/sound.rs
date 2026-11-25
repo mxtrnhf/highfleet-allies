@@ -43,6 +43,8 @@ const ENG_SUFFIX: &[u8] = b"_eng";
 static RADIO_SOUNDS: AtomicBool = AtomicBool::new(false);
 /// Pre-combat ALLY and plane-loadout button clicks (independent of `ally_sounds`).
 static BUTTON_SOUNDS: AtomicBool = AtomicBool::new(false);
+/// Strategic shelling barrage, separate from radio chatter so it can be silenced alone.
+static SHELLING_SOUNDS: AtomicBool = AtomicBool::new(false);
 const UNIT_VOLUME_BITS: u32 = 1.0f32.to_bits();
 /// The game retains the status pointer (sound object +0x88) and uses its float as a
 /// volume multiplier each frame. The slots must outlive the native call.
@@ -65,6 +67,23 @@ const SND_JOIN: [&[u8]; 3] = [
 /// `Map_BuildMissileMarkers` (`0x1401c4ee0`), with kind 0xb and base volume 30.0.
 const SND_BUTTON: &[u8] = b"button_01\0";
 const BUTTON_VOLUME: f32 = 30.0;
+/// The four stock `Media/Snd/shell_out_big_far_*` samples (6.5 s each). One quiet
+/// report per volley is enough; overlapping bass and rumble layers made the barrage
+/// much louder than the rest of the game.
+const SND_SHELL: [&[u8]; 4] = [
+    b"shell_out_big_far_01\0",
+    b"shell_out_big_far_02\0",
+    b"shell_out_big_far_03\0",
+    b"shell_out_big_far_04\0",
+];
+const SHELL_VOLUME: f32 = 45.0;
+const RAID_IMPACT_VOLUME: f32 = 28.0;
+const SND_RAID_IMPACT: [&[u8]; 4] = [
+    b"explosion_small_far_01\0",
+    b"explosion_small_far_02\0",
+    b"explosion_small_far_03\0",
+    b"explosion_small_far_04\0",
+];
 
 /// Checks that the game function this module calls is the expected build, then logs why it is off otherwise.
 ///
@@ -89,23 +108,39 @@ pub(crate) fn configure(radio: bool, buttons: bool) {
     BUTTON_SOUNDS.store(buttons, Ordering::Relaxed);
 }
 
+/// Enables or disables the shelling barrage report.
+pub(crate) fn configure_shelling(enabled: bool) {
+    SHELLING_SOUNDS.store(enabled, Ordering::Relaxed);
+}
+
 /// Plays one sound by its `sound.res` name (NUL-terminated); `what` is for the log.
 ///
 /// # Safety
 /// Call on the game thread after [`verify`] accepts the supported image, while its GUI root
 /// remains live. `name` must contain one NUL-terminated resource name.
 unsafe fn play_sfx(name: &[u8], volume: f32, what: &str) {
+    let result = play_sfx_silent(name, volume);
+    log::info!(
+        "ALLY sound ({what}) {} -> {result}",
+        String::from_utf8_lossy(&name[..name.len() - 1])
+    );
+}
+
+/// Plays one sound without a log line. Used for the restrained shelling report.
+///
+/// # Safety
+/// Call on the game thread after [`verify`] accepts the supported image, with a live GUI
+/// root and a NUL-terminated resource name.
+unsafe fn play_sfx_silent(name: &[u8], volume: f32) -> f32 {
     let node: usize = read(GUI_ROOT);
     if node == 0 {
-        log::info!("ALLY sound ({what}) skipped: no global node yet");
-        return;
+        return -1.0;
     }
-
     let slot_index = SFX_NEXT.fetch_add(1, Ordering::Relaxed) as usize % SFX_STATUS.len();
     let slot = &SFX_STATUS[slot_index];
     slot.store(UNIT_VOLUME_BITS, Ordering::Relaxed);
     let play: PlaySfxFn = std::mem::transmute(PLAY_SFX);
-    let result = play(
+    play(
         SFX_KIND_STOCK,
         name.as_ptr(),
         node,
@@ -119,12 +154,7 @@ unsafe fn play_sfx(name: &[u8], volume: f32, what: &str) {
         0,
         0.0,
         1,
-    );
-
-    log::info!(
-        "ALLY sound ({what}) {} -> {result}",
-        String::from_utf8_lossy(&name[..name.len() - 1])
-    );
+    )
 }
 
 /// Appends `_eng` to a stock radio name in English, matching `String_AppendEngSuffix` and the
@@ -153,6 +183,25 @@ unsafe fn play_radio(name: &[u8], what: &str) {
 pub(crate) unsafe fn button(what: &str) {
     if BUTTON_SOUNDS.load(Ordering::Relaxed) {
         play_sfx(SND_BUTTON, BUTTON_VOLUME, what);
+    }
+}
+
+/// One restrained distant gun report. The parent limits this to one every few seconds
+/// while the firing fleet is selected, with no bass or rumble layers.
+pub(crate) unsafe fn shelling_volley() {
+    if !SHELLING_SOUNDS.load(Ordering::Relaxed) {
+        return;
+    }
+    let _ = play_sfx_silent(SND_SHELL[pick(SND_SHELL.len())], SHELL_VOLUME);
+}
+
+/// A single quiet report for a tactical impact; its stock visual emitter is muted.
+pub(crate) unsafe fn shelling_impact(ordinal: u32) {
+    if SHELLING_SOUNDS.load(Ordering::Relaxed) {
+        let _ = play_sfx_silent(
+            SND_RAID_IMPACT[(ordinal as usize) % SND_RAID_IMPACT.len()],
+            RAID_IMPACT_VOLUME,
+        );
     }
 }
 

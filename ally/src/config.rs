@@ -18,6 +18,10 @@ pub(crate) struct Config {
     pub(crate) enabled: bool,
     /// Opt-in Shipworks diagnostic termination control. Hidden by default; never saves game state.
     pub(crate) crash_button: bool,
+    /// Opt-in campaign shelling planner and garrison damage.
+    pub(crate) shelling_preview: bool,
+    /// Quiet strategic gunfire and tactical impact reports.
+    pub(crate) shelling_sounds: bool,
     /// Governed dive, native-aimed whole-payload release and pull-out for bomb-carrying allies.
     pub(crate) ally_bombers: bool,
     /// Game seconds the player's ship must have been in the battle before the ally arrives.
@@ -97,6 +101,8 @@ impl Default for Config {
         Self {
             enabled: true,
             crash_button: false,
+            shelling_preview: false,
+            shelling_sounds: true,
             ally_bombers: true,
             ally_delay_seconds: 1.5,
             flagship_leaves: "handover".to_string(),

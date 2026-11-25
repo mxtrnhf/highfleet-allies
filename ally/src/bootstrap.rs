@@ -64,6 +64,7 @@ pub(crate) unsafe fn init() -> bool {
     }
 
     precombat::configure_marker(&config.marker_text);
+    crate::shelling::configure(config.shelling_preview);
     ally_ammo::set_enabled(config.ally_ai_ammo);
     missile_guard::set_autofire(config.ally_zenith_autofire);
     let honor_share = honor_share::set_share(config.ally_honor_share);
@@ -102,12 +103,19 @@ unsafe fn prepare(config: &Config) -> Result<(), String> {
 
     if sound::verify() {
         sound::configure(config.ally_sounds, true);
+        sound::configure_shelling(config.shelling_sounds);
     }
 
     let mut session = PatchSession::new();
     lifecycle_log::install_hooks(&mut session, lifecycle, config.logging.log_creatures)?;
     // The pre-combat ALLY and plane-loadout buttons are part of the mod; install them whenever it is enabled.
     precombat::install(&mut session, config.logging.gui_inspect)?;
+    if config.shelling_preview {
+        if let Err(error) = crate::shelling::install(&mut session) {
+            crate::shelling::configure(false);
+            log::warn!("hf_ally: shelling disabled, encounter hooks unavailable: {error}");
+        }
+    }
     shipworks::install(&mut session, config.crash_button)?;
     ally_ammo::install_refund(&mut session, config.ally_ai_ammo)?;
     battle::install_prize_guard(&mut session, config.spare_prizes)?;

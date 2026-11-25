@@ -1,5 +1,47 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.72 (fixed shelling camera, native impacts and 180 mm HE damage):** hold one shot of the defenders and nearby ground. Incoming tracers end in stock flashes, smoke and flying debris, including cosmetic dirt strikes. Impact sound follows `shelling_sounds`. Hull hits use stock 180 mm HE falloff and armour shielding instead of fixed HP packets; any module can be damaged or destroyed, while the per-hit total stays capped. Native campaign return still uses `Missile.seria`. In-game validation pending.
+
+* **v1.3.71 (prepare full shelling defenders):** use the stock missile encounter's fleet preparation to expand compact campaign ship records before tactical deployment. Preflight the defender properties and design lookups; refuse the raid if preparation does not leave the same number of full ships. This targets the v1.3.70 failure that deployed three-part placeholders even when no shell hit the tactical roster. Accuracy and damage are unchanged. In-game validation pending.
+
+* **v1.3.70 (tactical bombardment and steady map tracers):** completed barrages with a hostile garrison and effective hits open a short spectator raid using the native missile scene's defender lifecycle, without launching missiles. Up to three representative impacts per deployed defender apply localized damage in the live scene; the native teardown returns the damaged ships to the campaign. Normal combat no longer applies queued shelling damage. Map tracers keep their shell IDs all the way to the city, the last impacts fade before the transition, and preview ETA matches the map timeline. Campaign persistence and presentation await in-game validation.
+
+* **v1.3.69 (actual shell trajectories and hull destruction):** the invisible font overlay is replaced by native `Gfx_DrawWorldLine` tracers travelling from the firing fleet to the city. Every round has its own launch, flight, landing and deterministic effective-hit result shared by rendering and damage; effective impacts are queued as they land rather than rolled as one HP batch at completion. At enemy spawn return, before the first tactical frame, each recorded shell damages a localized outer-part cluster and natively removes zero-HP parts, leaving real missing geometry and detached sections. Bridge, master and crew-critical geometry are protected, and template-entry killing is avoided because the native spawner copies dead links. In-game validation pending.
+
+* **v1.3.68 (shelling review fixes):** sound is disabled unless the native sound function passes verification, and the 6.5-second report now waits 6.8–7.8 seconds so it cannot overlap itself. The firing fleet remains held after selecting another fleet. Queued strikes are discarded on a campaign-clock reset and a template's share is consumed only after successful processing. Impact sampling stops iterating at its draw cap. In-game validation pending.
+
+* **v1.3.67 (readable shell tracks, restrained audio and pre-spawn damage):** tracker dots now use the M11-proven native font, remain visible when another fleet is selected, and sample the whole route instead of clustering at the firing fleet. One quiet distant report plays every few seconds with no layered bass, heavy cracks or rumble. Barrage damage is rolled from the full hit volume even after battle extraction empties map-side parts, then applied to each enemy template before the native spawner runs; intact ships no longer spawn and are destroyed by a post-spawn blast. In-game validation pending.
+
+* **v1.3.66 (individual shell trackers and nuclear-style damage):** the map visualizer now draws one small dot per real fired shell at the battery's actual cadence, with lateral spread and a short arc, instead of aggregate salvos. Combat damage now uses the campaign blast kernel: parts are sorted by front edge and energy is spent from the exposed side inward, killing outer parts instead of reddening the whole ship.
+
+* **v1.3.65 (shellshock audio, visualization, deploy fix):** barrages now layer long low `explosion_big_far` booms and heavy shell samples under the reports, with volume and cadence from the firing batteries. The subagent's `visual.rs` is integrated: shells in flight and impact bursts are drawn on the campaign map, scaled by gun family and mount count. STRIKES are no longer cleared on the map->battle transition, which was discarding the damage before the deploy hook could apply it; deploy checks now log the location and strike count.
+
+* **v1.3.64 (combat damage hand-off and barrage audio):** the 18:57 log proved spawned enemy templates were at 100% HP, so strategic map damage never reached combat. A deploy hook now applies the recorded strike fraction to enemy ships spawned for the struck city. Sound volleys now scale with the firing fleet's 180 mm mount count and magazine weights: up to 12 overlapping long samples at high volume. Created kata issue n0r5 for map visualization.
+
+* **v1.3.63 (shelling scale and spawn diagnostics):** per-shell hit chance is now 2% at close range tapering to 0.5%, and each hit applies 120–299 HP to 4–8 parts. The SPAWN log now reports the template health fraction so we can see whether strategic damage reaches combat.
+
+* **v1.3.62 (shelling damage restored):** the v1.3.61 frame-class filter excluded every part, so barrages logged hits but zero HP. Damage is restored: 50–119 HP to 3–5 random parts, floored at 1 HP. The completion notice reports parts and total HP. Part destruction remains disabled because any part death can leave a fleet property that crashes the next fleet update.
+
+* **v1.3.61 (shelling hit spread and frame exclusion):** the crash logs showed 270 hits landing on 2 parts because the nanosecond-seeded pick repeated within one tick. Barrages now use an xorshift stream, and part selection excludes frame/creature classes exactly as the native nuke does. That keeps ships alive while regular parts can be destroyed again.
+
+* **v1.3.60 (lethal shelling, speed-only hold, longer barrages):** durations are now 10, 30 and 60 minutes. The hold only writes fleet speed `+0x158`, leaving the waypoint and altitude alone. Damage is lethal again: 50–119 HP across 3–5 random parts, with the frame/root and bridge/block parts excluded. Ship stats are recalculated once per damaged ship.
+
+* **v1.3.59 (post-simulation altitude hold):** the campaign map render seam now re-pins an airborne firing fleet to cruise altitude after the simulation runs, so the fleet update cannot zero the request and start a descent. Barrage start logs the current altitude.
+
+* **v1.3.58 (non-lethal shelling damage and cruise hold):** barrage damage now floors every part at 1 HP and never calls a kill slot. The 18:08 log showed 4 parts lost immediately before the same fleet-property crash, so part removal is disabled until the fleet aftermath can be handled safely. Airborne firing fleets are pinned to cruise altitude instead of the current altitude, so they cannot continue a descent.
+
+* **v1.3.57 (altitude hold during shelling):** FIRE pins the fleet's requested altitude to its current altitude on every hold pass. An airborne fleet neither lands nor climbs while the barrage runs, and a landed fleet does not take off.
+
+* **v1.3.56 (shelling crash fix):** the damage pass now excludes bridge/block parts and non-Creature fleet properties (map missiles). Killing a bridge removes its ship, and calling `CalculateStats` on a missile corrupts the fleet; `UpdateStrategicFleet` then dereferences a null ship. Barrages now cripple ships without removing them. Barrage start and impact are logged for diagnosis.
+
+* **v1.3.55 (shelling impacts and hold):** both range checks are 1.5× wider (270 km landed, 450 km cruising). A completed barrage now damages the hostile garrison docked at the target city: sampled hits pick random ships and non-master parts, using the campaign part-kill slot. Firing fleets stop horizontally without changing altitude, and the hold runs every input frame.
+
+* **v1.3.54 (shelling fire control):** **FIRE** starts the selected barrage. The estimate now reports expected hits and the chance of at least one hit, both rising with volume. A firing fleet holds position until the barrage ends; **CANCEL** aborts it. Layered distant gunfire plays only while that fleet is selected (`shelling_sounds`). Damage is not applied yet.
+
+* **v1.3.53 (shelling button and gun-specific volume):** moves **SHELLING** above the map coordinate readout on the cockpit layer. Round estimates use each working 180 mm mount's live firing rate, magazine and reload, rather than a flat rate. Standard HE is still unlimited and preview-only.
+
+* **v1.3.52 (strategic shelling preview):** opt-in `shelling_preview` adds a map planner for the selected fleet's working 180 mm guns. Pick a city and cycle through 1, 2, or 5 minutes of unlimited standard HE to preview round count, flight time, and hit chance. Altitude affects range. This build does not fire, damage ships, or change city services. In-game validation pending.
+
 * **v1.3.51 (Shipworks selection highlights):** the selected missile and each plane group's selected loadout get a translucent green row highlight while visible in the picker.
 
 * **v1.3.50 (Missile Defense picker):** click the current missile to open a scrollable list of live strategic missile types. Pick a row directly, or browse with the mouse wheel, arrows, or draggable scrollbar.

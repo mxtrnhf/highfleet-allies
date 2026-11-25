@@ -1912,6 +1912,9 @@ const LABEL_COLOR: u32 = 0xffe9_d329;
 unsafe extern "C" fn on_input_frame() {
     let _hook = diag::scope("on_input_frame");
     crate::shipworks::tick();
+    if PRECOMBAT_UI_READY.load(Ordering::Relaxed) {
+        crate::shelling::tick();
+    }
     tick(0);
 }
 
@@ -2036,6 +2039,9 @@ unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: u
     }
     let name = cstr(gui + GUI_NAME);
     if crate::shipworks::on_click(&name, button) {
+        return true;
+    }
+    if crate::shelling::on_click(&name, gui, button) {
         return true;
     }
     crumb!(
