@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.50 (Missile Defense picker):** click the current missile to open a scrollable list of live strategic missile types. Pick a row directly, or browse with the mouse wheel, arrows, or draggable scrollbar.
+
 * **v1.3.49 (Shipworks roster counts):** identical same-name snapshots appear as one row with a count, e.g. `Nomad x2`. Allies and enemies are grouped separately. Same-name refits stay on separate rows, and each copy still uses a roster slot and deploys separately.
 
 * **v1.3.48 (Airstrike header and scrollbar):** puts the setup and damage buttons on two wider rows so their labels don't overlap. The loadout scrollbar uses the game's native vertical slider input; arrows and mouse-wheel scrolling remain available. Four plane groups still fit per page.

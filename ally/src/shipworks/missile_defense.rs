@@ -19,13 +19,17 @@ use crate::{
     native_layout::{
         Body, Creature, EscadraString, Node, PartStats, SentinelList, NODE_CODE, NODE_OWNER,
     },
-    precombat, sound,
+    sound,
     time::now_ms,
 };
 
 use super::{
+    controls::{
+        render_overlays as draw_sprites, scrollbar_art, show_slider, vertical_slider, wheel_input,
+        EditorControls, OverlaySprite, SliderKind, PICKER_ROW_STYLE, PICKER_SELECTED_STYLE,
+    },
     damage::{self, Replay, Scenario::MissileDefense, Slot},
-    design, native_string, prune_enemy_escadra, show_control, strategic_blast, write,
+    design, hide_control, native_string, prune_enemy_escadra, show_control, strategic_blast, write,
     ControlGeometry, BUTTON_GAP, BUTTON_STYLE, CLICK_DEBOUNCE_MS, ENEMY_LIMIT, ENEMY_LIST,
     LINK_CLEAR_VECTOR, LINK_NODE_STRIDE, LINK_TARGET, ROSTER_LIMIT, ROW_STYLE, SESSION, SIDE_ALLY,
     SIDE_ENEMY, TEST_FIGHT_FLAG,
@@ -39,6 +43,16 @@ const VIEW_NAME: &CStr = c"SW_ACE_DMG";
 const PREV_NAME: &CStr = c"SW_DMG_PREV";
 const NEXT_NAME: &CStr = c"SW_DMG_NEXT";
 const PAGE_NAME: &CStr = c"SW_DMG_PAGE";
+const CHOICE_NAMES: [&CStr; 5] = [
+    c"SW_MSL_ROW1",
+    c"SW_MSL_ROW2",
+    c"SW_MSL_ROW3",
+    c"SW_MSL_ROW4",
+    c"SW_MSL_ROW5",
+];
+const SCROLL_UP: &CStr = c"SW_MSL_UP";
+const SCROLL_DOWN: &CStr = c"SW_MSL_DOWN";
+const SCROLL_BAR: &CStr = c"SW_MSL_BAR";
 const MISSILE_LEVEL: &CStr = c"Missile.seria";
 const EDITOR_LEVEL: &CStr = c"Editor.seria";
 const FRAME_WIDTH: usize = 0x1_43a1_58fc;
@@ -47,6 +61,7 @@ const SCHEMATIC_HEIGHT: f32 = 220.0;
 const PANEL_RIGHT_MARGIN: f32 = 36.0;
 const PANEL_WIDTH_IN_TEST_BUTTONS: f32 = 2.4;
 const PANEL_ROW_GAP: f32 = 8.0;
+const SCROLL_GUTTER_FRACTION: f32 = 0.16;
 static TYPE_GUI: AtomicUsize = AtomicUsize::new(0);
 static START_GUI: AtomicUsize = AtomicUsize::new(0);
 static LAUNCH_GUI: AtomicUsize = AtomicUsize::new(0);
@@ -55,6 +70,12 @@ static VIEW_GUI: AtomicUsize = AtomicUsize::new(0);
 static PREV_GUI: AtomicUsize = AtomicUsize::new(0);
 static NEXT_GUI: AtomicUsize = AtomicUsize::new(0);
 static PAGE_GUI: AtomicUsize = AtomicUsize::new(0);
+static CHOICE_GUIS: [AtomicUsize; CHOICE_NAMES.len()] =
+    [const { AtomicUsize::new(0) }; CHOICE_NAMES.len()];
+static SCROLL_UP_GUI: AtomicUsize = AtomicUsize::new(0);
+static SCROLL_DOWN_GUI: AtomicUsize = AtomicUsize::new(0);
+static SCROLL_BAR_GUI: AtomicUsize = AtomicUsize::new(0);
+static SCROLLBAR_ART: Mutex<Option<[OverlaySprite; 2]>> = Mutex::new(None);
 
 const STATS_TABLE: usize = 0x1_43a3_3bf0;
 const STATS_LIMIT: usize = 4096;
@@ -200,10 +221,18 @@ pub(super) struct Panel {
     open: bool,
     choices: Vec<Missile>,
     selected: usize,
+    picker: Option<Picker>,
     start: DefenderStart,
     preserve: bool,
     page: Option<usize>,
     last_click: Option<(&'static CStr, u64)>,
+}
+
+struct Picker {
+    first: usize,
+    visible: usize,
+    // Apply arrow clicks on the next frame so clicks on rows still match the drawn list.
+    pending_scroll: isize,
 }
 
 static REQUEST: Mutex<Option<Launch>> = Mutex::new(None);
@@ -222,6 +251,7 @@ impl Panel {
             open: false,
             choices: Vec::new(),
             selected: 0,
+            picker: None,
             start: DefenderStart::Airborne,
             preserve: false,
             page: None,
@@ -245,6 +275,7 @@ impl Panel {
             })
             .unwrap_or(0);
         self.choices = choices;
+        self.picker = None;
         self.last_click = None;
         self.open = true;
         log::info!(
@@ -255,27 +286,31 @@ impl Panel {
 
     pub(super) fn close(&mut self) {
         self.open = false;
+        self.picker = None;
         self.page = None;
+        set_scrollbar_art(None);
         damage::preview(MissileDefense, None);
     }
 
     /// Draw against the validated Shipworks TEST template and current GUI list.
     pub(super) unsafe fn draw(
-        &self,
+        &mut self,
         listed: &[usize],
         template: usize,
         [width, height]: [f32; 2],
         top: f32,
         toolbar_right: f32,
+        dropdown_open: bool,
     ) {
-        if !self.open {
+        if !self.open || dropdown_open {
             hide(listed);
             return;
         }
         let frame_width = read::<i32>(FRAME_WIDTH) as f32;
+        let frame_height = read::<i32>(FRAME_HEIGHT) as f32;
         let panel_width =
             (width * PANEL_WIDTH_IN_TEST_BUTTONS).min(frame_width - 2.0 * PANEL_RIGHT_MARGIN);
-        if panel_width <= 0.0 {
+        if panel_width <= 0.0 || frame_height <= 0.0 {
             hide(listed);
             return;
         }
@@ -292,16 +327,47 @@ impl Panel {
             dimensions: [panel_width, height],
         };
         let step = height + PANEL_ROW_GAP;
+        let list_top = y + height * 0.5 + PANEL_ROW_GAP;
+        let list_bottom = frame_height * 0.5 - PANEL_ROW_GAP;
+        let rows = (((list_bottom - list_top) / height) as usize)
+            .min(CHOICE_NAMES.len())
+            .min(self.choices.len());
+        if rows == 0 {
+            self.picker = None;
+        }
         let missile = self.choices.get(self.selected);
         show_control(
             TYPE_NAME.to_bytes_with_nul(),
             &TYPE_GUI,
             listed,
             template,
-            missile.map_or(c"NO STRATEGIC MISSILES", |missile| &missile.label),
+            if self.picker.is_some() {
+                c"CLOSE MISSILE LIST"
+            } else {
+                missile.map_or(c"NO STRATEGIC MISSILES", |missile| &missile.label)
+            },
             row(y),
             BUTTON_STYLE,
         );
+        if let Some(picker) = &mut self.picker {
+            // The list occupies the setup area only while open. Keep the other settings intact.
+            hide_setup(listed);
+            hide_control(VIEW_NAME.to_bytes_with_nul(), &VIEW_GUI, listed);
+            hide_viewer(listed);
+            picker.draw(
+                EditorControls { listed, template },
+                [frame_width, frame_height],
+                ControlGeometry {
+                    position: [x, list_top + height * rows as f32 * 0.5],
+                    dimensions: [panel_width, height * rows as f32],
+                },
+                rows,
+                &self.choices,
+                self.selected,
+            );
+            return;
+        }
+        hide_picker(listed);
         if missile.is_some() {
             show_control(
                 START_NAME.to_bytes_with_nul(),
@@ -335,9 +401,7 @@ impl Panel {
                 BUTTON_STYLE,
             );
         } else {
-            hide_button(listed, START_NAME, &START_GUI);
-            hide_button(listed, LAUNCH_NAME, &LAUNCH_GUI);
-            hide_button(listed, PRESERVE_NAME, &PRESERVE_GUI);
+            hide_setup(listed);
         }
         show_control(
             VIEW_NAME.to_bytes_with_nul(),
@@ -389,7 +453,6 @@ impl Panel {
                 BUTTON_STYLE,
             );
         }
-        let frame_height = read::<i32>(FRAME_HEIGHT) as f32;
         damage::preview(
             MissileDefense,
             page.map(|page| {
@@ -422,6 +485,42 @@ impl Panel {
             return false;
         }
         self.last_click = Some((id, now));
+        if id == TYPE_NAME && !self.choices.is_empty() {
+            self.picker = if self.picker.is_some() {
+                set_scrollbar_art(None);
+                None
+            } else {
+                Some(Picker {
+                    first: self.selected,
+                    visible: 0,
+                    pending_scroll: 0,
+                })
+            };
+            sound::button("Shipworks missile picker");
+            return false;
+        }
+        if let Some(picker) = &mut self.picker {
+            if picker.visible == 0 {
+                return false;
+            }
+            if id == SCROLL_UP && picker.first > 0 {
+                picker.pending_scroll = picker.pending_scroll.saturating_sub(1);
+            } else if id == SCROLL_DOWN && picker.first + picker.visible < self.choices.len() {
+                picker.pending_scroll = picker.pending_scroll.saturating_add(1);
+            } else if let Some(row) = CHOICE_NAMES
+                .iter()
+                .take(picker.visible)
+                .position(|&name| name == id)
+            {
+                self.selected = picker.first + row;
+                self.picker = None;
+                set_scrollbar_art(None);
+            } else {
+                return false;
+            }
+            sound::button("Shipworks missile picker");
+            return false;
+        }
         if id == VIEW_NAME {
             self.page = if self.page.is_some() { None } else { Some(0) };
             sound::button("Shipworks damage viewer");
@@ -449,17 +548,15 @@ impl Panel {
             sound::button("Shipworks preserve damage");
             return false;
         }
-        if id == TYPE_NAME {
-            self.selected = (self.selected + 1) % self.choices.len();
-            sound::button("Shipworks missile type");
-            return false;
-        }
         if id == START_NAME {
             self.start = match self.start {
                 DefenderStart::Airborne => DefenderStart::Ground,
                 DefenderStart::Ground => DefenderStart::Airborne,
             };
             sound::button("Shipworks missile defender start");
+            return false;
+        }
+        if id != LAUNCH_NAME {
             return false;
         }
         let Some(selected) = self.choices.get(self.selected) else {
@@ -512,6 +609,125 @@ impl Panel {
     }
 }
 
+impl Picker {
+    /// Uses the current complete game-thread GUI scan and the validated TEST template.
+    unsafe fn draw(
+        &mut self,
+        controls: EditorControls<'_>,
+        frame_size: [f32; 2],
+        area: ControlGeometry,
+        rows: usize,
+        choices: &[Missile],
+        selected: usize,
+    ) {
+        let EditorControls { listed, template } = controls;
+        let [x, y] = area.position;
+        let [width, height] = area.dimensions;
+        let left = x - width * 0.5;
+        let right = x + width * 0.5;
+        let top = y - height * 0.5;
+        let bottom = y + height * 0.5;
+        let row_height = height / rows as f32;
+        let limit = choices.len().saturating_sub(rows);
+        let mut scroll = std::mem::take(&mut self.pending_scroll);
+        if limit > 0 {
+            if let Some(([mouse_x, mouse_y], delta)) = wheel_input(frame_size) {
+                if (left..right).contains(&mouse_x) && (top..bottom).contains(&mouse_y) {
+                    scroll = scroll.saturating_sub(delta as isize);
+                }
+            }
+        }
+        let first = self.first.saturating_add_signed(scroll).min(limit);
+        let gutter = if limit > 0 {
+            width * SCROLL_GUTTER_FRACTION
+        } else {
+            0.0
+        };
+        let art = if limit > 0 {
+            let track = vertical_slider(ControlGeometry {
+                position: [right - gutter * 0.75, y],
+                dimensions: [gutter * 0.5, height],
+            });
+            // SCROLL_BAR is left to the native dispatcher, just like Airstrike's sliders.
+            let value = show_slider(
+                SCROLL_BAR,
+                &SCROLL_BAR_GUI,
+                controls,
+                track,
+                first as f32 / limit as f32,
+                SliderKind::Scroll,
+                first != self.first || rows != self.visible,
+            );
+            self.first = (value * limit as f32).round() as usize;
+            Some(scrollbar_art(track, frame_size, rows, limit, self.first))
+        } else {
+            hide_control(SCROLL_BAR.to_bytes_with_nul(), &SCROLL_BAR_GUI, listed);
+            self.first = 0;
+            None
+        };
+        self.visible = rows;
+        set_scrollbar_art(art);
+
+        for (row, (name, gui)) in CHOICE_NAMES.into_iter().zip(&CHOICE_GUIS).enumerate() {
+            let index = self.first + row;
+            if let Some(choice) = choices.get(index).filter(|_| row < rows) {
+                show_control(
+                    name.to_bytes_with_nul(),
+                    gui,
+                    listed,
+                    template,
+                    &choice.label,
+                    ControlGeometry {
+                        position: [x - gutter * 0.5, top + row_height * (row as f32 + 0.5)],
+                        dimensions: [width - gutter, row_height],
+                    },
+                    if index == selected {
+                        PICKER_SELECTED_STYLE
+                    } else {
+                        PICKER_ROW_STYLE
+                    },
+                );
+            } else {
+                hide_control(name.to_bytes_with_nul(), gui, listed);
+            }
+        }
+        let arrow_height = row_height.min(height * 0.5);
+        for (name, gui, label, visible, arrow_y) in [
+            (
+                SCROLL_UP,
+                &SCROLL_UP_GUI,
+                c"^",
+                self.first > 0,
+                top + arrow_height * 0.5,
+            ),
+            (
+                SCROLL_DOWN,
+                &SCROLL_DOWN_GUI,
+                c"v",
+                self.first < limit,
+                bottom - arrow_height * 0.5,
+            ),
+        ] {
+            if visible {
+                show_control(
+                    name.to_bytes_with_nul(),
+                    gui,
+                    listed,
+                    template,
+                    label,
+                    ControlGeometry {
+                        position: [right - gutter * 0.25, arrow_y],
+                        dimensions: [gutter * 0.5, arrow_height],
+                    },
+                    PICKER_ROW_STYLE,
+                );
+            } else {
+                hide_control(name.to_bytes_with_nul(), gui, listed);
+            }
+        }
+    }
+}
+
 pub(super) fn is_control(name: &str) -> bool {
     control_id(name).is_some()
 }
@@ -525,32 +741,59 @@ fn control_id(name: &str) -> Option<&'static CStr> {
         VIEW_NAME,
         PREV_NAME,
         NEXT_NAME,
+        SCROLL_UP,
+        SCROLL_DOWN,
     ]
     .into_iter()
+    .chain(CHOICE_NAMES)
     .find(|id| id.to_bytes() == name.as_bytes())
 }
 
-unsafe fn hide_button(listed: &[usize], name: &CStr, slot: &AtomicUsize) {
-    let gui = slot.load(Ordering::Relaxed);
-    // SAFETY: only alter active members of this game-thread scan with the exact identifier.
-    if precombat::listed_shown(listed, gui, name.to_bytes_with_nul()) {
-        precombat::set_gui_active(gui, false);
-    }
-}
-
 pub(super) unsafe fn hide(listed: &[usize]) {
-    hide_button(listed, TYPE_NAME, &TYPE_GUI);
-    hide_button(listed, START_NAME, &START_GUI);
-    hide_button(listed, LAUNCH_NAME, &LAUNCH_GUI);
-    hide_button(listed, PRESERVE_NAME, &PRESERVE_GUI);
-    hide_button(listed, VIEW_NAME, &VIEW_GUI);
+    hide_control(TYPE_NAME.to_bytes_with_nul(), &TYPE_GUI, listed);
+    hide_control(VIEW_NAME.to_bytes_with_nul(), &VIEW_GUI, listed);
+    hide_setup(listed);
+    hide_picker(listed);
     hide_viewer(listed);
 }
 
+unsafe fn hide_setup(listed: &[usize]) {
+    for (name, gui) in [
+        (START_NAME, &START_GUI),
+        (LAUNCH_NAME, &LAUNCH_GUI),
+        (PRESERVE_NAME, &PRESERVE_GUI),
+    ] {
+        hide_control(name.to_bytes_with_nul(), gui, listed);
+    }
+}
+
+unsafe fn hide_picker(listed: &[usize]) {
+    for (name, gui) in CHOICE_NAMES.into_iter().zip(&CHOICE_GUIS).chain([
+        (SCROLL_UP, &SCROLL_UP_GUI),
+        (SCROLL_DOWN, &SCROLL_DOWN_GUI),
+        (SCROLL_BAR, &SCROLL_BAR_GUI),
+    ]) {
+        hide_control(name.to_bytes_with_nul(), gui, listed);
+    }
+    set_scrollbar_art(None);
+}
+
+fn set_scrollbar_art(art: Option<[OverlaySprite; 2]>) {
+    if let Ok(mut frame) = SCROLLBAR_ART.try_lock() {
+        *frame = art;
+    }
+}
+
+pub(super) unsafe fn render_overlays() {
+    if let Some(art) = SCROLLBAR_ART.try_lock().ok().and_then(|frame| *frame) {
+        draw_sprites(art.into_iter());
+    }
+}
+
 unsafe fn hide_viewer(listed: &[usize]) {
-    hide_button(listed, PAGE_NAME, &PAGE_GUI);
-    hide_button(listed, PREV_NAME, &PREV_GUI);
-    hide_button(listed, NEXT_NAME, &NEXT_GUI);
+    hide_control(PAGE_NAME.to_bytes_with_nul(), &PAGE_GUI, listed);
+    hide_control(PREV_NAME.to_bytes_with_nul(), &PREV_GUI, listed);
+    hide_control(NEXT_NAME.to_bytes_with_nul(), &NEXT_GUI, listed);
     damage::preview(MissileDefense, None);
 }
 

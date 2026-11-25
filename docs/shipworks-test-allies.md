@@ -87,11 +87,13 @@ enables keeps its effect but selects the stock `ps_mainNoFishEye` technique
 instead of the map CRT warp, which fixes the skewed and clipped battle frame.
 Flash, cloud and shockwave effects are unchanged.
 
-**v1.3.15 — Missile Defense:** In standalone Shipworks, choose **A.C.E. →
+**Missile Defense (picker updated in v1.3.50):** In standalone Shipworks, choose **A.C.E. →
 MISSILE DEFENSE**. The panel on the right starts level with **TEST** when
-there's room beside the toolbar. Click its first button to cycle through
-strategic missiles from the game's live part definitions, then **LAUNCH**. No
-**TEST** click is required. Launch starts one missile encounter:
+there's room beside the toolbar. Click the current missile to open a list of
+strategic missiles from the game's live part definitions. Click a row to
+select it, or scroll with the mouse wheel, arrows, or draggable scrollbar.
+**CLOSE MISSILE LIST** keeps the current selection. Then click **LAUNCH**;
+no **TEST** click is required. Launch starts one missile encounter:
 
 | Added ships | Encounter |
 |---|---|
@@ -309,10 +311,15 @@ enemies at spawn (including a later wave). Back out from pre-combat and repeat
 after a completed fight; follow either return with an ordinary **TEST → FIGHT**
 to check that the landed setting does not carry over.
 
-v1.3.16 needs a Steam 1.163 playtest. Open Shipworks and launch directly,
-without opening TEST. Check button placement and text fit for the missile type,
-AIRBORNE/GROUND and LAUNCH rows, and cycle through conventional and nuclear
-options. Try all four roster rows above once with AIRBORNE and once with
+In Steam 1.163, open Shipworks and launch directly without opening TEST.
+Check button placement and text fit for the missile type, AIRBORNE/GROUND
+and LAUNCH rows. Open the missile list; select a conventional type and a
+nuclear type by clicking their rows. With more than five live types, scroll
+to both ends using the wheel, arrows, and scrollbar. Reopen the list to
+check the highlight and close it without changing the selection. Switch
+to Airstrike and verify its loadout picker still scrolls.
+
+For deployment, try all four roster rows above once with AIRBORNE and once with
 GROUND; use at least five total ships in one run to exercise the extra slots.
 On GROUND, confirm the first ship has room to react to an incoming conventional
 missile from either side, and that the fifth and later defenders still start on

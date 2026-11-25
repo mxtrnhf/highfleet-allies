@@ -636,6 +636,7 @@ unsafe extern "C" fn render() {
         return;
     }
     airstrike::render_overlays();
+    missile_defense::render_overlays();
     let Some(preview) = PREVIEWS
         .try_lock()
         .ok()

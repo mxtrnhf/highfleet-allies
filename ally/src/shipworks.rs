@@ -3,6 +3,7 @@
 //! Native evidence and manual validation checklist: docs/shipworks-test-allies.md.
 
 mod airstrike;
+mod controls;
 mod damage;
 mod design;
 mod missile_defense;
@@ -98,6 +99,7 @@ const SIDE_ALLY: f32 = 1.0;
 const SIDE_ENEMY: f32 = -1.0;
 const EDITOR_MODE: usize = 0x1_403e_f36a;
 const TEST_FIGHT_FLAG: usize = 0x1_47fc_6fb6;
+const NATIVE_NEW: usize = 0x1_4033_4094;
 const FIGHT_COMPARE_SITE: usize = 0x1_4013_d7b7;
 const FIGHT_GENERATE_SITE: usize = 0x1_4013_dcf1;
 const FIGHT_GENERATE_CONTINUE: usize = 0x1_4013_df38;
@@ -707,9 +709,14 @@ pub(crate) unsafe fn tick() {
             );
         }
     }
-    state
-        .defense
-        .draw(&scan.elements, template, [width, height], y, toolbar_right);
+    state.defense.draw(
+        &scan.elements,
+        template,
+        [width, height],
+        y,
+        toolbar_right,
+        ace_open,
+    );
     state.airstrike.draw(
         &scan.elements,
         template,
@@ -1084,6 +1091,9 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
         return true;
     }
     if defense_control {
+        if closed_ace {
+            return true;
+        }
         let has_allies = !state.allies.entries.is_empty();
         let has_enemies = !state.enemies.entries.is_empty();
         // A valid LAUNCH falls through to the native click dispatcher and aliases FIGHT.

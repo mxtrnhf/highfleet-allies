@@ -23,9 +23,9 @@ use super::{
         damage::{self, Scenario::Airstrike, Slot},
         missile_defense::vector_span,
         prune_enemy_escadra, write, COPY_STRING, ENEMY_LIST, LINK_CLEAR_VECTOR, LINK_NODE_STRIDE,
-        LINK_TARGET, LINK_UNLINK, SESSION, SIDE_ALLY, SIDE_ENEMY, TEST_FIGHT_FLAG,
+        LINK_TARGET, LINK_UNLINK, NATIVE_NEW, SESSION, SIDE_ALLY, SIDE_ENEMY, TEST_FIGHT_FLAG,
     },
-    Launch, ALL_PARTS, ENTRY_LIMIT, LEVEL, MAX_MULTIPLIER, MAX_PLANES, NATIVE_NEW,
+    Launch, ALL_PARTS, ENTRY_LIMIT, LEVEL, MAX_MULTIPLIER, MAX_PLANES,
 };
 
 const FRIENDLY_LIST: usize = 0x1_43a1_58e0;
