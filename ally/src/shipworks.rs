@@ -5,6 +5,8 @@
 mod damage;
 mod design;
 mod missile_defense;
+mod silent_strike;
+mod strategic_blast;
 
 use std::{
     ffi::{CStr, CString},
@@ -42,7 +44,7 @@ const CRASH_NAME: &[u8] = b"SW_ALLY_CRASH\0";
 const ACE_OPTIONS: [(&CStr, &CStr); 3] = [
     (c"SW_ACE_AIR", c"AIRSTRIKE"),
     (ACE_DEFENSE_NAME, c"MISSILE DEFENSE"),
-    (c"SW_ACE_SILENT", c"SILENT STRIKE"),
+    (silent_strike::BUTTON, c"SILENT STRIKE"),
 ];
 const ROW_NAMES: [&[u8]; ROSTER_LIMIT] = [
     b"SW_ALLY_1\0",
@@ -92,6 +94,13 @@ const SIDE_ALLY: f32 = 1.0;
 const SIDE_ENEMY: f32 = -1.0;
 const EDITOR_MODE: usize = 0x1_403e_f36a;
 const TEST_FIGHT_FLAG: usize = 0x1_47fc_6fb6;
+const FIGHT_COMPARE_SITE: usize = 0x1_4013_d7b7;
+const FIGHT_GENERATE_SITE: usize = 0x1_4013_dcf1;
+const FIGHT_GENERATE_CONTINUE: usize = 0x1_4013_df38;
+const FIGHT_LOAD_SITE: usize = 0x1_4013_e05e;
+const MATCH_GUI_IDENTIFIER: usize = 0x1_4000_4a70;
+const FIND_GUI_ELEMENT: usize = 0x1_401a_9170;
+const TEST_DIFFICULTY_NAME: u64 = 0x1_4035_c9c8;
 /// FIGHT: first ship is already attached to RDI; replay MOV RSI,[RDI+0x100] after adding ours.
 const FLEET_SEAM: usize = 0x1_4013_dcc2;
 const FLEET_BYTES: [u8; 7] = [0x48, 0x8b, 0xb7, 0x00, 0x01, 0x00, 0x00];
@@ -366,10 +375,103 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
     session
         .detour_trampoline(LEVEL_SEAM, LEVEL_BYTES.len(), level)
         .map_err(|e| e.to_string())?;
+    install_fight_routing(session)?;
     missile_defense::install(session)?;
+    silent_strike::install(session)?;
     CRASH_BUTTON.store(crash_button, Ordering::Relaxed);
     READY.store(true, Ordering::Relaxed);
     Ok(())
+}
+
+/// Route accepted A.C.E. launch clicks through the native FIGHT builder.
+///
+/// # Safety
+/// Install only during serialized initialization of the verified Steam 1.163 image.
+unsafe fn install_fight_routing(session: &mut PatchSession) -> Result<(), String> {
+    for (site, handler, result) in [
+        (
+            FIGHT_COMPARE_SITE,
+            match_fight as *const (),
+            ReturnType::Rax,
+        ),
+        (FIGHT_LOAD_SITE, load_fight as *const (), ReturnType::None),
+    ] {
+        let mut call = Trampoline::new();
+        call.preserved_call(handler, &[], &[], result);
+        call.absolute_jump(site + 5);
+        session
+            .detour_trampoline(site, 5, call)
+            .map_err(|err| err.to_string())?;
+    }
+
+    // FIGHT's generator assumes its TEST slider and checkboxes exist. On the
+    // skip path the native empty-list fallback and fleet builder still run.
+    let mut generated = Trampoline::new();
+    let skip = generated.new_label();
+    generated.preserved_call(
+        skip_enemy_generation as *const (),
+        &[],
+        &[],
+        ReturnType::Rax,
+    );
+    generated.bytes(&[0x84, 0xc0]); // TEST AL,AL
+    generated.jump_if(Condition::NotEqual, skip);
+    generated.bytes(&[0x48, 0xb9]); // Relocate LEA RCX,[EDC_TEST_DIF] as MOV RCX,imm64.
+    generated.bytes(&TEST_DIFFICULTY_NAME.to_le_bytes());
+    generated.absolute_jump(FIGHT_GENERATE_SITE + 7);
+    generated.bind(skip).map_err(|err| err.to_string())?;
+    generated.absolute_jump(FIGHT_GENERATE_CONTINUE);
+    session
+        .detour_trampoline(FIGHT_GENERATE_SITE, 7, generated)
+        .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+unsafe extern "C" fn match_fight(name: usize, expected: *const i8) -> u8 {
+    // SAFETY: ClickFunc supplies the live native identifier and comparison literal
+    // on the game thread. Only a matching, pre-dispatch-approved click can alias FIGHT.
+    let missile = missile_defense::requested();
+    let silent = silent_strike::requested();
+    if (missile || silent)
+        && native_string(name).is_some_and(|name| {
+            (missile && name.as_c_str() == missile_defense::LAUNCH_NAME)
+                || (silent && name.as_c_str() == silent_strike::BUTTON)
+        })
+    {
+        return 1;
+    }
+    let matches: unsafe extern "C" fn(usize, *const i8) -> u8 =
+        std::mem::transmute(MATCH_GUI_IDENTIFIER);
+    matches(name, expected)
+}
+
+unsafe extern "C" fn skip_enemy_generation() -> bool {
+    if missile_defense::requested() {
+        return true;
+    }
+    if !silent_strike::requested() {
+        return false;
+    }
+    // SAFETY: FindGuiElement reads the live registry synchronously on the game
+    // thread just as FIGHT would; these are static literals. We retain no pointers.
+    let find: unsafe extern "C" fn(*const i8) -> usize = std::mem::transmute(FIND_GUI_ELEMENT);
+    [
+        c"EDC_TEST_DIF",
+        c"EDC_TEST_SMALL",
+        c"EDC_TEST_MID",
+        c"EDC_TEST_LARGE",
+        c"EDC_TEST_CARRIER",
+    ]
+    .into_iter()
+    .any(|id| find(id.as_ptr()) == 0)
+}
+
+unsafe extern "C" fn load_fight(path: *const i8, resume: u8, flag: u8) {
+    // SAFETY: this is ClickFunc's final FIGHT call, entered only after the native
+    // builder has validated the design and linked both fleets. Its original level
+    // path is the static string "Combat.seria"; Missile Defense may substitute it.
+    silent_strike::begin_combat();
+    missile_defense::load_fight(path, resume, flag);
 }
 
 /// Read a bounded MSVC string as bytes, preserving the game's language encoding.
@@ -408,6 +510,7 @@ pub(crate) unsafe fn tick() {
         }
     } else {
         missile_defense::cancel_unhandled_request();
+        silent_strike::cancel_unhandled_request();
     }
     let scan = precombat::scan_gui_list();
     if !scan.complete {
@@ -798,6 +901,7 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     let closed_ace = left_click && !ace_button && ACE_OPEN.swap(false, Ordering::Relaxed);
     if name == "EDC_TEST_FIGHT" {
         missile_defense::cancel_request();
+        silent_strike::cancel_request();
         return false;
     }
     let defense_control = missile_defense::is_control(name);
@@ -840,15 +944,21 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
         return true;
     }
     if ace_option {
-        if closed_ace {
-            if name.as_bytes() == ACE_DEFENSE_NAME.to_bytes() {
-                state.defense.open();
-            } else {
-                // The other two modes are still placeholders.
-                state.defense.close();
-            }
-            drop(state);
-            sound::button("Shipworks A.C.E. option");
+        if !closed_ace {
+            return true;
+        }
+        if name.as_bytes() == ACE_DEFENSE_NAME.to_bytes() {
+            state.defense.open();
+        } else {
+            state.defense.close();
+        }
+        drop(state);
+        sound::button("Shipworks A.C.E. option");
+        if name.as_bytes() == silent_strike::BUTTON.to_bytes() {
+            missile_defense::cancel_request();
+            silent_strike::request();
+            // Let the native dispatcher reach the FIGHT comparison with this identifier.
+            return false;
         }
         return true;
     }
@@ -882,8 +992,7 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     if defense_control {
         let has_allies = !state.entries.is_empty();
         let has_enemies = !state.enemy_entries.is_empty();
-        // A valid LAUNCH falls through to the native click dispatcher. The missile
-        // defense comparison seam routes only that accepted click to EDC_TEST_FIGHT.
+        // A valid LAUNCH falls through to the native click dispatcher and aliases FIGHT.
         return !state.defense.click(name, has_allies, has_enemies);
     }
     let now = now_ms();
@@ -1312,6 +1421,9 @@ unsafe extern "C" fn on_level(path: usize) {
         level_path.push(byte);
     }
     // A test/landing trip and its return are still the same Shipworks session.
+    if level_path != b"Combat.seria" {
+        silent_strike::leave();
+    }
     if level_path == b"Missile.seria" && missile_defense::active() {
         return;
     }

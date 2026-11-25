@@ -1,5 +1,13 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.43 (Shipworks Silent Strike):** **A.C.E. → SILENT STRIKE** opens the normal test pre-combat screen directly. It uses the usual player, ally and enemy rosters, but enemies use the game's landed deployment, including later waves. No separate setup, damage preservation or results viewer. Ordinary **TEST → FIGHT**, Missile Defense and campaign combat are unchanged. In-game validation pending.
+
+* **v1.3.42 (campaign nuclear blast damage in Shipworks):** replaces the sampled damage budget with the campaign's native falloff, part ordering, and armor shielding. The blast spends energy across columns of the live ship's hull, from exposed parts inward. The calculation runs on Shipworks-only scratch data; it does not open or create a campaign save, load the map, or run campaign recovery events. In-game validation pending.
+
+* **v1.3.41 (Missile Defense nuclear sound and aftermath):** Shipworks lets the stock nuclear sequence play the explosion sound at about 3 seconds and finish at about 6 seconds, then captures the results and returns to the editor instead of the campaign map. Fleet damage requires a live opposing target linked to the Shipworks missile; an unlinked detonation no longer damages the whole roster. Small ships take at most one hit per sampled part. Conventional missiles and campaign gameplay are unchanged. In-game validation pending.
+
+* **v1.3.40 (campaign-style Missile Defense ground spawn):** GROUND uses the campaign's first four defender positions instead of placing the first ship next to the incoming missile. Extra ships land beyond the stock slots without occupying the missile's entry point. AIRBORNE and campaign encounters are unchanged. In-game validation pending.
+
 * **v1.3.39 (compact Missile Defense panel):** the right-hand A.C.E. Missile Defense buttons are 25% narrower and start level with **TEST** when there's room beside the toolbar. On narrow screens they sit below the toolbar.
 
 * **v1.3.38 (collapsible Shipworks tools):** the compact `>` button after **TEST** reveals **ADD**, **ADD ENEMY**, **CLEAR**, **A.C.E.**, and **CRASH** when enabled. Click `<` to hide the mod's controls and lists without clearing the test rosters. The toolbar starts collapsed in each new Shipworks session.

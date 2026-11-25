@@ -15,7 +15,7 @@ use patchy::{Condition, PatchSession, ReturnType, Trampoline};
 
 use crate::{
     diag,
-    native::{read, SetLinkFn, OFF_AI_FLAG, OFF_SIDE, ROSTER_BEGIN, SET_LINK},
+    native::{live_ship, read, SetLinkFn, OFF_AI_FLAG, OFF_SIDE, ROSTER_BEGIN, SET_LINK},
     native_layout::{
         Body, Creature, EscadraString, Node, PartStats, SentinelList, NODE_CODE, NODE_OWNER,
     },
@@ -25,14 +25,15 @@ use crate::{
 
 use super::{
     damage::{self, Replay, Slot},
-    design, native_string, prune_enemy_escadra, show_control, write, ControlGeometry, BUTTON_GAP,
-    BUTTON_STYLE, CLICK_DEBOUNCE_MS, ENEMY_LIMIT, ENEMY_LIST, LINK_CLEAR_VECTOR, LINK_NODE_STRIDE,
-    LINK_TARGET, ROSTER_LIMIT, ROW_STYLE, SESSION, SIDE_ALLY, SIDE_ENEMY, TEST_FIGHT_FLAG,
+    design, native_string, prune_enemy_escadra, show_control, strategic_blast, write,
+    ControlGeometry, BUTTON_GAP, BUTTON_STYLE, CLICK_DEBOUNCE_MS, ENEMY_LIMIT, ENEMY_LIST,
+    LINK_CLEAR_VECTOR, LINK_NODE_STRIDE, LINK_TARGET, ROSTER_LIMIT, ROW_STYLE, SESSION, SIDE_ALLY,
+    SIDE_ENEMY, TEST_FIGHT_FLAG,
 };
 
 const TYPE_NAME: &CStr = c"SW_ACE_MSL";
 const START_NAME: &CStr = c"SW_ACE_START";
-const LAUNCH_NAME: &CStr = c"SW_ACE_LAUNCH";
+pub(super) const LAUNCH_NAME: &CStr = c"SW_ACE_LAUNCH";
 const PRESERVE_NAME: &CStr = c"SW_ACE_KEEP";
 const VIEW_NAME: &CStr = c"SW_ACE_DMG";
 const PREV_NAME: &CStr = c"SW_DMG_PREV";
@@ -63,28 +64,6 @@ const STATS_HOMING_TYPE: usize = 0x164;
 const STATS_EXPLOSIVE: usize = 0x168;
 const STRATEGIC_CATEGORY: u32 = 0x0800_0000;
 const NUCLEAR_YIELD: f32 = 100_000.0;
-// Campaign measurement (v1.3.29): a strategic nuke hit cost each defending ship
-// about 1.8k-2.9k hull and 11-24 destroyed parts, i.e. a concentrated hit on a
-// limited set of parts, not a uniform area blast. Spend a per-ship HP budget
-// instead of a fixed number of damage calls: destroying the nearest parts at
-// their actual HP avoids overkill, and the budget scales with the ship's part
-// count so a 533-part Sevastopol takes a nuke-sized hit, not 16 small parts.
-const SANDBOX_NUKE_DAMAGE_PER_MORAL: f32 = 2_500.0;
-const SANDBOX_NUKE_REFERENCE_PARTS: f32 = 381.0;
-// Campaign strategic blast intensity (Explosion::Update 0x140116040 ->
-// 0x1400e6aa0 -> Math_InverseCubeFalloffCapped 0x1402123e0):
-//   min(cap, E / (1e6 * d^3))
-// with cap 999 for an AI ship (alignment <= 0) and 50 for a player ship, and
-// the distance floored at 1.0 / 2.0 respectively. At E=4e7, d=1 this is 40
-// damage per part; the measured 2,500-hull close hit is 62.5 such parts. The
-// exact per-part bounding-box distribution inside 0x1400e6aa0 is not decoded,
-// so the evenly spaced hull sample below remains the measured stand-in.
-const CAMPAIGN_NUKE_FALLOFF_DIVISOR: f32 = 1_000_000.0;
-const CAMPAIGN_NUKE_AI_CAP: f32 = 999.0;
-const CAMPAIGN_NUKE_PLAYER_CAP: f32 = 50.0;
-const CAMPAIGN_NUKE_REFERENCE_DAMAGE: f32 = 40.0;
-const CAMPAIGN_NUKE_DISTANCE_FLOOR_AI: f32 = 1.0;
-const CAMPAIGN_NUKE_DISTANCE_FLOOR_PLAYER: f32 = 2.0;
 const ALL_PARTS: usize = 0x1_43a1_39f0;
 const NODE_FIND_OID: usize = 0xc8;
 const LOOKUP_LABEL: usize = 0x1_401a_e090;
@@ -112,7 +91,6 @@ const CREATURE_JAMMER: usize = 0x17c4;
 const TACTICAL_MISSILE_SIDE: usize = 0x248;
 const PUSH_LINK: usize = 0x1_4004_af20;
 const LOAD_LEVEL: usize = 0x1_4025_afd0;
-const MATCH_NAME: usize = 0x1_4000_4a70;
 const SPAWN_DEFENDERS: usize = 0x1_402d_45c0;
 const TEARDOWN: usize = 0x1_402d_4f20;
 const ASSIGN_DEFENDER: usize = 0x1_4026_3700;
@@ -127,7 +105,10 @@ pub(super) const CUSTOM_DEFENDER_LIMIT: usize = 1 + ROSTER_LIMIT + ENEMY_LIMIT;
 const ARENA_RIGHT: usize = 0x1_403c_2bc0;
 const ARENA_BOTTOM: usize = 0x1_403c_2bc4;
 const ARENA_LEFT: usize = 0x1_403c_2bc8;
-const FROM_RIGHT: usize = 0x1_403c_2b69;
+const MISSILE_FROM_RIGHT: usize = 0x1_403c_2b69;
+// SCR_MISSILE's four landed offsets from the defender edge are
+// 2000, 1400, 3200 and 200 (0x1402d4ad1..0x1402d4b21, sign flips each slot).
+const VANILLA_GROUND_FURTHEST_INSET: f32 = 3_200.0;
 const GROUND_EDGE_MARGIN: f32 = 450.0;
 const GROUND_MAX_SPACING: f32 = 750.0;
 const EXTRA_DEFENDERS_PER_ROW: u32 = 5;
@@ -149,9 +130,9 @@ const MARK_POSITION_Y: usize = 0x154;
 const MARK_ALTITUDE: usize = 0x168;
 // Kind-4 Body field that links back to the staged map Missile.
 const MAP_MISSILE_LINK: usize = 0x4b0;
-const NUCLEAR_EXIT_BRANCH: usize = 0x1_402c_5067;
-const NUCLEAR_EXIT_STATE_10: usize = 0x1_402b_e866;
-const MISSILE_EXIT_COUNTDOWN: usize = 0x1_402c_506d;
+// The native logic-0x1518 effect owns the nuclear sequence and its scene exit.
+const NUCLEAR_TEARDOWN_SITE: usize = 0x1_4004_0ed8;
+const NUCLEAR_RETURN_SITE: usize = 0x1_4004_0ee9;
 const SHADER_MAP_TECHNIQUE: usize = 0x118;
 const SHADER_UNWARPED_TECHNIQUE: usize = 0x120;
 
@@ -160,6 +141,8 @@ const _: () = {
     assert!(size_of::<EscadraString>() == 0x20);
     assert!(offset_of!(Body, logic_active) == 0x3c8);
     assert!(offset_of!(Body, explosive_power) == 0x2dc);
+    assert!(offset_of!(Body, projectile_link_1) + LINK_TARGET == 0x498);
+    assert!(offset_of!(Body, projectile_link_2) + LINK_TARGET == MAP_MISSILE_LINK);
     assert!(offset_of!(SentinelListNode<usize>, value) == 0x10);
     assert!(CREATURE_RADAR + size_of::<f32>() <= size_of::<Creature>());
     assert!(CREATURE_JAMMER + size_of::<f32>() <= size_of::<Creature>());
@@ -713,12 +696,10 @@ unsafe fn missile_label(oid: &CStr, nuclear: bool) -> CString {
     CString::new(label).unwrap_or_else(|_| c"MISSILE TYPE".into())
 }
 
-/// Install the discrete FIGHT and SCR_MISSILE call sites. Vanilla paths replay
+/// Install the discrete SCR_MISSILE call sites. Vanilla paths replay
 /// their original calls/branches. The modloader verifies the executable image.
 pub(super) unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
     for (site, handler, result) in [
-        (0x1_4013_d7b7, match_fight as *const (), ReturnType::Rax),
-        (0x1_4013_e05e, load_fight as *const (), ReturnType::None),
         (
             0x1_402c_4dfc,
             spawn_defenders as *const (),
@@ -741,6 +722,16 @@ pub(super) unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
             finish_defenders as *const (),
             ReturnType::None,
         ),
+        (
+            NUCLEAR_TEARDOWN_SITE,
+            finish_defenders as *const (),
+            ReturnType::None,
+        ),
+        (
+            NUCLEAR_RETURN_SITE,
+            exit_missile as *const (),
+            ReturnType::None,
+        ),
     ] {
         let mut call = Trampoline::new();
         call.preserved_call(handler, &[], &[], result);
@@ -749,22 +740,6 @@ pub(super) unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
             .detour_trampoline(site, 5, call)
             .map_err(|err| err.to_string())?;
     }
-
-    // The normal enemy generator dereferences TEST's size checkboxes. LAUNCH is
-    // also valid without opening TEST. Its roster is supplied at ENEMY_APPEND_SEAM.
-    let mut generated = Trampoline::new();
-    let skip = generated.new_label();
-    generated.preserved_call(has_request as *const (), &[], &[], ReturnType::Rax);
-    generated.bytes(&[0x84, 0xc0]); // TEST AL,AL
-    generated.jump_if(Condition::NotEqual, skip);
-    generated.bytes(&[0x48, 0xb9]); // LEA RCX,[native difficulty name] -> MOV RCX,imm64
-    generated.bytes(&0x1_4035_c9c8u64.to_le_bytes());
-    generated.absolute_jump(0x1_4013_dcf8);
-    generated.bind(skip).map_err(|err| err.to_string())?;
-    generated.absolute_jump(0x1_4013_df38);
-    session
-        .detour_trampoline(0x1_4013_dcf1, 7, generated)
-        .map_err(|err| err.to_string())?;
 
     // For a custom encounter don't sort by AA score: the editor ship must be
     // first (and so player-controlled), even when a wingman has a higher score.
@@ -799,8 +774,8 @@ pub(super) unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
         .detour_trampoline(0x1_402d_46a1, 7, start)
         .map_err(|err| err.to_string())?;
 
-    // Extend the vanilla four-ship loop only in Shipworks. Adjust the
-    // positions of landed and extra airborne ships before the native clamp.
+    // Extend the vanilla four-ship loop only in Shipworks. Adjust only the
+    // additional ships' positions before the native terrain clamp.
     let mut position = Trampoline::new();
     position.bytes(&[0xf2, 0x0f, 0x11, 0x45, 0x67]); // MOVSD [RBP+0x67],XMM0
     position.preserved_call(
@@ -831,45 +806,14 @@ pub(super) unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
         .detour_trampoline(0x1_402d_4c7e, 5, limit)
         .map_err(|err| err.to_string())?;
 
-    // Body_Explode's kind-4 branch ends after the nuke effects. The handler
-    // returns a nonzero f32 bit pattern only when we should also run the
-    // ordinary tactical explosion continuation (XMM1 is its yield input).
-    // XMM10 (read as zero by the continuation) and R14 (the body) are
-    // nonvolatile in the Windows x64 ABI, so both callbacks preserve them.
+    // Kind 4 ends after the nuke effects. Shipworks uses the strategic blast
+    // kernel, not the ordinary tactical explosion.
     let mut nuke = Trampoline::new();
-    let effects_only = nuke.new_label();
-    nuke.preserved_call(nuclear_effect as *const (), &[], &[], ReturnType::Rax);
-    nuke.bytes(&[0x85, 0xc0]); // TEST EAX,EAX
-    nuke.jump_if(Condition::Equal, effects_only);
-    nuke.bytes(&[0x66, 0x0f, 0x6e, 0xc8]); // MOVD XMM1,EAX
-    nuke.absolute_jump(0x1_4002_9c0c);
-    nuke.bind(effects_only).map_err(|err| err.to_string())?;
-    nuke.bytes(&[0xb0, 0x01]); // Native nuke effects always return AL=1.
+    nuke.preserved_call(nuclear_effect as *const (), &[], &[], ReturnType::None);
+    nuke.bytes(&[0xb0, 0x01]); // Keep the handled result for Body_DieExplode.
     nuke.absolute_jump(0x1_4002_9c07);
     session
         .detour_trampoline(0x1_4002_9c02, 5, nuke)
-        .map_err(|err| err.to_string())?;
-
-    // In SCR_MISSILE, a finished encounter tests the nuke-effect byte
-    // (0x1403c2b6b). Its alternate exit enters shared state 10 instead of
-    // Missile's countdown/fade and state-100 teardown. Keep the blast, but
-    // let the sandbox take the normal return path and capture its results.
-    let mut exit = Trampoline::new();
-    let countdown = exit.new_label();
-    // Consume the native CMP flags before making the callback.
-    exit.jump_if(Condition::Equal, countdown);
-    exit.preserved_call(keep_missile_exit as *const (), &[], &[], ReturnType::Rax);
-    exit.bytes(&[0x84, 0xc0]); // TEST AL,AL
-    exit.jump_if(Condition::NotEqual, countdown);
-    exit.absolute_jump(NUCLEAR_EXIT_STATE_10);
-    exit.bind(countdown).map_err(|err| err.to_string())?;
-    exit.absolute_jump(MISSILE_EXIT_COUNTDOWN);
-    session
-        .detour_trampoline(
-            NUCLEAR_EXIT_BRANCH,
-            MISSILE_EXIT_COUNTDOWN - NUCLEAR_EXIT_BRANCH,
-            exit,
-        )
         .map_err(|err| err.to_string())?;
 
     // A nuke enables a late battle pass that applies the map's CRT shader
@@ -889,27 +833,18 @@ pub(super) unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
     damage::install(session)
 }
 
-unsafe extern "C" fn has_request() -> bool {
-    requested()
-}
-
 unsafe extern "C" fn is_active() -> bool {
     active()
 }
 
-unsafe extern "C" fn match_fight(name: usize, expected: *const i8) -> u8 {
-    // SAFETY: these are the live native string and literal from the original
-    // comparison. Only our pre-dispatch-approved button may alias the literal.
-    if requested() && native_string(name).is_some_and(|name| name.as_c_str() == LAUNCH_NAME) {
-        return 1;
-    }
-    let matches: unsafe extern "C" fn(usize, *const i8) -> u8 = std::mem::transmute(MATCH_NAME);
-    matches(name, expected)
-}
-
 type LoadLevel = unsafe extern "C" fn(*const i8, u8, u8);
 
-unsafe extern "C" fn load_fight(path: *const i8, resume: u8, flag: u8) {
+/// Load the original FIGHT scene unless an approved Missile Defense request is pending.
+///
+/// # Safety
+/// Called synchronously from FIGHT's level-load site, with its original arguments
+/// and with the final native fleet lists still live on the game thread.
+pub(super) unsafe fn load_fight(path: *const i8, resume: u8, flag: u8) {
     let request = REQUEST
         .try_lock()
         .ok()
@@ -1292,11 +1227,7 @@ unsafe extern "C" fn set_airborne_gear(ship: usize, command: i32) {
 }
 
 unsafe extern "C" fn place_defender(position: usize, index: u32) {
-    if !active() {
-        return;
-    }
-    let grounded = GROUNDED_DEFENDERS.load(Ordering::Relaxed);
-    if grounded == 0 && index < VANILLA_DEFENDER_LIMIT {
+    if !active() || index < VANILLA_DEFENDER_LIMIT {
         return;
     }
     let right = read::<f32>(ARENA_RIGHT);
@@ -1306,18 +1237,25 @@ unsafe extern "C" fn place_defender(position: usize, index: u32) {
     if !span.is_finite() || span <= 2.0 * GROUND_EDGE_MARGIN || !bottom.is_finite() {
         return;
     }
-    let from_right = read::<u8>(FROM_RIGHT) != 0;
-    let (inset, y) = if grounded != 0 {
-        // One row from the native entry side inward, nearest ship first. The
-        // supplied Y is below the generated surface; native ground-height
-        // and hull-height code clamps it to the actual landing position.
-        let gaps = grounded.saturating_sub(1) as f32;
-        let spacing = ((span - 2.0 * GROUND_EDGE_MARGIN) / gaps.max(1.0)).min(GROUND_MAX_SPACING);
-        (GROUND_EDGE_MARGIN + index as f32 * spacing, bottom)
+    let from_right = read::<u8>(MISSILE_FROM_RIGHT) != 0;
+    let extra = index - VANILLA_DEFENDER_LIMIT;
+    let grounded = GROUNDED_DEFENDERS.load(Ordering::Relaxed);
+    let (inset_from_defender_edge, y) = if grounded != 0 {
+        // Continue past the furthest campaign slot towards the missile edge,
+        // leaving clearance at that edge. The native clamp lands the extra
+        // ship on the terrain using its hull height.
+        let extras = grounded.saturating_sub(VANILLA_DEFENDER_LIMIT as usize);
+        let room = span - VANILLA_GROUND_FURTHEST_INSET - GROUND_EDGE_MARGIN;
+        if extra as usize >= extras || room <= 0.0 {
+            return;
+        }
+        let spacing = (room / extras as f32).min(GROUND_MAX_SPACING);
+        (
+            VANILLA_GROUND_FURTHEST_INSET + (extra + 1) as f32 * spacing,
+            bottom,
+        )
     } else {
-        // The four native slots occupy the entry-side line, so put extras on
-        // the opposite half, stacked in rows that stay inside the arena.
-        let extra = index - VANILLA_DEFENDER_LIMIT;
+        // Keep the additional airborne ships in the existing rows.
         let column = extra % EXTRA_DEFENDERS_PER_ROW;
         let row = extra / EXTRA_DEFENDERS_PER_ROW;
         (
@@ -1325,17 +1263,10 @@ unsafe extern "C" fn place_defender(position: usize, index: u32) {
             EXTRA_DEFENDER_HEIGHT - row as f32 * EXTRA_ROW_HEIGHT,
         )
     };
-    let x = if grounded != 0 {
-        // Landed ships start at the flag-selected edge and continue inward.
-        if from_right {
-            right - inset
-        } else {
-            left + inset
-        }
-    } else if from_right {
-        left + inset
+    let x = if from_right {
+        left + inset_from_defender_edge
     } else {
-        right - inset
+        right - inset_from_defender_edge
     };
     // SAFETY: at this seam RBP+0x67 is a writable, possibly unaligned
     // game-stack Vec2, still to be clamped against terrain by the native path.
@@ -1451,238 +1382,119 @@ unsafe extern "C" fn arm_missile(body: usize, map_missile: usize) {
     diag::flush_log();
 }
 
-/// Body_Explode's kind-4 branch normally stops after the strategic/visual nuke
-/// handler. In the Shipworks sandbox, run that handler and report the capped
-/// tactical power so the trampoline can continue into the ordinary blast.
-unsafe extern "C" fn nuclear_effect(body: usize) -> u32 {
-    if !active() {
+/// Run the stock kind-4 effect and resolve the owned strike without a map load.
+unsafe extern "C" fn nuclear_effect(body: usize) {
+    let sandbox = active();
+    if !sandbox {
         log_campaign_nuke(body, "detonation");
         log_campaign_roster("detonation");
-        // SAFETY: the native branch must run exactly once for every nuke body.
-        let effects: unsafe extern "C" fn(usize) = std::mem::transmute(NUCLEAR_EFFECT);
-        effects(body);
-        return 0;
     }
-    // Logic 10 reads the warhead stat at 0x140038410, then overwrites Body's
-    // explosive power with 100 at 0x140038426 when switching to kind 4. That
-    // value is for the stock nuclear path, not the energy of our tactical pass.
-    // The map missile still has the catalog yield assigned by prepare_missile.
-    // SAFETY: RCX is the live kind-4 Body at Body_Explode's original call. Only
-    // its current Link to the matching, scene-owned Missile grants access to
-    // that object's yield. Read it before the effect handler uses the Link.
-    let body_power =
-        diag::rd::<f32>(body.wrapping_add(offset_of!(Body, explosive_power))).unwrap_or(0.0);
-    let map_yield =
-        diag::rd::<usize>(body.wrapping_add(offset_of!(Body, projectile_link_2) + LINK_TARGET))
-            .filter(|&missile| missile != 0 && missile == OWN_MISSILE.load(Ordering::Relaxed))
-            .filter(|&missile| {
-                diag::rd::<u64>(missile.wrapping_add(NODE_CODE)) == Some(MISSILE_CODE)
-            })
-            .and_then(|missile| diag::rd::<f32>(missile + MAP_MISSILE_EXPLOSIVE))
-            .filter(|&yield_power| yield_power.is_finite() && yield_power > NUCLEAR_YIELD);
 
-    let yield_power = map_yield.unwrap_or(body_power);
-    let tactical_power = if yield_power.is_finite() && yield_power > 0.0 {
-        yield_power
+    // Read the target and warhead from the live projectile before the native
+    // effects can use or change the links. Retain only scalar data.
+    let impact = if sandbox {
+        sandbox_nuclear_impact(body)
     } else {
-        0.0
+        None
     };
-    if let Some(map_yield) = map_yield {
-        log::info!(
-            "hf_ally: Shipworks nuclear blast: projectile power {body_power}, warhead yield {map_yield}, tactical power {tactical_power}"
-        );
-        log_blast_geometry(body, tactical_power);
-    }
-    // SAFETY: the native branch must run exactly once for every nuke body.
-    // Keep the native projectile fields intact for the fuze, effect and map
-    // handling; the sandbox damage is applied after the visual handler.
+    // SAFETY: RCX at the original kind-4 call is the live Body on the game
+    // thread. Replay the native effect exactly once without changing its fields.
     let effects: unsafe extern "C" fn(usize) = std::mem::transmute(NUCLEAR_EFFECT);
     effects(body);
-    apply_sandbox_nuclear_damage(body, tactical_power);
-    // Returning zero keeps the vanilla kind-4 epilogue: no native area blast,
-    // because the sandbox uses the campaign-matched part damage above.
-    0
+    if let Some((center, yield_power, target_side)) = impact {
+        apply_sandbox_nuclear_damage(center, yield_power, target_side);
+    }
 }
 
-/// Damage the targeted fleet with the campaign strategic intensity.
-///
-/// The campaign `Explosion::Update` applies `min(cap, E / (1e6 * d^3))` to the
-/// ships of the fleet the map missile reached. The tactical 400-unit proximity
-/// fuse is **not** that map distance: at impact the map missile is at the
-/// fleet, so the distance is the campaign floor (1.0 AI / 2.0 player) for every
-/// ship in the targeted fleet, not each ship's tactical spacing. The exact
-/// per-part bounding-box spread inside `0x1400e6aa0` is not decoded, so the
-/// damage is spread as an evenly spaced sample of each ship's parts. A close
-/// hit stays at the measured 2.5k-3.5k hull; a nuke that never reaches the
-/// fleet would have no map impact and is not represented here.
-unsafe fn apply_sandbox_nuclear_damage(body: usize, yield_power: f32) {
-    if !yield_power.is_finite() || yield_power <= 0.0 {
-        return;
+unsafe fn sandbox_nuclear_impact(body: usize) -> Option<((f32, f32), f32, f32)> {
+    // Logic 10 reads the warhead stat at 0x140038410, then overwrites Body's
+    // explosive power with 100 at 0x140038426 when switching to kind 4.
+    // The current Link to our staged Missile gives the catalog warhead yield.
+    let missile =
+        diag::rd::<usize>(body.wrapping_add(offset_of!(Body, projectile_link_2) + LINK_TARGET))
+            .filter(|&missile| missile != 0 && missile == OWN_MISSILE.load(Ordering::Relaxed))
+            .filter(|&missile| diag::rd::<u64>(missile + NODE_CODE) == Some(MISSILE_CODE))?;
+    let yield_power = diag::rd::<f32>(missile + MAP_MISSILE_EXPLOSIVE)
+        .filter(|&yield_power| yield_power.is_finite() && yield_power > NUCLEAR_YIELD)?;
+    let missile_side = diag::rd::<f32>(missile + MAP_SIDE)?;
+
+    // An unlinked fly-past or a lost target has no struck fleet. Do not fall
+    // back to damaging both sides. Only the tactical defender link (not the
+    // projectile side alone) identifies an impact against our combat roster.
+    let target =
+        diag::rd::<usize>(body.wrapping_add(offset_of!(Body, projectile_link_1) + LINK_TARGET))?;
+    let roster = combat_roster()?;
+    if !roster.contains(&target)
+        || !diag::readable_span(target, size_of::<Creature>())
+        || !live_ship(target)
+    {
+        log::info!("hf_ally: Shipworks nuclear detonation without a live target; no fleet damage");
+        return None;
     }
-    let Some((blast_x, blast_y)) = body_world_position(body) else {
-        return;
-    };
+    let target_side = read::<f32>(target + OFF_SIDE);
+    if !target_side.is_finite() || !missile_side.is_finite() || target_side * missile_side >= 0.0 {
+        return None;
+    }
+    // Match Nuke_Detonate's raw centre reads at 0x14002bdcd / 0x14002bddd.
+    let x = diag::rd::<f32>(body.wrapping_add(offset_of!(Body, position_x)))?;
+    let y = diag::rd::<f32>(body.wrapping_add(offset_of!(Body, position_y)))?;
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let center = (x, y);
+    log::info!(
+        "hf_ally: Shipworks nuclear blast: warhead yield {yield_power}, target side {target_side:+.0}"
+    );
+    log_blast_geometry(center, yield_power, &roster);
+    Some((center, yield_power, target_side))
+}
+
+/// Apply the campaign's hull damage stage to the live sandbox fleet, without
+/// invoking the campaign's map simulation, Profile, or recovery scene.
+unsafe fn apply_sandbox_nuclear_damage(center: (f32, f32), yield_power: f32, target_side: f32) {
     let Some(roster) = combat_roster() else {
         return;
     };
-    // The missile's target link identifies the fleet the map missile reached.
-    // If it is unavailable, keep the old behaviour and damage the whole roster.
-    let target =
-        diag::rd::<usize>(body.wrapping_add(offset_of!(Body, projectile_link_1) + LINK_TARGET))
-            .unwrap_or(0);
-    let target_side = if target != 0 && diag::readable_span(target, size_of::<Creature>()) {
-        read::<f32>(target + OFF_SIDE)
-    } else {
-        0.0
-    };
     for (index, ship) in roster.into_iter().enumerate() {
-        let ship_side = read::<f32>(ship + OFF_SIDE);
-        if target_side != 0.0 && ship_side * target_side <= 0.0 {
+        if !diag::readable_span(ship, size_of::<Creature>()) || !live_ship(ship) {
             continue;
         }
-        let Some(_bridge) = diag::rd::<usize>(ship.wrapping_add(design::MASTER_TARGET))
+        let ship_side = read::<f32>(ship + OFF_SIDE);
+        if !ship_side.is_finite() || ship_side * target_side <= 0.0 {
+            continue;
+        }
+        let Some(bridge) = diag::rd::<usize>(ship.wrapping_add(design::MASTER_TARGET))
             .filter(|&bridge| diag::readable_span(bridge, size_of::<Body>()))
             .filter(|&bridge| read::<usize>(bridge + NODE_OWNER) == ship)
         else {
             continue;
         };
-        let player_side = ship_side > 0.0;
-        let distance = if player_side {
-            CAMPAIGN_NUKE_DISTANCE_FLOOR_PLAYER
-        } else {
-            CAMPAIGN_NUKE_DISTANCE_FLOOR_AI
-        };
-        let cap = if player_side {
-            CAMPAIGN_NUKE_PLAYER_CAP
-        } else {
-            CAMPAIGN_NUKE_AI_CAP
-        };
-        let per_part =
-            (yield_power / CAMPAIGN_NUKE_FALLOFF_DIVISOR / (distance * distance * distance))
-                .min(cap);
-        if !per_part.is_finite() || per_part <= 0.0 {
+        // SAFETY: validated live roster Creature and its owned master, on
+        // the game thread after Nuke_Detonate recorded the blast distance.
+        let Some(result) =
+            strategic_blast::apply(ship, bridge, center, yield_power, ship_side > 0.0)
+        else {
+            log::warn!("hf_ally: skipped invalid campaign blast geometry for defender {index}");
             continue;
-        }
+        };
         log::info!(
-            "hf_ally: sandbox nuke ship {index}: side {ship_side:+.0}, distance {distance:.1}, cap {cap:.0}, per-part {per_part:.4}"
-        );
-        let (hits, destroyed, lost) = damage_ship_parts(ship, (blast_x, blast_y), per_part);
-        log::info!(
-            "hf_ally: sandbox nuke ship {index}: {hits} parts hit, {destroyed} destroyed, {lost:.0} hull"
+            "hf_ally: sandbox nuke ship {index}: side {ship_side:+.0}, campaign distance {:.3}, column intensity {:.4}, {} parts hit, {} destroyed, {:.0} hull",
+            result.distance,
+            result.intensity,
+            result.hit,
+            result.destroyed,
+            result.hull_lost,
         );
     }
-}
-
-/// Spread one ship's campaign-intensity budget across the hull.
-///
-/// The campaign `0x1400e6aa0` distributes the intensity over the ship's part
-/// bounding boxes; that exact spread is undecoded. A nearest-first pass
-/// over-destroys because the ship's core is mostly 10-40 HP modules. Instead,
-/// take an evenly spaced sample through the distance-sorted parts and apply at
-/// most the campaign per-part damage to each. The master/root part is skipped:
-/// the campaign `0x1400e6aa0` never kills it, and killing it removes the whole
-/// ship even when the hull loss is small. On `Moral.seria` (379 parts) a close
-/// hit gives ~24 destroyed parts and ~2,190 hull, matching the measured
-/// campaign 11-24 / 1.8k-2.9k.
-unsafe fn damage_ship_parts(ship: usize, center: (f32, f32), per_part: f32) -> (usize, usize, f32) {
-    let Some(parts) = design::parts(ship) else {
-        return (0, 0, 0.0);
-    };
-    let bridge = diag::rd::<usize>(ship.wrapping_add(design::MASTER_TARGET)).unwrap_or(0);
-    let mut candidates: Vec<(usize, f32, f32)> = Vec::new();
-    for part in parts {
-        if part == bridge {
-            continue;
-        }
-        let health = diag::rd::<f32>(part.wrapping_add(offset_of!(Body, health))).unwrap_or(0.0);
-        if !health.is_finite() || health <= 0.0 {
-            continue;
-        }
-        let Some((part_x, part_y)) = body_world_position(part) else {
-            continue;
-        };
-        let dx = part_x - center.0;
-        let dy = part_y - center.1;
-        candidates.push((part, (dx * dx + dy * dy).sqrt(), health));
-    }
-    candidates.sort_by(|left, right| left.1.total_cmp(&right.1));
-    if candidates.is_empty() {
-        return (0, 0, 0.0);
-    }
-    let size_scale = (candidates.len() as f32 / SANDBOX_NUKE_REFERENCE_PARTS).clamp(0.75, 1.5);
-    let count = ((SANDBOX_NUKE_DAMAGE_PER_MORAL / CAMPAIGN_NUKE_REFERENCE_DAMAGE) * size_scale)
-        .round()
-        .max(1.0) as usize;
-    let stride = candidates.len() as f32 / count as f32;
-    let mut budget = per_part * count as f32;
-    let mut hits = 0usize;
-    let mut destroyed = 0usize;
-    let mut lost = 0.0f32;
-    for index in 0..count {
-        if budget <= 0.0 {
-            break;
-        }
-        let candidate = ((index as f32 * stride) as usize).min(candidates.len() - 1);
-        let (part, _, health) = candidates[candidate];
-        let damage = per_part.min(health).min(budget);
-        let spent = damage_part(part, damage);
-        if spent > 0.0 {
-            hits += 1;
-            lost += spent;
-            if health - spent <= 0.0 {
-                destroyed += 1;
-            }
-        }
-        budget -= spent;
-    }
-    (hits, destroyed, lost)
-}
-
-/// Apply one part's campaign damage the way `0x1400e6aa0` does: subtract HP
-/// directly, then call the part kill slot (vtable +0x48) at zero. Do **not**
-/// use `Body_ApplyDamage` (vtable +0x210): its death path can explode
-/// ammo/fuel and remove the whole ship, while the campaign map blast never
-/// does that.
-unsafe fn damage_part(part: usize, damage: f32) -> f32 {
-    if damage <= 0.0 || !diag::readable_span(part, size_of::<Body>()) {
-        return 0.0;
-    }
-    let health = diag::rd::<f32>(part.wrapping_add(offset_of!(Body, health))).unwrap_or(0.0);
-    if !health.is_finite() || health <= 0.0 {
-        return 0.0;
-    }
-    let state = diag::rd::<i32>(part.wrapping_add(offset_of!(Node, state))).unwrap_or(0);
-    if state <= 1 {
-        return 0.0;
-    }
-    let vtable = diag::rd::<usize>(part).unwrap_or(0);
-    if vtable == 0 {
-        return 0.0;
-    }
-    let after = (health - damage).max(0.0);
-    write(part.wrapping_add(offset_of!(Body, health)), after);
-    if after <= 0.0 {
-        // SAFETY: a live Body's node kill slot is the same one the campaign
-        // 0x1400e6aa0 calls at vtable+0x48; it removes the part without the
-        // Body_ApplyDamage death explosion. The caller supplies roster-owned
-        // parts on the game thread.
-        let kill: unsafe extern "C" fn(usize) = std::mem::transmute(read::<usize>(vtable + 0x48));
-        kill(part);
-    }
-    health - after
 }
 
 /// Diagnostics: report where the tactical nuke detonated relative to each live defender.
 /// Runs once per nuclear detonation while the combat roster is still populated.
-unsafe fn log_blast_geometry(body: usize, tactical_power: f32) {
-    let Some((blast_x, blast_y)) = body_world_position(body) else {
-        return;
-    };
-    let radius = tactical_power.max(0.0).sqrt();
-    let Some(roster) = combat_roster() else {
-        return;
-    };
-    for (index, ship) in roster.into_iter().enumerate() {
+unsafe fn log_blast_geometry((blast_x, blast_y): (f32, f32), yield_power: f32, roster: &[usize]) {
+    // The yield suggests an equivalent tactical radius, not the radius used
+    // for Shipworks' fleet-level damage.
+    let radius = yield_power.sqrt();
+    for (index, &ship) in roster.iter().enumerate() {
         let Some(bridge) = diag::rd::<usize>(ship.wrapping_add(design::MASTER_TARGET))
             .filter(|&bridge| diag::readable_span(bridge, size_of::<Body>()))
             .filter(|&bridge| read::<usize>(bridge + NODE_OWNER) == ship)
@@ -1696,7 +1508,7 @@ unsafe fn log_blast_geometry(body: usize, tactical_power: f32) {
         let dy = ship_y - blast_y;
         let distance = (dx * dx + dy * dy).sqrt();
         log::info!(
-            "hf_ally: nuclear blast at ({blast_x:.1},{blast_y:.1}), {distance:.1} units from defender {index}, radius {radius:.1}"
+            "hf_ally: nuclear blast at ({blast_x:.1},{blast_y:.1}), {distance:.1} units from defender {index}, equivalent tactical radius {radius:.1}"
         );
     }
 }
@@ -1823,14 +1635,6 @@ unsafe fn log_last_explosion_mark(profile: usize, before: Option<usize>) {
         "hf_ally: campaign explosion mark {mark:#x} ({} added): power {power}, radius {radius}, yield {yield_power}, nuclear {nuclear}, ship damaged {ship_damaged}, position ({mark_x:?},{mark_y:?}), altitude {mark_altitude:?}",
         after - before
     );
-}
-
-unsafe extern "C" fn keep_missile_exit() -> bool {
-    if !active() {
-        return false;
-    }
-    log::info!("hf_ally: Shipworks Missile Defense routing nuclear encounter to normal teardown");
-    true
 }
 
 /// The late battle pass that a nuke enables uses ShaderMapPostProcessing's
