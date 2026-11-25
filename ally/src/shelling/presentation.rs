@@ -264,11 +264,13 @@ impl SkyEntry {
         ];
         let tangent = drift + 2.0 * bend * left;
         let tail_scale = TRACER_LENGTH_WORLD / tangent.hypot(rise);
-        visual::world_line(
-            [head[0] + tangent * tail_scale, head[1] - rise * tail_scale],
-            head,
-            3.5,
-            0xffff_efa0,
-        );
+        let tail = [head[0] + tangent * tail_scale, head[1] - rise * tail_scale];
+        // Vanilla 180 mm HE shells (FireShell case 0x19) use lightPower 10000 with the stock
+        // warm colour (1.0, 0.9843, 0.8235) and a fast light fade. Layer the same palette as
+        // wide translucent quads over a bright core; no native projectile is spawned.
+        visual::world_line(tail, head, 14.0, 0x1a_ff_c9_69);
+        visual::world_line(tail, head, 8.0, 0x46_ff_d9_88);
+        visual::world_line(tail, head, 4.5, 0xc8_ff_f4_cd);
+        visual::world_line(tail, head, 2.0, 0xffff_ffff);
     }
 }

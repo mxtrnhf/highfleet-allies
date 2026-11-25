@@ -41,12 +41,12 @@ are still in flight when it ends. The map shows **LANDING** until they arrive.
 At the end of an uninterrupted barrage with effective hits and a hostile
 garrison, a short tactical spectator scene shows incoming rounds and localized
 hits. The fixed shot gives most of the frame to the sky and places the lowest
-sampled ground near 93% of the viewport height. The opening gives the wind
-2.5 seconds on its own before shells start descending from above the top
-edge, even when the shot zooms out to fit the defender group.
+sampled ground near 93% of the viewport height. The native BLACK overlay stays
+opaque while the level assembles, then fades out during a 2.6-second wind-only
+opening before shells descend from above the top edge.
 The native impact effect supplies flash, smoke and flying debris. Representative
-dirt strikes are spread over clear terrain in the shot and scale with the
-number of rounds that missed (up to 24 displayed ground strikes). Misses
+dirt strikes are spread over clear terrain in the shot and are at least twice
+as frequent as hull hits, up to 30 displayed ground strikes. Misses
 are cosmetic and do not consume an effective strategic hit. Quick salvos
 and occasional single rounds alternate with longer, uneven lulls. The raid
 represents the barrage rather than replaying all rounds: native
@@ -57,10 +57,9 @@ falls off from that point and armour reduces exposure behind it. Any real
 module can be hit, including bridges, engines and other critical parts.
 Zero-HP parts use silent native removal; a critical loss can kill a ship.
 No player ship is deployed, and no campaign missile is spawned or consumed.
-The louder tactical mix varies between distant thumps, metal impacts and
-cracks. Some rounds use stock samples with clipped transients, without
-changing the game's master volume. It follows the same
-`shelling_sounds` setting as the map.
+The tactical mix is deliberately much louder, with frequent stock samples
+whose transients are already clipped, mixed with metal impacts and cracks.
+It follows the same `shelling_sounds` setting as the map.
 
 After the last impact, the encounter returns through native missile-scene
 teardown so damaged ships go back to the campaign. Garrison fleets that take
@@ -141,11 +140,21 @@ changes, `shelling campaign damage retained` records the unload opt-out, and
   tracers invert that same projection to enter from above the viewport
   and draw before the stock battle overlay flush (`0x140309408`), not through
   the player target-box branch.
+- `Gui_BlackoutOverlay_BeginClear` (`0x1402130b0`) uses the singleton at
+  `0x143a13b08`. The raid holds its `BLACK` state opaque across the level
+  load, then sets the state/rate so the stock GUI fades it to clear while
+  the wind cue plays. This hides the visible level assembly without a new
+  asset.
 - At a tactical strike, `FX_SpawnExplosionDebris` (`0x1401c7270`) creates
   the stock particles and transient effect light. Shelling does not call
   `Body_Explode`, create a damaging projectile, or run a native blast pass.
   The FX routine's audio tail (`0x1401c937f`) is skipped only during shelling's
   synchronous invocation; ordinary explosions still use stock audio.
+- Vanilla 180 mm HE shells (`FireShell` case `0x19`) spawn with
+  `lightPower = 10000`, the warm light colour `(1.0, 0.9843, 0.8235)` and a
+  fast fade (`Body_InitializeCannonShell`, `0x140052a80`). The spectator
+  tracer layers the same palette as translucent wide lines over a bright
+  core; no damaging projectile is created.
 - The raid's HE approximation uses the rule documented in
   `hf_notes/docs/findings/combat/explosion-damage-1151-vs-1163.md` and
   `hf_notes/docs/findings/combat/blast-and-penetration.md`: stock 180 mm

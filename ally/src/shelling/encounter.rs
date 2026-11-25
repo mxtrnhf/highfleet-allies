@@ -31,15 +31,20 @@ const LINK_VEC_CLEAR: usize = 0x1_400c_2400;
 const LINK_VEC_GROW: usize = 0x1_4000_4b00;
 const LOAD_LEVEL: usize = 0x1_4025_afd0;
 const MISSILE_TICK: usize = 0x1_402d_4330;
+// Native full-screen BLACK overlay singleton (Gui_CreateBlackOverlay, 0x1401ca120).
+const BLACKOUT_OVERLAY: usize = 0x1_43a1_3b08;
+const BLACKOUT_STATE: usize = 0x3cc;
+const BLACKOUT_RATE: usize = 0x3d0;
+const BLACKOUT_ALPHA: usize = 0x8f8;
 const BATTLE_RENDER: usize = 0x1_4030_50a0;
 const BATTLE_RENDER_CALL: usize = 0x1_4030_0d7d;
 const COMBAT_EVENTS: usize = 0x1_4029_a7d0;
 const COMBAT_EVENTS_CALL: usize = 0x1_4030_93fa;
 const MAX_DEFENDERS: usize = 4; // Native setup limit.
 const MAX_ROUNDS_PER_DEFENDER: u32 = 3;
-const MAX_GROUND_ROUNDS: u32 = 24;
+const MAX_GROUND_ROUNDS: u32 = 30;
 const MAX_IN_FLIGHT: usize = 6;
-const WIND_ONLY_SECONDS: f64 = 2.5;
+const WIND_ONLY_SECONDS: f64 = 2.6;
 const AFTERMATH_SECONDS: f64 = 1.2;
 
 #[derive(Clone, Copy)]
@@ -55,7 +60,10 @@ impl Bombardment {
         // Compress thousands of real misses into a short scene without making a single gun
         // and a full battery look alike.
         let volume_bands = (1 + misses / 100).ilog2();
-        (2 + 3 * volume_bands).min(MAX_GROUND_ROUNDS).min(misses)
+        let hull_share = self.hits.min(MAX_ROUNDS_PER_DEFENDER * 4);
+        // The dirt is the spectacle: show at least twice as many misses as hull hits.
+        let representative = (2 + 3 * volume_bands).max(2 * hull_share);
+        representative.min(MAX_GROUND_ROUNDS).min(misses)
     }
 }
 
@@ -344,6 +352,8 @@ unsafe extern "C" fn after_setup() -> u8 {
                 frame: None,
                 destroyed: 0,
             }));
+            // SAFETY: the native level setup has initialized its full-screen HUD overlay.
+            hold_blackout(0.3, 1.0);
             return 1;
         }
     }
@@ -379,6 +389,36 @@ unsafe fn ship_by_id(ships: &[usize], id: i64) -> Option<usize> {
         .iter()
         .copied()
         .find(|&ship| read::<i64>(ship + offset_of!(Node, id)) == id)
+}
+
+/// Keep the stock full-screen BLACK overlay opaque while the level finishes loading.
+///
+/// # Safety
+/// Called on the game thread after the native HUD overlay is initialized. Only fixed scalar
+/// fields on the game-owned singleton are written; no pointer is retained or dropped.
+unsafe fn hold_blackout(rate: f32, alpha: f32) {
+    let overlay = read::<usize>(BLACKOUT_OVERLAY);
+    if overlay == 0 || !readable_span(overlay, BLACKOUT_ALPHA + size_of::<f32>()) {
+        return;
+    }
+    ((overlay + BLACKOUT_STATE) as *mut i32).write_unaligned(3);
+    ((overlay + BLACKOUT_RATE) as *mut f32).write_unaligned(rate);
+    ((overlay + BLACKOUT_ALPHA) as *mut f32).write_unaligned(alpha);
+}
+
+/// Let the existing native blackout overlay clear at the stock fade rate.
+///
+/// # Safety
+/// Same game-thread singleton contract as [`hold_blackout`].
+unsafe fn fade_blackout_out(rate: f32) {
+    let overlay = read::<usize>(BLACKOUT_OVERLAY);
+    if overlay == 0 || !readable_span(overlay, BLACKOUT_STATE + size_of::<i32>()) {
+        return;
+    }
+    // `Gui_BlackoutOverlay_BeginClear` arms state 0 with the incoming rate, then the GUI fades
+    // it to state 1. Writing both fields mirrors that stock transition.
+    ((overlay + BLACKOUT_STATE) as *mut i32).write_unaligned(0);
+    ((overlay + BLACKOUT_RATE) as *mut f32).write_unaligned(rate);
 }
 
 unsafe extern "C" fn tick() -> u8 {
@@ -452,6 +492,7 @@ unsafe extern "C" fn tick() -> u8 {
     if play_wind {
         // SAFETY: the native raid scene is live on its game thread. Sound uses the GUI root.
         sound::shelling_wind();
+        fade_blackout_out(0.7);
     }
     let mut hits = 0;
     let mut misses = 0;

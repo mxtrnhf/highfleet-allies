@@ -78,7 +78,7 @@ const SND_SHELL: [&[u8]; 4] = [
 ];
 const SHELL_VOLUME: f32 = 45.0;
 const SND_RAID_WIND: &[u8] = b"wind_02\0";
-const RAID_WIND_VOLUME: f32 = 22.0;
+const RAID_WIND_VOLUME: f32 = 38.0;
 const SND_RAID_DISTANT: [&[u8]; 4] = [
     b"explosion_small_far_01\0",
     b"explosion_small_far_02\0",
@@ -220,17 +220,17 @@ pub(crate) unsafe fn shelling_impact(ground: bool, intensity: f32, cue: u32) {
     }
     let variant = (cue >> 8) as usize;
     let strength = ((cue >> 16) & 0xff) as f32 / 255.0;
-    let pitch = 0.87 + ((cue >> 24) & 0xff) as f32 * (0.29 / 255.0);
+    let pitch = 0.86 + ((cue >> 24) & 0xff) as f32 * (0.32 / 255.0);
     let (sample, gain) = match (ground, cue & 15) {
         (true, 0) => return,
-        (true, 1..=4) | (false, 0..=5) => {
-            (SND_RAID_CLIPPED[variant % SND_RAID_CLIPPED.len()], 38.0)
+        (true, 1..=8) | (false, 0..=7) => {
+            (SND_RAID_CLIPPED[variant % SND_RAID_CLIPPED.len()], 92.0)
         }
-        (false, 6..=8) => (SND_RAID_METAL[variant % SND_RAID_METAL.len()], 30.0),
-        (false, 9..=14) | (true, 5..=7) => (SND_RAID_CRACK[variant % SND_RAID_CRACK.len()], 32.0),
-        _ => (SND_RAID_DISTANT[variant % SND_RAID_DISTANT.len()], 21.0),
+        (false, 8..=9) => (SND_RAID_METAL[variant % SND_RAID_METAL.len()], 74.0),
+        (false, 10..=13) | (true, 9..=12) => (SND_RAID_CRACK[variant % SND_RAID_CRACK.len()], 80.0),
+        _ => (SND_RAID_DISTANT[variant % SND_RAID_DISTANT.len()], 54.0),
     };
-    let _ = play_sfx_silent(sample, gain + 9.0 * strength + 7.0 * intensity, pitch);
+    let _ = play_sfx_silent(sample, gain + 14.0 * strength + 11.0 * intensity, pitch);
 }
 
 /// Plays the danger line (the fuel retreat and the retreat key).
