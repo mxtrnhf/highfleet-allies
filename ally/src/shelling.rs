@@ -1,4 +1,4 @@
-//! Strategic shelling: a preview, a fire order, a held firing position and garrison damage.
+//! Strategic shelling: a preview, a mobile barrage and garrison damage.
 //! Native evidence and the damage contract: `docs/strategic-shelling.md`.
 //! A barrage consumes no inventory and does not damage city infrastructure.
 
@@ -11,6 +11,7 @@ mod visual;
 use std::{
     ffi::CStr,
     mem::{offset_of, size_of},
+    ops::Range,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed},
         Mutex,
@@ -23,7 +24,10 @@ use patchy::{PatchSession, ReturnType, Trampoline};
 
 use crate::{
     diag::{rd, readable_span},
-    native::{plausible, read, ACTIVE_DIALOG, IN_COMBAT, OFF_ACTIVE, SCENE_FLAGS, SHIP_LIST_LIMIT},
+    native::{
+        plausible, read, GetProfileFn, ACTIVE_DIALOG, GET_PROFILE, IN_COMBAT, OFF_ACTIVE,
+        SCENE_FLAGS, SHIP_LIST_LIMIT,
+    },
     native_layout::{Body, CVec, Creature, Gui, Link, Node, PartStats, SentinelList, NODE_CODE},
     precombat, sound,
     time::pick,
@@ -36,6 +40,9 @@ const MAP_DIALOGUE: usize = 0x1_47fc_6fd2;
 const MAP_DETACH: usize = 0x1_47fc_6fd6;
 const MAP_TARGET_TOOL: usize = 0x1_47fc_6fd7;
 const PLAYER_ESCADRA: usize = 0x1_43a1_3eb0;
+const PROFILE_FLEETS_BEGIN: usize = 0x1f8;
+const PROFILE_FLEETS_END: usize = 0x200;
+const MAX_PROFILE_FLEETS: usize = 256;
 /// Campaign hour clock (`hourCount_`); barrages and shell flight use map time, so
 /// time compression advances them. `GAME_CLOCK` (0x143a119c0) is real game time.
 const CAMPAIGN_HOUR_CLOCK: usize = 0x1_43a1_19c8;
@@ -44,8 +51,7 @@ const GET_PROPERTY_LINKED_OBJECT: usize = 0x1_4021_b070;
 const GET_STATS: usize = 0x1_4028_1e00;
 const COPY_STRING: usize = 0x1_4000_56e0;
 /// Map renderer's clean screen-space flush call (`VideoTask_RenderMapScene`, M11).
-/// A hook here runs after the simulation tick, so a speed hold cannot be
-/// overwritten by the same frame's fleet update.
+/// Take the firing position after the strategic fleet's movement for this frame.
 const MAP_FRAME_SEAM: usize = 0x1_4030_dae4;
 const FLUSH: usize = 0x1_4008_3b50;
 
@@ -55,7 +61,6 @@ const CREATURE_CLASS: u8 = 0x2f;
 const CALIBER_180_MM: i32 = 25;
 // Escadra and Location both inherit these Mark fields (not in highfleet-rs).
 const MAP_POSITION: usize = 0x150;
-const MAP_SPEED: usize = 0x158;
 const MAP_ALTITUDE: usize = 0x168;
 const ESCADRA_READ_SPAN: usize = MAP_ALTITUDE + size_of::<f32>();
 // GetPropertyLinkedObject inspects the Property's +0x100/+0x108 child-list header.
@@ -193,7 +198,7 @@ pub(crate) fn configure(enabled: bool) {
     ENABLED.store(enabled, Relaxed);
 }
 
-/// Installs the post-simulation speed hold and map visualization.
+/// Installs the post-simulation map visualization and tactical raid.
 ///
 /// # Safety
 /// Call during serialized initialization after verifying the Steam 1.163 image base.
@@ -219,38 +224,63 @@ unsafe extern "C" fn on_map_frame() {
         let Ok(menu) = MENU.try_lock() else {
             return;
         };
-        menu.barrage
-            .as_ref()
-            .filter(|barrage| {
-                remaining(barrage, clock).is_some_and(|left| left > barrage.flight_seconds)
-            })
-            .map(|barrage| barrage.fleet.0)
+        menu.barrage.as_ref().map(|barrage| barrage.fleet)
     };
-    if let Some(fleet) = firing_fleet {
-        stop_fleet(fleet);
-    }
+    let Some(fleet) = firing_fleet else {
+        return;
+    };
     // The visualization belongs to the barrage, not to the current fleet selection.
     // No MENU lock is held across native resource or renderer calls.
     // SAFETY: M11 map draw seam with the native world-line renderer active.
-    visual::draw_with_clock(clock);
+    visual::draw_with_clock(clock, firing_fleet_position(fleet));
 }
 
-/// Drops the fleet's speed to zero. The waypoint, move order and altitude are left
-/// untouched, so the fleet resumes its original course after the barrage.
+/// The current profile's bounded fleet pointer slot range.
 ///
 /// # Safety
-/// Called on the game thread with the firing fleet identity captured at FIRE. The class,
-/// span and current campaign-map state are rechecked before the scalar speed write.
-unsafe fn stop_fleet(fleet: usize) {
+/// Call from a live campaign callback. Use the range only in this callback, before any native
+/// operation that could replace or mutate the fleet vector.
+unsafe fn campaign_fleet_slots() -> Option<Range<usize>> {
+    let get_profile: GetProfileFn = std::mem::transmute(GET_PROFILE);
+    let profile = get_profile();
+    if !plausible(profile) {
+        return None;
+    }
+    let begin = rd::<usize>(profile + PROFILE_FLEETS_BEGIN)?;
+    let end = rd::<usize>(profile + PROFILE_FLEETS_END)?;
+    let bytes = end.checked_sub(begin)?;
+    (plausible(begin)
+        && bytes.is_multiple_of(size_of::<usize>())
+        && bytes / size_of::<usize>() <= MAX_PROFILE_FLEETS
+        && (bytes == 0 || readable_span(begin, bytes)))
+    .then_some(begin..end)
+}
+
+/// Read the original battery's position, not the newly selected fleet's position.
+///
+/// # Safety
+/// Called on the live map seam. Revalidate against the current selection or campaign roster
+/// before reading the captured address; only scalar position is returned to the visual plan.
+unsafe fn firing_fleet_position((fleet, id): (usize, i64)) -> Option<[f32; 2]> {
+    if read::<usize>(PLAYER_ESCADRA) != fleet
+        && !campaign_fleet_slots()?
+            .step_by(size_of::<usize>())
+            .any(|slot| read::<usize>(slot) == fleet)
+    {
+        return None;
+    }
     if !plausible(fleet)
         || !readable_span(fleet, ESCADRA_READ_SPAN)
         || read::<u16>(fleet + NODE_CODE) != ESCADRA_CLASS
+        || read::<i64>(fleet + offset_of!(Node, id)) != id
     {
-        return;
+        return None;
     }
-    (fleet as *mut f32)
-        .byte_add(MAP_SPEED)
-        .write_unaligned(0.0f32);
+    let position: [f32; 2] = read(fleet + MAP_POSITION);
+    position
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(position)
 }
 
 unsafe fn map_ready() -> bool {
@@ -467,15 +497,6 @@ unsafe fn battery_stats(ship: usize, duration: Duration) -> Option<(u32, u32, u3
     Some((rounds, mounts, sound_weight))
 }
 
-/// Drops the fleet's speed to zero without touching its waypoint or altitude.
-///
-/// # Safety
-/// `fleet` is the firing Escadra identity captured on the game thread; `stop_fleet`
-/// revalidates its class and readable span before writing.
-unsafe fn hold_fleet(fleet: usize) {
-    stop_fleet(fleet);
-}
-
 /// Called by the existing game-thread GUI input callback, before rendering.
 pub(crate) unsafe fn tick() {
     if !ENABLED.load(Relaxed) {
@@ -508,14 +529,6 @@ pub(crate) unsafe fn tick() {
         menu.next_sound = None;
         menu.last_refresh = None;
         visual::clear();
-    }
-    // Keep the firing fleet stationary every input frame, before the 200 ms paint gate:
-    // a move order can arrive at any time. Only horizontal movement is cancelled; the
-    // hold never writes the altitude fields, so an airborne fleet stays airborne.
-    if let Some(barrage) = menu.barrage.as_ref().filter(|barrage| {
-        remaining(barrage, clock).is_some_and(|left| left > barrage.flight_seconds)
-    }) {
-        hold_fleet(barrage.fleet.0);
     }
     if let Some(barrage) = menu.barrage.as_mut() {
         match remaining(barrage, clock) {
@@ -949,9 +962,6 @@ pub(crate) unsafe fn on_click(name: &str, gui: usize, button: usize) -> bool {
         });
         menu.next_sound = Some(now);
         menu.notice(now, "FIRING");
-        // Stop an in-progress leg immediately; later player move orders are dropped in tick.
-        // SAFETY: the fleet was just validated against the live selection and native clock.
-        hold_fleet(fleet.identity.0);
         return true;
     }
     if firing_here {

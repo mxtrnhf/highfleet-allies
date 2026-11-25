@@ -13,6 +13,7 @@ use crate::{
     diag::readable_span,
     native::{read, roster, CLOCK, SCENE_FLAGS},
     native_layout::{Creature, Link, Node},
+    sound,
 };
 
 use super::{
@@ -38,7 +39,7 @@ const MAX_DEFENDERS: usize = 4; // Native setup limit.
 const MAX_ROUNDS_PER_DEFENDER: u32 = 3;
 const MAX_GROUND_ROUNDS: u32 = 24;
 const MAX_IN_FLIGHT: usize = 6;
-const OPENING_SECONDS: f64 = 0.65;
+const WIND_ONLY_SECONDS: f64 = 2.5;
 const AFTERMATH_SECONDS: f64 = 1.2;
 
 #[derive(Clone, Copy)]
@@ -82,6 +83,8 @@ struct Raid {
     hit_impacts: u32,
     ground_impacts: u32,
     opening_count: u8,
+    opening_started: bool,
+    salvo_left: u8,
     ground_left: u32,
     intensity: f32,
     random: u64,
@@ -103,6 +106,27 @@ impl Raid {
 
     fn sample(&mut self) -> f64 {
         f64::from(self.roll()) / 4_294_967_296.0
+    }
+
+    fn space_next_launch(&mut self, now: f64) {
+        if self.salvo_left == 0 {
+            // Start a new salvo with a random count, including occasional lone rounds.
+            let longest_salvo = 3.0 + 4.0 * f64::from(self.intensity);
+            self.salvo_left = if self.sample() < 0.18 {
+                0
+            } else {
+                1 + (self.sample() * (longest_salvo - 1.0)) as u8
+            };
+        } else {
+            self.salvo_left -= 1;
+        }
+        self.next_at = now
+            + if self.salvo_left != 0 {
+                0.045 + 0.14 * self.sample()
+            } else {
+                // Separate clusters with actual lulls, not jitter around a constant beat.
+                0.55 + 1.35 * self.sample().powi(2)
+            };
     }
 }
 
@@ -308,10 +332,12 @@ unsafe extern "C" fn after_setup() -> u8 {
                 hit_impacts: 0,
                 ground_impacts: 0,
                 opening_count: 0,
+                opening_started: false,
+                salvo_left: 0,
                 ground_left,
                 intensity: ground_left as f32 / MAX_GROUND_ROUNDS as f32,
                 random: volume.seed.rotate_right(23).max(1),
-                next_at: now + OPENING_SECONDS,
+                next_at: f64::INFINITY,
                 time: now,
                 finish_at: None,
                 flights: Vec::with_capacity(MAX_IN_FLIGHT),
@@ -375,6 +401,11 @@ unsafe extern "C" fn tick() -> u8 {
         return 0;
     };
     raid.time = now;
+    let play_wind = !raid.opening_started;
+    if play_wind {
+        raid.opening_started = true;
+        raid.next_at = now + WIND_ONLY_SECONDS;
+    }
     if raid.opening_count == 0 {
         raid.opening_count = ships.len() as u8;
         for (slot, &ship) in raid.opening_defenders.iter_mut().zip(&ships) {
@@ -418,6 +449,10 @@ unsafe extern "C" fn tick() -> u8 {
     let intensity = raid.intensity;
     drop(state);
 
+    if play_wind {
+        // SAFETY: the native raid scene is live on its game thread. Sound uses the GUI root.
+        sound::shelling_wind();
+    }
     let mut hits = 0;
     let mut misses = 0;
     let mut destroyed = 0;
@@ -532,14 +567,7 @@ unsafe fn schedule_round(
             lands_at,
             cue,
         });
-        // Allow overlapping rounds and leave an occasional lull between groups of impacts.
-        let spacing = (0.14 + 0.38 * raid.sample()) * (1.0 - 0.52 * f64::from(raid.intensity));
-        let lull = if raid.sample() < 0.13 {
-            0.28 + raid.sample() * 0.32
-        } else {
-            0.0
-        };
-        raid.next_at = now + spacing + lull;
+        raid.space_next_launch(now);
         return;
     }
 }

@@ -21,7 +21,7 @@ const SPAWN_EXPLOSION_FX: usize = 0x1_401c_7270;
 const MAX_ZOOM: f32 = 1.8;
 const FRAME_SIDE_PADDING: f32 = 140.0;
 const SKY_HEADROOM: f32 = 200.0;
-const GROUND_SCREEN_FRACTION: f32 = 0.86;
+const GROUND_SCREEN_FRACTION: f32 = 0.93;
 const MISS_CLEARANCE: f32 = 95.0;
 const MAX_MISS_DROP: f32 = 650.0;
 const GROUND_SEARCH_SAMPLES: usize = 9;
@@ -97,7 +97,7 @@ impl Frame {
                 ground_point(self.ground_x[0] + (self.ground_x[1] - self.ground_x[0]) * fraction)
             })
             .find(|&point| {
-                (self.ground_y[0]..=self.ground_y[1] + 32.0).contains(&point[1])
+                (self.ground_y[0]..=self.ground_y[1]).contains(&point[1])
                     && clear_of_hulls(point, hulls.clone())
             })
     }

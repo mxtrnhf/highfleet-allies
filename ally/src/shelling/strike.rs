@@ -7,21 +7,18 @@ use std::{
 
 use crate::{
     diag::{rd, readable_span},
-    native::{plausible, read, GET_PROFILE, OFF_ACTIVE},
+    native::{plausible, read, OFF_ACTIVE},
     native_layout::{
         Body, Creature, EscadraString, Link, Node, PartStats, SentinelList, NODE_OWNER,
     },
 };
 
 use super::{
-    fleet_ships, is_ship,
+    campaign_fleet_slots, fleet_ships, is_ship,
     presentation::{approach_offset, Point},
     ESCADRA_CLASS, ESCADRA_READ_SPAN, MAP_POSITION, NODE_CODE,
 };
 
-const PROFILE_FLEETS_BEGIN: usize = 0x1f8;
-const PROFILE_FLEETS_END: usize = 0x200;
-const MAX_PROFILE_FLEETS: usize = 256;
 const ESCADRA_ROLE: usize = 0x3a8;
 // Serialized as `canBeUnloaded` by Escadra_RegisterProperties at 0x14010085b.
 const ESCADRA_CAN_BE_UNLOADED: usize = 0x52c;
@@ -480,22 +477,10 @@ unsafe fn damage_part(part: usize, damage: f32) -> Option<(bool, f32)> {
 /// callback that obtained them; native side links own the transition.
 pub(super) unsafe fn garrison_fleets(city: [f32; 2]) -> Vec<usize> {
     let mut fleets = Vec::new();
-    let get_profile: unsafe extern "C" fn() -> usize = std::mem::transmute(GET_PROFILE);
-    let profile = get_profile();
-    if !plausible(profile) {
+    let Some(slots) = campaign_fleet_slots() else {
         return fleets;
-    }
-    let begin: usize = read(profile + PROFILE_FLEETS_BEGIN);
-    let end: usize = read(profile + PROFILE_FLEETS_END);
-    if begin < 0x10000
-        || end < begin
-        || !(end - begin).is_multiple_of(size_of::<usize>())
-        || (end - begin) / size_of::<usize>() > MAX_PROFILE_FLEETS
-        || (end > begin && !readable_span(begin, end - begin))
-    {
-        return fleets;
-    }
-    for fleet in (begin..end).step_by(size_of::<usize>()) {
+    };
+    for fleet in slots.step_by(size_of::<usize>()) {
         let fleet: usize = read(fleet);
         if !plausible(fleet)
             || !readable_span(

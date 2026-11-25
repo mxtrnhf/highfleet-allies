@@ -106,11 +106,13 @@ impl Composition {
     }
 }
 
-/// Immutable per-round simulation for one barrage.
+/// Fixed arrival schedule and hit results, plus launch origins sampled from the moving battery.
 #[derive(Clone, Debug)]
 pub struct Plan {
-    origin: [f32; 2],
     target: [f32; 2],
+    last_observation: (f64, [f32; 2]),
+    tracer_origins: Vec<[f32; 2]>,
+    tracer_stride: u32,
     start_clock: f64,
     end_seconds: f64,
     flight_seconds: f64,
@@ -149,12 +151,19 @@ impl Plan {
         let flight_seconds = flight_seconds((target[0] - origin[0]).hypot(target[1] - origin[1]));
         let rounds = composition.rounds;
         let period_seconds = duration_seconds / f64::from(rounds);
+        // Keep the same indices throughout the barrage; motion cannot change which rounds draw.
+        let peak_airborne = (flight_seconds / period_seconds).ceil() as u32;
+        let tracer_stride = peak_airborne.min(rounds).max(1).div_ceil(MAX_SHELLS as u32);
+        let mut tracer_origins = Vec::with_capacity(rounds.div_ceil(tracer_stride) as usize);
+        tracer_origins.push(origin);
         let effective_hits = (0..rounds)
             .filter(|&index| shell_hit(seed, index, round_hit_chance))
             .collect();
         Some(Self {
-            origin,
             target,
+            last_observation: (0.0, origin),
+            tracer_origins,
+            tracer_stride,
             start_clock,
             end_seconds: duration_seconds + flight_seconds,
             flight_seconds,
@@ -184,6 +193,35 @@ impl Plan {
 
     fn launch_time(&self, index: u32) -> f64 {
         f64::from(index) * self.period_seconds
+    }
+
+    fn last_launched(&self, elapsed: f64) -> u32 {
+        ((elapsed / self.period_seconds).floor() as u32).min(self.rounds - 1)
+    }
+
+    /// Seal the origins of newly launched tracers. Interpolate during a map-time jump, but
+    /// never overwrite a previous launch when the fleet turns, moves, or is deselected.
+    fn record_launches(&mut self, elapsed: f64, observed: Option<[f32; 2]>) {
+        let (previous_time, previous) = self.last_observation;
+        if elapsed < previous_time {
+            return;
+        }
+        let position = observed.unwrap_or(previous);
+        let last = self.last_launched(elapsed) / self.tracer_stride;
+        while self.tracer_origins.len() <= last as usize {
+            let index = self.tracer_origins.len() as u32 * self.tracer_stride;
+            let fraction = if elapsed > previous_time {
+                ((self.launch_time(index) - previous_time) / (elapsed - previous_time))
+                    .clamp(0.0, 1.0) as f32
+            } else {
+                1.0
+            };
+            self.tracer_origins.push([
+                previous[0] + (position[0] - previous[0]) * fraction,
+                previous[1] + (position[1] - previous[1]) * fraction,
+            ]);
+        }
+        self.last_observation = (elapsed, position);
     }
 
     fn is_effective_hit(&self, index: u32) -> bool {
@@ -258,42 +296,38 @@ pub fn sample_frame(plan: &Plan, elapsed: f64) -> Frame {
         return frame;
     }
     frame.cannon = plan.cannon;
-    let direction = [
-        plan.target[0] - plan.origin[0],
-        plan.target[1] - plan.origin[1],
-    ];
-    let rotation = direction[1].atan2(direction[0]);
-    let last_index = ((elapsed / plan.period_seconds).floor() as u64)
-        .min(u64::from(plan.rounds.saturating_sub(1)));
+    let last_index = plan.last_launched(elapsed);
     let first_index =
-        (((elapsed - plan.flight_seconds) / plan.period_seconds).floor() as i64 + 1).max(0) as u64;
+        (((elapsed - plan.flight_seconds) / plan.period_seconds).floor() as i64 + 1).max(0) as u32;
     if first_index <= last_index {
         // Pin the visible subset to whole-barrage indices. A sliding stride/phase
         // swaps dots out mid-flight and looks like sparkles instead of movement.
-        let peak_airborne = (plan.flight_seconds / plan.period_seconds).ceil() as u64;
-        let stride = peak_airborne
-            .min(u64::from(plan.rounds))
-            .max(1)
-            .div_ceil(MAX_SHELLS as u64);
+        let stride = plan.tracer_stride;
         let first_visible = first_index.div_ceil(stride) * stride;
         for index in (first_visible..=last_index).step_by(stride as usize) {
-            let since_launch = elapsed - plan.launch_time(index as u32);
+            let since_launch = elapsed - plan.launch_time(index);
             if !(0.0..plan.flight_seconds).contains(&since_launch)
                 || frame.shell_count >= MAX_SHELLS
             {
                 continue;
             }
+            let Some(&origin) = plan.tracer_origins.get((index / stride) as usize) else {
+                continue;
+            };
             let fraction = (since_launch / plan.flight_seconds) as f32;
-            let [scatter_x, scatter_y] = plan.impact_scatter(index as u32);
+            let [scatter_x, scatter_y] = plan.impact_scatter(index);
+            let direction = [
+                plan.target[0] + scatter_x - origin[0],
+                plan.target[1] + scatter_y - origin[1],
+            ];
             frame.shells[frame.shell_count] = ShellPosition {
                 world: [
-                    plan.origin[0] + (direction[0] + scatter_x) * fraction,
-                    plan.origin[1] + (direction[1] + scatter_y) * fraction,
+                    origin[0] + direction[0] * fraction,
+                    origin[1] + direction[1] * fraction,
                 ],
                 progress: fraction,
-                rotation,
-                spread: Plan::shell_spread(index as u32)
-                    * (1.0 + plan.mounts.min(32) as f32 * 0.02),
+                rotation: direction[1].atan2(direction[0]),
+                spread: Plan::shell_spread(index) * (1.0 + plan.mounts.min(32) as f32 * 0.02),
             };
             frame.shell_count += 1;
         }
@@ -391,16 +425,17 @@ pub(crate) fn landed_hit_count(clock: f64) -> Option<u32> {
     Some(plan.landed_hit_count(plan.elapsed(clock)?))
 }
 
-fn sample(clock: f64) -> bool {
+fn sample(clock: f64, origin: Option<[f32; 2]>) -> bool {
     let Ok(mut state) = STATE.try_lock() else {
         return false;
     };
-    let Some(plan) = state.plan.as_ref() else {
+    let Some(plan) = state.plan.as_mut() else {
         return false;
     };
     let Some(elapsed) = plan.elapsed(clock) else {
         return false;
     };
+    plan.record_launches(elapsed, origin);
     let (duration, lifetime) = (plan.end_seconds, plan.burst_lifetime);
     if elapsed < duration {
         state.elapsed = elapsed;
@@ -505,7 +540,7 @@ unsafe fn draw() {
             sample_frame(plan, state.elapsed),
             plan.rounds,
             plan.effective_hits.len(),
-            plan.origin,
+            plan.last_observation.1,
             plan.target,
         )
     };
@@ -520,8 +555,8 @@ unsafe fn draw() {
     draw_impacts(&frame);
 }
 
-pub(crate) unsafe fn draw_with_clock(clock: f64) {
-    if sample(clock) {
+pub(crate) unsafe fn draw_with_clock(clock: f64, origin: Option<[f32; 2]>) {
+    if sample(clock, origin) {
         draw();
     } else if let Ok(mut state) = STATE.try_lock() {
         state.elapsed = 0.0;

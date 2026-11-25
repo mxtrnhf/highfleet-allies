@@ -77,6 +77,8 @@ const SND_SHELL: [&[u8]; 4] = [
     b"shell_out_big_far_04\0",
 ];
 const SHELL_VOLUME: f32 = 45.0;
+const SND_RAID_WIND: &[u8] = b"wind_02\0";
+const RAID_WIND_VOLUME: f32 = 22.0;
 const SND_RAID_DISTANT: [&[u8]; 4] = [
     b"explosion_small_far_01\0",
     b"explosion_small_far_02\0",
@@ -202,6 +204,13 @@ pub(crate) unsafe fn shelling_volley() {
         return;
     }
     let _ = play_sfx_silent(SND_SHELL[pick(SND_SHELL.len())], SHELL_VOLUME, 1.0);
+}
+
+/// Start a single stock wind cue before any tactical rounds appear.
+pub(crate) unsafe fn shelling_wind() {
+    if SHELLING_SOUNDS.load(Ordering::Relaxed) {
+        let _ = play_sfx_silent(SND_RAID_WIND, RAID_WIND_VOLUME, 1.0);
+    }
 }
 
 /// Vary loudness, pitch and the odds of a hard-clipped onset without changing the master mix.

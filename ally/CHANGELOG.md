@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.75 (mobile barrages and wind before the salvos):** remove the fleet speed hold. Map tracers launch from the moving fleet and keep their original paths after launch. Put terrain lower in the tactical shot, open with 2.5 seconds of wind before the first rounds, and use irregular clusters and longer gaps instead of a steady rhythm. Strategic timing and damage rules are unchanged. In-game validation pending.
+
 * **v1.3.74 (more sky and louder tactical impacts):** frame the ground near the bottom of the fixed raid shot. Incoming tracers start above the actual viewport and descend into frame. Raise tactical impact gains and randomly mix in stock samples with clipped transients, without changing global audio or damage. In-game validation pending.
 
 * **v1.3.73 (shelling damage retention, distance ETA and irregular barrages):** a shell-damaged garrison keeps full native ship records instead of unloading them into pristine designs between encounters. Map shell travel depends only on distance; longer barrages fire longer, and the final shells can still be in flight after the fleet resumes its course. Raise the fixed tactical camera, scatter more ground misses from heavier barrages, and vary impact spacing, flash size, pitch and samples. Strategic hit chances and the HE damage model are unchanged. In-game validation pending.

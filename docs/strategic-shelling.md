@@ -16,8 +16,10 @@ assumes a full starting magazine, reloads one round at a time, and skips
 tactical crew/perk modifiers. The range (270 km landed, 450 km at cruise
 altitude), travel time and hit model are provisional **game balance** values,
 not real-world ballistics. ETA is the first round's flight time at a fixed
-strategic speed of 1 km/s (five seconds minimum). It depends only on distance,
-not on the firing window, battery size or altitude.
+strategic speed of 1 km/s (five seconds minimum). It depends only on the
+distance when the fire order is issued, not on the firing window, battery
+size or altitude. Subsequent fleet movement changes tracer origins, not
+the barrage's arrival schedule or hit odds.
 
 Each shell has a small, range-dependent chance of damaging a useful target
 inside the city; most rounds land in the built-up area and count for nothing.
@@ -29,7 +31,8 @@ hits.
 **FIRE starts one simulation for every round.** Each round receives its own
 launch time, flight time and deterministic effective-hit result from the same
 range-dependent probability shown by the preview. Bright native-geometry tracers
-travel from the firing fleet to the city. When an effective round lands, it is
+travel from the firing fleet's position at launch to the city; they do not
+follow the fleet after launch. When an effective round lands, it is
 counted toward the raid. Long time-compression jumps count all intervening
 landed hits, not just the currently drawn frame.
 The firing window lasts the selected 10, 30 or 60 minutes; the last shells
@@ -38,13 +41,14 @@ are still in flight when it ends. The map shows **LANDING** until they arrive.
 At the end of an uninterrupted barrage with effective hits and a hostile
 garrison, a short tactical spectator scene shows incoming rounds and localized
 hits. The fixed shot gives most of the frame to the sky and places the lowest
-sampled ground near 86% of the viewport height. Shell tracers start above
-the top edge, even when the shot zooms out to fit the defender group.
+sampled ground near 93% of the viewport height. The opening gives the wind
+2.5 seconds on its own before shells start descending from above the top
+edge, even when the shot zooms out to fit the defender group.
 The native impact effect supplies flash, smoke and flying debris. Representative
 dirt strikes are spread over clear terrain in the shot and scale with the
 number of rounds that missed (up to 24 displayed ground strikes). Misses
-are cosmetic and do not consume an effective strategic hit. Bursts overlap
-and alternate with quiet gaps instead of landing on a fixed beat. The raid
+are cosmetic and do not consume an effective strategic hit. Quick salvos
+and occasional single rounds alternate with longer, uneven lulls. The raid
 represents the barrage rather than replaying all rounds: native
 defender setup deploys up to four ships, with at most three representative
 impacts per ship. Later rounds assigned to a lost ship are skipped.
@@ -70,18 +74,17 @@ changes, `shelling campaign damage retained` records the unload opt-out, and
 
 - One barrage runs at a time. A second fleet's **FIRE** reports that another
   barrage is under way.
-- The firing fleet's speed is forced to zero every input frame and again after
-  the simulation on the map render seam. Its waypoint, move order and altitude
-  are left untouched, so the fleet resumes its original course when it stops
-  firing, even while the last rounds are airborne.
+- A barrage does not alter the firing fleet's speed, route, move orders or
+  altitude. The user can maneuver throughout firing and while the last
+  rounds are airborne.
 - Barrage time uses the campaign clock (`hourCount_`, `0x143a119c8`), so time
   compression advances the countdown. Leaving the map early or aborting discards
   the barrage; no delayed normal-combat hit remains.
 - One quiet `shell_out_big_far_01..04` report plays every 6.8–7.8 seconds, only
   while the firing fleet is selected and the map is open. The 6.5-second samples
   therefore do not overlap. There are no extra bass,
-  heavy-crack or rumble layers. `"shelling_sounds": false` silences these reports
-  without stopping the barrage.
+  heavy-crack or rumble layers on the map. `"shelling_sounds": false`
+  silences the mod's reports, raid wind and impacts without stopping the barrage.
 - Map visualization uses the native `Gfx_DrawWorldLine` primitive on the M11
   seam, not text glyphs. Each visible shell is a bright short tracer with a
   cross-shaped centre. Dots keep travelling when another fleet is selected and
@@ -159,11 +162,11 @@ changes, `shelling campaign damage retained` records the unload opt-out, and
 - `Escadra` and `Location` share the `Mark` position at `+0x150/+0x154`.
   `Escadra_ApplyMapModeFields` (`0x1400f92b0`) sets the current altitude
   at `+0x168` to 9000; `+0x368` is the requested altitude, not the current one.
-- A map move order sets `Escadra+0x2d8` (target link), `+0x461`, `+0x368` and
-  `+0x464`; `UpdateStrategicFleet` (`0x140111ff0`) consumes them. The hold only
-  writes the speed field at `+0x158`, so the route and altitude stay intact.
-  The post-simulation write runs on the map renderer's flush call
-  (`0x14030dae4` → `0x140083b50`, M11), after the fleet update for that frame.
+- The map renderer's flush call (`0x14030dae4` → `0x140083b50`, M11) observes
+  the firing fleet's position after its movement update. It follows the
+  original fleet identity through selection changes, interpolates new
+  tracer launches between observations, and never changes an airborne
+  tracer's launch point.
 - The preview adds no hook sites. It uses the ally DLL's existing game-thread
   GUI input and click dispatch, with bounded fleet, gun and GUI-list reads.
   The native control lives on stage 67, after the stage 65/66 cockpit panels,
@@ -200,19 +203,19 @@ cities alone.
   hits should increase while ETA stays the same and matches the first map burst.
   Change the distance and check a target just inside and outside range,
   landed and airborne.
-- Press **FIRE**. The fleet's speed must read zero while its waypoint stays
-  unchanged, and it must keep its current altitude (airborne stays airborne,
-  landed stays landed). The countdown must advance with time compression and
-  the gunfire must stop when another fleet is selected. **ABORT** must stop the
-  countdown and let the fleet resume its original course. A completed firing
-  window should also release the fleet while the **LANDING** timer runs.
+- Press **FIRE** while the fleet is moving. Change its orders or altitude
+  and confirm they still work. The countdown must advance with time
+  compression and the gunfire must stop when another fleet is selected.
+  **ABORT** must cancel the barrage without changing the fleet's orders.
 - Press **FIRE** and keep both the fleet and target in view. Bright native-line
   shell tracers must visibly travel the whole route, not sit at the muzzle or
-  city. Pale bursts are misses; orange bursts are effective hits. Select another
-  fleet and verify that the firing fleet remains held and its tracers continue.
+  city. Pale bursts are misses; orange bursts are effective hits. Turn the
+  battery and select another fleet: new tracers should follow the original
+  battery, and airborne tracers should not jump.
 - On a backup campaign save, let a barrage finish against a hostile garrison.
   Verify the camera holds the whole group near the bottom and neither chases
-  impacts nor shakes. Check that rounds enter from above and visibly end in
+  impacts nor shakes. Check the wind-only opening, the lulls between salvos,
+  and that rounds enter from above and visibly end in
   stock flashes, smoke and flying
   debris on hulls and dirt, and that it then returns to the map without an
   ordinary battle. Compare a single mount and a heavy battery: the latter
