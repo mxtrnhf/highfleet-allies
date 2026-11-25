@@ -37,7 +37,9 @@ are still in flight when it ends. The map shows **LANDING** until they arrive.
 
 At the end of an uninterrupted barrage with effective hits and a hostile
 garrison, a short tactical spectator scene shows incoming rounds and localized
-hits. One raised, fixed shot frames the opening defender group and nearby ground.
+hits. The fixed shot gives most of the frame to the sky and places the lowest
+sampled ground near 86% of the viewport height. Shell tracers start above
+the top edge, even when the shot zooms out to fit the defender group.
 The native impact effect supplies flash, smoke and flying debris. Representative
 dirt strikes are spread over clear terrain in the shot and scale with the
 number of rounds that missed (up to 24 displayed ground strikes). Misses
@@ -51,8 +53,9 @@ falls off from that point and armour reduces exposure behind it. Any real
 module can be hit, including bridges, engines and other critical parts.
 Zero-HP parts use silent native removal; a critical loss can kill a ship.
 No player ship is deployed, and no campaign missile is spawned or consumed.
-The sound mix varies between distant thumps, close cracks and occasional
-metal impacts, with bigger barrages sounding fuller. It follows the same
+The louder tactical mix varies between distant thumps, metal impacts and
+cracks. Some rounds use stock samples with clipped transients, without
+changing the game's master volume. It follows the same
 `shelling_sounds` setting as the map.
 
 After the last impact, the encounter returns through native missile-scene
@@ -132,8 +135,9 @@ changes, `shelling campaign damage retained` records the unload opt-out, and
   with `Landscape_GroundHeightAt` (`0x1402ee0c0`). At the battle renderer
   dispatch (`0x140300d7d`), it temporarily overrides screen target, zoom and
   shake for the full draw and restores stock values afterward. Incoming
-  tracers draw before the stock battle overlay flush (`0x140309408`), not
-  through the player target-box branch.
+  tracers invert that same projection to enter from above the viewport
+  and draw before the stock battle overlay flush (`0x140309408`), not through
+  the player target-box branch.
 - At a tactical strike, `FX_SpawnExplosionDebris` (`0x1401c7270`) creates
   the stock particles and transient effect light. Shelling does not call
   `Body_Explode`, create a damaging projectile, or run a native blast pass.
@@ -207,8 +211,9 @@ cities alone.
   city. Pale bursts are misses; orange bursts are effective hits. Select another
   fleet and verify that the firing fleet remains held and its tracers continue.
 - On a backup campaign save, let a barrage finish against a hostile garrison.
-  Verify the camera frames the whole group and neither chases impacts nor
-  shakes. Check that rounds visibly end in stock flashes, smoke and flying
+  Verify the camera holds the whole group near the bottom and neither chases
+  impacts nor shakes. Check that rounds enter from above and visibly end in
+  stock flashes, smoke and flying
   debris on hulls and dirt, and that it then returns to the map without an
   ordinary battle. Compare a single mount and a heavy battery: the latter
   should have more ground bursts, denser groups and a less uniform sound mix.

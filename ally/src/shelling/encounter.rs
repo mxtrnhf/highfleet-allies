@@ -522,7 +522,7 @@ unsafe fn schedule_round(
                 point,
             )
         };
-        let lands_at = now + 0.24 + raid.sample() * 0.25;
+        let lands_at = now + 0.34 + raid.sample() * 0.29;
         let cue = raid.roll();
         raid.flights.push(Flight {
             ship,
@@ -585,10 +585,13 @@ unsafe extern "C" fn draw_tracer() {
     let mut slots = raid.flights.iter().copied();
     let flights: [Option<Flight>; MAX_IN_FLIGHT] = std::array::from_fn(|_| slots.next());
     drop(state);
+    let Some(sky) = presentation::SkyEntry::capture() else {
+        return;
+    };
     for flight in flights.into_iter().flatten() {
         let fraction = ((time - flight.fired_at) / (flight.lands_at - flight.fired_at)) as f32;
         if fraction.is_finite() && flight.point.iter().all(|n| n.is_finite()) {
-            presentation::tracer(flight.point, flight.direction, fraction);
+            sky.tracer(flight.point, flight.direction, fraction);
         }
     }
 }

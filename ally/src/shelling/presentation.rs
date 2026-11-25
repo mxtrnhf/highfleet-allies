@@ -19,11 +19,14 @@ const GROUND_HEIGHT_AT: usize = 0x1_402e_e0c0;
 const GROUND_POINT_COUNT: usize = 0x1_4800_ee1c;
 const SPAWN_EXPLOSION_FX: usize = 0x1_401c_7270;
 const MAX_ZOOM: f32 = 1.8;
-const FRAME_PADDING: [f32; 2] = [140.0, 170.0];
-const CAMERA_LIFT: f32 = 110.0;
+const FRAME_SIDE_PADDING: f32 = 140.0;
+const SKY_HEADROOM: f32 = 200.0;
+const GROUND_SCREEN_FRACTION: f32 = 0.86;
 const MISS_CLEARANCE: f32 = 95.0;
 const MAX_MISS_DROP: f32 = 650.0;
 const GROUND_SEARCH_SAMPLES: usize = 9;
+const TRACER_ENTRY_MARGIN_PX: f32 = 56.0;
+const TRACER_LENGTH_WORLD: f32 = 38.0;
 
 thread_local! {
     // Scope audio suppression to our synchronous FX invocation, not all explosions in a raid.
@@ -44,8 +47,6 @@ pub(super) struct Hull {
 
 #[derive(Clone, Copy)]
 pub(super) struct Frame {
-    center: Point,
-    extent: Point,
     ground_x: Point,
     ground_y: Point,
 }
@@ -78,18 +79,7 @@ impl Frame {
                 ground_y[1] = ground_y[1].max(y);
             }
         }
-        Some(Self {
-            center: [
-                (ground_x[0] + ground_x[1]) * 0.5,
-                (min[1] + ground_y[1]) * 0.5 - CAMERA_LIFT,
-            ],
-            extent: [
-                ground_x[1] - ground_x[0] + FRAME_PADDING[0] * 2.0,
-                ground_y[1] - min[1] + FRAME_PADDING[1] * 2.0,
-            ],
-            ground_x,
-            ground_y,
-        })
+        Some(Self { ground_x, ground_y })
     }
 
     /// Sample another piece of actual terrain in the same fixed shot.
@@ -121,17 +111,19 @@ impl Frame {
         let width = read::<i32>(FRAME_WIDTH) as f32;
         let height = read::<i32>(FRAME_HEIGHT) as f32;
         let [origin_x, origin_y]: Point = read(PROJECTION_ORIGIN);
-        let zoom = (width / self.extent[0])
-            .min(height / self.extent[1])
+        let [left, right] = self.ground_x;
+        let [top, ground] = self.ground_y;
+        let ground_pixels = height * GROUND_SCREEN_FRACTION;
+        let zoom = (width / (right - left + FRAME_SIDE_PADDING * 2.0))
+            .min(ground_pixels / (ground - top + SKY_HEADROOM))
             .min(MAX_ZOOM);
         if zoom <= 0.0 || ![zoom, origin_x, origin_y].iter().all(|n| n.is_finite()) {
             draw();
             return;
         }
-        let [x, y] = self.center;
         let position = [
-            x + (origin_x - width * 0.5) / zoom,
-            y + (origin_y - height * 0.5) / zoom,
+            (left + right) * 0.5 + (origin_x - width * 0.5) / zoom,
+            ground + (origin_y - ground_pixels) / zoom,
         ];
         let camera = CAMERA as *mut [f32; 6];
         let zoom_field = ZOOM as *mut f32;
@@ -218,15 +210,65 @@ pub(super) unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
     Ok(())
 }
 
-/// Draw the incoming round using the same world transform as the defenders and impact effects.
-pub(super) unsafe fn tracer(target: Point, direction: f32, fraction: f32) {
-    let left = 1.0 - fraction.clamp(0.0, 1.0);
-    let [x, y] = approach_offset(direction);
-    let head = [target[0] + x * left, target[1] + y * left];
-    visual::world_line(
-        [head[0] + direction * 23.0, head[1] - 30.0],
-        head,
-        3.5,
-        0xffff_efa0,
-    );
+pub(super) struct SkyEntry {
+    above_top: f32,
+    inner_left: f32,
+    inner_right: f32,
+}
+
+impl SkyEntry {
+    /// Invert the tactical world-line projection so the shot starts beyond the actual viewport,
+    /// including on wider shots that zoom out to fit the whole garrison.
+    ///
+    /// # Safety
+    /// Called on the battle render seam with its native projection installed.
+    pub(super) unsafe fn capture() -> Option<Self> {
+        let [x, y, fast_x, fast_y, slow_x, slow_y]: [f32; 6] = read(CAMERA);
+        let [origin_x, origin_y]: Point = read(PROJECTION_ORIGIN);
+        let zoom: f32 = read(ZOOM);
+        let width = read::<i32>(FRAME_WIDTH) as f32;
+        if !zoom.is_finite() || zoom <= 0.0 || width <= 0.0 {
+            return None;
+        }
+        let left = x + fast_x + slow_x - origin_x / zoom;
+        let top = y + fast_y + slow_y - origin_y / zoom;
+        let inner_left = left + width * 0.08 / zoom;
+        let inner_right = left + width * 0.92 / zoom;
+        let above_top = top - TRACER_ENTRY_MARGIN_PX / zoom;
+        (above_top.is_finite()
+            && inner_left.is_finite()
+            && inner_right.is_finite()
+            && inner_left <= inner_right)
+            .then_some(Self {
+                above_top,
+                inner_left,
+                inner_right,
+            })
+    }
+
+    /// Draw a descending shell with the same terminal angle as the damage sightline.
+    ///
+    /// # Safety
+    /// The battle renderer still owns the projection captured by [`Self::capture`].
+    pub(super) unsafe fn tracer(&self, target: Point, direction: f32, fraction: f32) {
+        let left = 1.0 - fraction.clamp(0.0, 1.0);
+        let [dx, dy] = approach_offset(direction);
+        let rise = (target[1] - self.above_top).max(-dy);
+        let drift = dx * (rise / -dy);
+        // Bend the high end inward so flank shots enter through the top, not a side edge.
+        let start_x = (target[0] + drift).clamp(self.inner_left, self.inner_right);
+        let bend = start_x - target[0] - drift;
+        let head = [
+            target[0] + left * (drift + bend * left),
+            target[1] - rise * left,
+        ];
+        let tangent = drift + 2.0 * bend * left;
+        let tail_scale = TRACER_LENGTH_WORLD / tangent.hypot(rise);
+        visual::world_line(
+            [head[0] + tangent * tail_scale, head[1] - rise * tail_scale],
+            head,
+            3.5,
+            0xffff_efa0,
+        );
+    }
 }
