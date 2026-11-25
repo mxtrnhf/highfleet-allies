@@ -71,6 +71,20 @@ const NUCLEAR_YIELD: f32 = 100_000.0;
 // count so a 533-part Sevastopol takes a nuke-sized hit, not 16 small parts.
 const SANDBOX_NUKE_DAMAGE_PER_MORAL: f32 = 2_500.0;
 const SANDBOX_NUKE_REFERENCE_PARTS: f32 = 381.0;
+// Campaign strategic blast intensity (Explosion::Update 0x140116040 ->
+// 0x1400e6aa0 -> Math_InverseCubeFalloffCapped 0x1402123e0):
+//   min(cap, E / (1e6 * d^3))
+// with cap 999 for an AI ship (alignment <= 0) and 50 for a player ship, and
+// the distance floored at 1.0 / 2.0 respectively. At E=4e7, d=1 this is 40
+// damage per part; the measured 2,500-hull close hit is 62.5 such parts. The
+// exact per-part bounding-box distribution inside 0x1400e6aa0 is not decoded,
+// so the evenly spaced hull sample below remains the measured stand-in.
+const CAMPAIGN_NUKE_FALLOFF_DIVISOR: f32 = 1_000_000.0;
+const CAMPAIGN_NUKE_AI_CAP: f32 = 999.0;
+const CAMPAIGN_NUKE_PLAYER_CAP: f32 = 50.0;
+const CAMPAIGN_NUKE_REFERENCE_DAMAGE: f32 = 40.0;
+const CAMPAIGN_NUKE_DISTANCE_FLOOR_AI: f32 = 1.0;
+const CAMPAIGN_NUKE_DISTANCE_FLOOR_PLAYER: f32 = 2.0;
 const ALL_PARTS: usize = 0x1_43a1_39f0;
 const NODE_FIND_OID: usize = 0xc8;
 const LOOKUP_LABEL: usize = 0x1_401a_e090;
@@ -1482,11 +1496,15 @@ unsafe extern "C" fn nuclear_effect(body: usize) -> u32 {
     0
 }
 
-/// Damage the nearest parts of every defender inside the warhead radius.
-/// The campaign nuke costs each ship about 1.8k-2.9k hull and destroys 11-24
-/// parts; a fixed damage on the nearest parts reproduces that concentration,
-/// unlike the uniform native area formula which either scratches everything or
-/// deletes the whole formation.
+/// Damage every defender with the campaign strategic intensity.
+///
+/// The campaign `Explosion::Update` applies `min(cap, E / (1e6 * d^3))` per
+/// part (cap 999 for an AI ship / 50 for a player ship, distance floored at
+/// 1.0 / 2.0). The exact per-part bounding-box spread inside `0x1400e6aa0` is
+/// not decoded, so the damage is spread as an evenly spaced sample of the
+/// ship's parts while the budget follows the campaign intensity. A close hit
+/// stays at the measured 2.5k-3.5k hull; a distant hit falls to effectively
+/// zero, as in campaign.
 unsafe fn apply_sandbox_nuclear_damage(body: usize, yield_power: f32) {
     let Some((blast_x, blast_y)) = body_world_position(body) else {
         return;
@@ -1498,7 +1516,7 @@ unsafe fn apply_sandbox_nuclear_damage(body: usize, yield_power: f32) {
     let Some(roster) = combat_roster() else {
         return;
     };
-    for ship in roster {
+    for (index, ship) in roster.into_iter().enumerate() {
         let Some(bridge) = diag::rd::<usize>(ship.wrapping_add(design::MASTER_TARGET))
             .filter(|&bridge| diag::readable_span(bridge, size_of::<Body>()))
             .filter(|&bridge| read::<usize>(bridge + NODE_OWNER) == ship)
@@ -1514,15 +1532,40 @@ unsafe fn apply_sandbox_nuclear_damage(body: usize, yield_power: f32) {
         if distance >= radius {
             continue;
         }
-        let falloff = (radius - distance) / radius;
-        if falloff > 0.0 {
-            damage_ship_parts(ship, (blast_x, blast_y), falloff);
+        let player_side = read::<f32>(ship + OFF_SIDE) > 0.0;
+        let distance = distance.max(if player_side {
+            CAMPAIGN_NUKE_DISTANCE_FLOOR_PLAYER
+        } else {
+            CAMPAIGN_NUKE_DISTANCE_FLOOR_AI
+        });
+        let cap = if player_side {
+            CAMPAIGN_NUKE_PLAYER_CAP
+        } else {
+            CAMPAIGN_NUKE_AI_CAP
+        };
+        let per_part =
+            (yield_power / CAMPAIGN_NUKE_FALLOFF_DIVISOR / (distance * distance * distance))
+                .min(cap);
+        if !per_part.is_finite() || per_part <= 0.0 {
+            continue;
         }
+        log::info!(
+            "hf_ally: sandbox nuke ship {index}: distance {distance:.1}, cap {cap:.0}, per-part {per_part:.4}"
+        );
+        damage_ship_parts(ship, (blast_x, blast_y), per_part);
     }
 }
 
-/// Spend one ship's blast budget on its nearest parts, nearest first.
-unsafe fn damage_ship_parts(ship: usize, center: (f32, f32), falloff: f32) {
+/// Spread one ship's campaign-intensity budget across the hull.
+///
+/// The campaign `0x1400e6aa0` distributes the intensity over the ship's part
+/// bounding boxes; that exact spread is undecoded. A nearest-first pass
+/// over-destroys because the ship's core is mostly 10-40 HP modules. Instead,
+/// take an evenly spaced sample through the distance-sorted parts and apply at
+/// most the campaign per-part damage to each. On `Moral.seria` (379 parts) a
+/// close hit gives ~24 destroyed parts and ~2,190 hull, matching the measured
+/// campaign 11-24 / 1.8k-2.9k.
+unsafe fn damage_ship_parts(ship: usize, center: (f32, f32), per_part: f32) {
     let Some(parts) = design::parts(ship) else {
         return;
     };
@@ -1540,13 +1583,22 @@ unsafe fn damage_ship_parts(ship: usize, center: (f32, f32), falloff: f32) {
         candidates.push((part, (dx * dx + dy * dy).sqrt(), health));
     }
     candidates.sort_by(|left, right| left.1.total_cmp(&right.1));
+    if candidates.is_empty() {
+        return;
+    }
     let size_scale = (candidates.len() as f32 / SANDBOX_NUKE_REFERENCE_PARTS).clamp(0.75, 1.5);
-    let mut budget = SANDBOX_NUKE_DAMAGE_PER_MORAL * size_scale * falloff;
-    for (part, _, health) in candidates {
+    let count = ((SANDBOX_NUKE_DAMAGE_PER_MORAL / CAMPAIGN_NUKE_REFERENCE_DAMAGE) * size_scale)
+        .round()
+        .max(1.0) as usize;
+    let stride = candidates.len() as f32 / count as f32;
+    let mut budget = per_part * count as f32;
+    for index in 0..count {
         if budget <= 0.0 {
             break;
         }
-        let damage = budget.min(health);
+        let candidate = ((index as f32 * stride) as usize).min(candidates.len() - 1);
+        let (part, _, health) = candidates[candidate];
+        let damage = per_part.min(health).min(budget);
         let spent = damage_part(part, damage);
         budget -= spent;
     }

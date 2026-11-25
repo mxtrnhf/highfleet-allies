@@ -30,11 +30,15 @@ runs that handler and supplies the sandbox damage itself. Vanilla kind 4 never
 applies the area pass; the campaign result measured in v1.3.29 is about
 1.8k-2.9k hull and 11-24 destroyed parts per defending ship, i.e. a limited
 number of heavily damaged or destroyed modules rather than a uniform blast.
-As of v1.3.31 the sandbox spends a per-ship HP budget of 2,500 scaled by the
-ship's part count (so a 533-part Sevastopol takes more than a 381-part Moral),
-applied nearest-first at each part's actual HP with a linear distance falloff
-inside `sqrt(4e7)` = 6325 units. A near hit costs about 2.5k-3.5k hull with
-visible destroyed modules; campaign kind-4 behavior is untouched.
+As of v1.3.34 the sandbox uses the campaign `Explosion::Update` intensity
+`min(cap, E / (1e6 * d^3))` (cap 999 for an AI ship, 50 for a player ship;
+distance floored at 1.0 / 2.0), applies that per-part damage to an evenly
+spread sample of the ship's parts (so high-HP modules survive damaged and only
+low-HP modules are destroyed), and caps the total at a 2,500-hull budget scaled
+by the ship's part count (so a 533-part Sevastopol takes more than a 381-part
+Moral). A near hit costs about 2.5k-3.5k hull with 11-24 destroyed modules; a
+hit 100+ units away does effectively nothing, as in campaign. Campaign kind-4
+behavior is untouched.
 See the [blast damage RE notes](https://github.com/mxtrnhf/hf_notes/blob/master/docs/findings/combat/explosion-damage-1151-vs-1163.md).
 In the same scene the strategic map-impact call is skipped because it would mutate the
 campaign Profile and the staged escadra. The late battle pass that a nuke
