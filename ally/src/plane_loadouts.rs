@@ -31,6 +31,8 @@ use crate::native_layout::{
 
 use patchy::{PatchSession, ReturnType, Trampoline};
 
+use crate::diag;
+
 const ARM_FN: usize = 0x1_4002_e930;
 /// `mov rax,rsp; push rbp,rbx,rsi,rdi,r12,r13,r14,r15` (15 bytes, whole instructions, no RIP-relative operand).
 const ARM_BYTES: [u8; 15] = [
@@ -107,7 +109,7 @@ pub struct Arm {
     /// the loadout name (`LOADOUT_T7_FAB100`)
     pub key: String,
     /// the craft whose vector lists it (`CRAFT_T7`)
-    craft: String,
+    pub(crate) craft: String,
     pub label: String,
     /// (item name, count) of one plane
     parts: Vec<(String, i32)>,
@@ -323,40 +325,56 @@ fn vanilla_table() -> Table {
 /// The in-order nodes of an MSVC `std::map` global (`{ head*, size }`); empty when it looks unfilled or unreadable.
 unsafe fn map_nodes(global: usize) -> Vec<usize> {
     let (head, size): (usize, usize) = (rd(global), rd(global + 8));
-    if size == 0 || size > MAP_NODE_LIMIT || !crate::native::plausible(head) {
+    if size == 0 || size > MAP_NODE_LIMIT || !diag::readable_span(head, 0x20) {
         return Vec::new();
     }
-    let isnil = |n: usize| rd::<u8>(n + offset_of!(PlaneNode, is_sentinel)) != 0;
+    let is_node = |n: usize| {
+        n != head && diag::rd::<u8>(n.wrapping_add(offset_of!(PlaneNode, is_sentinel))) == Some(0)
+    };
     let mut out = Vec::new();
     let mut node: usize = rd(head); // head->left = the leftmost node
-    while node != head && out.len() <= size {
-        if !crate::native::plausible(node) {
+    while node != head && out.len() < size {
+        if !is_node(node) || !diag::readable_span(node, size_of::<PlaneNode>()) {
             return Vec::new();
         }
         out.push(node);
         let right: usize = rd(node + offset_of!(PlaneNode, right));
-        if crate::native::plausible(right) && !isnil(right) {
+        // A valid tree cannot ascend or descend more than the number of nodes.
+        if is_node(right) {
             node = right;
-            loop {
-                let left: usize = rd(node);
-                if !crate::native::plausible(left) || isnil(left) {
+            for depth in 0..size {
+                let Some(left) = diag::rd::<usize>(node) else {
+                    return Vec::new();
+                };
+                if !is_node(left) {
                     break;
+                }
+                if depth + 1 == size {
+                    return Vec::new();
                 }
                 node = left;
             }
         } else {
             let mut parent: usize = rd(node + offset_of!(PlaneNode, parent));
-            while crate::native::plausible(parent)
-                && !isnil(parent)
-                && node == rd::<usize>(parent + offset_of!(PlaneNode, right))
-            {
+            for depth in 0..size {
+                if !is_node(parent)
+                    || diag::rd::<usize>(parent + offset_of!(PlaneNode, right)) != Some(node)
+                {
+                    break;
+                }
+                if depth + 1 == size {
+                    return Vec::new();
+                }
                 node = parent;
-                parent = rd(node + offset_of!(PlaneNode, parent));
+                let Some(next) = diag::rd::<usize>(node + offset_of!(PlaneNode, parent)) else {
+                    return Vec::new();
+                };
+                parent = next;
             }
             node = parent;
         }
     }
-    if out.len() > size {
+    if node != head || out.len() != size {
         return Vec::new();
     }
     out
@@ -370,7 +388,10 @@ unsafe fn ammo_classes() -> HashMap<String, i32> {
         return out;
     }
     let list_bytes = e - b;
-    if !list_bytes.is_multiple_of(AMMO_SIZE) || list_bytes / AMMO_SIZE > AMMO_LIST_LIMIT {
+    if !list_bytes.is_multiple_of(AMMO_SIZE)
+        || list_bytes / AMMO_SIZE > AMMO_LIST_LIMIT
+        || !diag::readable_span(b, list_bytes)
+    {
         return out;
     }
     for rec in (b..e).step_by(AMMO_SIZE) {
@@ -386,7 +407,7 @@ unsafe fn ammo_classes() -> HashMap<String, i32> {
 /// `has_gun37mm` flag) as zero-cost gun armaments with the craft's default first, then the part-carrying ones. `None`
 /// when the craft map is empty or unreadable (the tables are filled by `PrepareMainLoop`, and qol's `planes` option
 /// replaces them after that).
-unsafe fn read_table() -> Option<Table> {
+unsafe fn read_table(craft_limit: usize, include_unarmed: bool) -> Option<Table> {
     let nodes = map_nodes(PLANE_TLL);
     if nodes.is_empty() {
         return None;
@@ -401,23 +422,33 @@ unsafe fn read_table() -> Option<Table> {
         "CRAFT_LA29" => 1,
         _ => 2,
     });
-    named.truncate(MAX_CRAFTS);
+    named.truncate(craft_limit);
     let (mut crafts, mut arms) = (Vec::new(), Vec::new());
     for (craft, node) in named {
         let (b, e): (usize, usize) = (rd(node + TLL_VEC.0), rd(node + TLL_VEC.1));
-        if b < 0x10000 || e < b || (e - b) / 8 > CRAFT_LOADOUT_LIMIT {
+        let bytes = e.checked_sub(b)?;
+        if !bytes.is_multiple_of(8)
+            || bytes / 8 > CRAFT_LOADOUT_LIMIT
+            || (bytes != 0 && !diag::readable_span(b, bytes))
+        {
             return None;
         }
         let mut guns_only: Option<String> = None;
         let mut gun_arms: Vec<Arm> = Vec::new();
         let mut part_arms: Vec<Arm> = Vec::new();
         for lo in (b..e).step_by(8).map(|a| rd::<usize>(a)) {
-            if !crate::native::plausible(lo) {
+            if !diag::readable_span(lo, size_of::<Loadout>()) {
                 return None;
             }
             let (pb, pe): (usize, usize) = (rd(lo + LO_PARTS.0), rd(lo + LO_PARTS.1));
-            let key = string_at(lo)
-                .filter(|_| pe >= pb && (pe - pb) / PART_STRIDE <= LOADOUT_PART_LIMIT)?;
+            let part_bytes = pe.checked_sub(pb)?;
+            if !part_bytes.is_multiple_of(PART_STRIDE)
+                || part_bytes / PART_STRIDE > LOADOUT_PART_LIMIT
+                || (part_bytes != 0 && !diag::readable_span(pb, part_bytes))
+            {
+                return None;
+            }
+            let key = string_at(lo).filter(|key| !key.is_empty())?;
             let has_gun = rd::<u8>(lo + offset_of!(Loadout, has_gun37mm)) != 0;
             let parts: Vec<(String, i32)> = (pb..pe)
                 .step_by(PART_STRIDE)
@@ -432,6 +463,14 @@ unsafe fn read_table() -> Option<Table> {
                         guns_only = Some(key.clone());
                     }
                     gun_arms.push(make_gun_arm(&craft, key));
+                } else if include_unarmed {
+                    part_arms.push(Arm {
+                        label: format!("UNARMED ({})", gun_label(&key)),
+                        key,
+                        craft: craft.clone(),
+                        parts,
+                        kind: Kind::Other,
+                    });
                 }
             } else {
                 part_arms.push(make_arm(&craft, key, parts, &classes));
@@ -462,7 +501,7 @@ fn table() -> &'static Table {
     if let Some(t) = LIVE_TABLE.get() {
         return t;
     }
-    if let Some(t) = unsafe { read_table() } {
+    if let Some(t) = unsafe { read_table(MAX_CRAFTS, false) } {
         let t = LIVE_TABLE.get_or_init(|| t);
         log::info!(
             "PLANE table read: crafts {:?}, armaments {:?}",
@@ -486,6 +525,17 @@ pub fn arms() -> &'static [Arm] {
 
 pub fn crafts() -> &'static [Craft] {
     &table().crafts
+}
+
+/// Read the current registered choices without the carrier UI's craft limit,
+/// stock fallback or campaign inventory filters.
+///
+/// # Safety
+/// Call after the game has initialized its aircraft tables, on the game thread
+/// while their owners are not mutating them. The result owns only Rust strings.
+pub(crate) unsafe fn airstrike_table() -> Option<(Vec<Craft>, Vec<Arm>)> {
+    let table = read_table(MAP_NODE_LIMIT, true)?;
+    Some((table.crafts, table.arms))
 }
 
 /// The label drawn beside the button of plane type `craft`: the chosen armament (the craft's
@@ -601,6 +651,12 @@ unsafe fn string_at(addr: usize) -> Option<String> {
         }
         p
     };
+    if len == 0 {
+        return Some(String::new());
+    }
+    if !diag::readable_span(data, len) {
+        return None;
+    }
     Some(String::from_utf8_lossy(std::slice::from_raw_parts(data as *const u8, len)).into_owned())
 }
 

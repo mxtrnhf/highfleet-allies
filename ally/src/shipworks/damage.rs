@@ -505,6 +505,7 @@ unsafe extern "C" fn render() {
     if read::<u8>(EDITOR_MODE) == 0 {
         return;
     }
+    super::airstrike::render_icons();
     let Some(preview) = PREVIEW.try_lock().ok().and_then(|preview| *preview) else {
         return;
     };

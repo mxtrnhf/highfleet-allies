@@ -1,5 +1,23 @@
 # Shipworks test encounters
 
+**v1.3.44 — Airstrike:** In standalone Shipworks, expand **>** and choose
+**A.C.E. → AIRSTRIKE**. **ADD PLANE** adds a group. Click its plane name to
+cycle craft types, click its loadout to cycle that craft's registered options,
+and drag its **0–15** slider to set the number of planes. A zero-count group is
+not launched. **RESET** clears the air groups, not the ship roster. Aircraft
+and loadouts come from the live game tables; modded craft also need a real
+aircraft Body in the game's part library. Icons use each craft's game texture
+with a monochrome silhouette filter. **GROUND / AIRBORNE** applies to the ships,
+not to the attacking planes. Airstrike uses the stock Bombers arena and its
+limit of five defending ships.
+
+| Added ships | LAUNCH |
+|---|---|
+| None | Enemy aircraft attack the editor design. |
+| Allies only | Enemy aircraft attack the editor design and its allied fleet. |
+| Enemies only | Friendly aircraft attack the enemy fleet; watch from spectator view. |
+| Allies and enemies | No launch; the panel displays **ONLY ONE TEAM IS SUPPORTED** in red. |
+
 **v1.3.43 — Silent Strike:** In standalone Shipworks, expand the tools with
 **>**, then choose **A.C.E. → SILENT STRIKE**. This opens the usual test
 pre-combat screen without a separate setup panel. **ADD** and **ADD ENEMY**
@@ -73,12 +91,11 @@ strategic missiles from the game's live part definitions, then **LAUNCH**. No
 This uses the game's actual missile-defense scene. Ships deploy at the start
 rather than using the normal FIGHT reserve delay and `max_allies` setting.
 The editor design and saved roster snapshots remain available on return.
-**AIRSTRIKE** still only closes the dropdown.
 
 **v1.3.14 — A.C.E. menu preview:** **A.C.E.** sits after **CLEAR** and before
 the optional **CRASH** button. It uses TEST's button style and opens a dropdown
-with **AIRSTRIKE**, **MISSILE DEFENSE** and **SILENT STRIKE**. Each choice only
-closes the menu; none changes the test fight.
+with **AIRSTRIKE**, **MISSILE DEFENSE** and **SILENT STRIKE**. In that preview
+version each choice only closed the menu.
 
 **v1.3.3 — underlying accumulation bug:** the enemy-append hook copied the
 RIP-relative `LEA RCX,[0x143a159c0]` bytes into its trampoline without relocation.
@@ -212,6 +229,16 @@ game-side allocations. Covered offsets/sizes derive from the pinned highfleet-rs
 layouts; `Creature+0xa90` (design name), `+0x1a20` (initial morale), editor globals
 and GUI geometry `+0x218/+0x21c` remain locally documented RE contracts.
 
+### Airstrike (Steam 1.163)
+
+| Address | Contract |
+|---|---|
+| `0x143a13c50`, `0x143a15a60`, `0x14021b190` | The live craft map holds each craft's vector of loadout pointers. Native `DefinePart` clones the chosen craft from `ALL_PARTS`, and arming looks up its chosen loadout key at `Body+0x3f8`. The UI re-reads the catalog before launch. |
+| `0x1400ceade`, `0x14016b9c0`, `0x14016bf00` | Use the native editor Slider recipe (`0xea8` bytes), including its own drag handler and thumb movement. The panel reads the value only from a live GUI member. |
+| `0x1402821c0`, `0x140170230`, `0x140303fc2` | Resolve `Stats.m_icon_name` to the registered media animation. In the editor label pass, `Default_ps.hlsl`'s `ps_add` with white vertex RGB makes a silhouette on the normalized target while preserving texture alpha. The submitted quad is local; the shared animation and texture are not modified. |
+| `0x1402c5540` → `0x1402ca2b0` | State 1 expects a `MapCraft` with plane Bodies in side A and the defending Escadra in side B. The temporary MapCraft is constructed natively (`0x1400e4530`), never registered in the profile, and used only by this Shipworks scene. The stock group spawner at `0x140267700` sets alignment and arms the planes. |
+| `0x1402d2e61`, `0x1402c5357`, `0x1402c5340` | Set the defender Escadra's altitude only during synchronous setup. In the test scene run the stock raid tick without campaign tutorial events, skip campaign map teardown, then route the shared exit back to Editor. Clear temporary Links with native unregistration before deleting the private MapCraft. The tactical world retains ownership of spawned ships and planes. |
+
 ### Silent Strike (Steam 1.163)
 
 | Address | Contract |
@@ -244,6 +271,16 @@ Read-only Ghidra findings for the new adapter:
 | `0x1402c5102`, `0x14025aff4` | Native SCR_MISSILE teardown is followed by a Map request; send the test back to `Editor.seria`. The loader seam clears the staged Links and calls the map Missile's deleting destructor (`0x1400e81d0`) only when the current B[0] still identifies the object the mod allocated. Native campaign Missile paths still use their original calls. |
 
 ## Validation
+
+Airstrike (v1.3.44, in-game pending): start Steam 1.163 with the versioned
+DLL, open **A.C.E. → AIRSTRIKE** without opening **TEST**, and add two groups
+with different craft/loadout choices. Check the monochrome icons, slider
+endpoints, zero-count group and **RESET**. Repeat with a mod-registered craft
+and loadout. Launch with each of the four roster combinations above, try both
+deployment settings, check a repeat launch and Esc → Return to Shipworks, then
+run ordinary **TEST → FIGHT** to check that its roster and deployment are
+unchanged. The `Shipworks Airstrike` and `PLANE arm` log lines identify setup
+and the loadouts passed to native arming.
 
 Silent Strike (v1.3.43): launch it before opening **TEST**, then repeat with
 configured TEST settings, allies only, custom enemies only, and both rosters.

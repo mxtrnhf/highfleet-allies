@@ -1655,7 +1655,7 @@ unsafe extern "C" fn battle_screen_technique(shader: usize) -> usize {
 unsafe extern "C" fn exit_missile(path: *const i8, resume: u8, flag: u8) {
     let load: LoadLevel = std::mem::transmute(LOAD_LEVEL);
     load(
-        if active() {
+        if active() || super::airstrike::active() {
             EDITOR_LEVEL.as_ptr()
         } else {
             path

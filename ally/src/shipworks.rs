@@ -2,6 +2,7 @@
 //! pointers. The existing FIGHT builder transfers fresh native copies into its player fleet.
 //! Native evidence and manual validation checklist: docs/shipworks-test-allies.md.
 
+mod airstrike;
 mod damage;
 mod design;
 mod missile_defense;
@@ -42,7 +43,7 @@ const ACE_NAME: &CStr = c"SW_ACE";
 const ACE_DEFENSE_NAME: &CStr = c"SW_ACE_DEFENSE";
 const CRASH_NAME: &[u8] = b"SW_ALLY_CRASH\0";
 const ACE_OPTIONS: [(&CStr, &CStr); 3] = [
-    (c"SW_ACE_AIR", c"AIRSTRIKE"),
+    (airstrike::BUTTON, c"AIRSTRIKE"),
     (ACE_DEFENSE_NAME, c"MISSILE DEFENSE"),
     (silent_strike::BUTTON, c"SILENT STRIKE"),
 ];
@@ -218,6 +219,7 @@ struct Session {
     last_clear_ms: Option<u64>,
     last_ace_ms: Option<u64>,
     saved_mask: Option<u32>,
+    airstrike: airstrike::Panel,
     defense: missile_defense::Panel,
     /// The enemy Escadra created by the last custom FIGHT, so it can be pruned from the
     /// profile's escadra vector before the next battle (it would otherwise accumulate).
@@ -237,6 +239,7 @@ static SESSION: Mutex<Session> = Mutex::new(Session {
     last_clear_ms: None,
     last_ace_ms: None,
     saved_mask: None,
+    airstrike: airstrike::Panel::new(),
     defense: missile_defense::Panel::new(),
     enemy_escadra: 0,
 });
@@ -377,6 +380,7 @@ pub(crate) unsafe fn install(session: &mut PatchSession, crash_button: bool) -> 
         .map_err(|e| e.to_string())?;
     install_fight_routing(session)?;
     missile_defense::install(session)?;
+    airstrike::install(session)?;
     silent_strike::install(session)?;
     CRASH_BUTTON.store(crash_button, Ordering::Relaxed);
     READY.store(true, Ordering::Relaxed);
@@ -431,10 +435,12 @@ unsafe extern "C" fn match_fight(name: usize, expected: *const i8) -> u8 {
     // SAFETY: ClickFunc supplies the live native identifier and comparison literal
     // on the game thread. Only a matching, pre-dispatch-approved click can alias FIGHT.
     let missile = missile_defense::requested();
+    let airstrike = airstrike::requested();
     let silent = silent_strike::requested();
-    if (missile || silent)
+    if (missile || airstrike || silent)
         && native_string(name).is_some_and(|name| {
             (missile && name.as_c_str() == missile_defense::LAUNCH_NAME)
+                || (airstrike && name.as_c_str() == airstrike::LAUNCH)
                 || (silent && name.as_c_str() == silent_strike::BUTTON)
         })
     {
@@ -446,7 +452,7 @@ unsafe extern "C" fn match_fight(name: usize, expected: *const i8) -> u8 {
 }
 
 unsafe extern "C" fn skip_enemy_generation() -> bool {
-    if missile_defense::requested() {
+    if missile_defense::requested() || airstrike::requested() {
         return true;
     }
     if !silent_strike::requested() {
@@ -469,7 +475,11 @@ unsafe extern "C" fn skip_enemy_generation() -> bool {
 unsafe extern "C" fn load_fight(path: *const i8, resume: u8, flag: u8) {
     // SAFETY: this is ClickFunc's final FIGHT call, entered only after the native
     // builder has validated the design and linked both fleets. Its original level
-    // path is the static string "Combat.seria"; Missile Defense may substitute it.
+    // path is the static string "Combat.seria"; the selected encounter may substitute it.
+    if airstrike::requested() {
+        airstrike::load_fight(resume, flag);
+        return;
+    }
     silent_strike::begin_combat();
     missile_defense::load_fight(path, resume, flag);
 }
@@ -510,6 +520,7 @@ pub(crate) unsafe fn tick() {
         }
     } else {
         missile_defense::cancel_unhandled_request();
+        airstrike::cancel_unhandled_request();
         silent_strike::cancel_unhandled_request();
     }
     let scan = precombat::scan_gui_list();
@@ -532,7 +543,7 @@ pub(crate) unsafe fn tick() {
         CONTROLS_VISIBLE.store(false, Ordering::Relaxed);
         return;
     };
-    let Ok(state) = SESSION.try_lock() else {
+    let Ok(mut state) = SESSION.try_lock() else {
         return;
     };
     let width = read::<f32>(template + 0x218);
@@ -649,6 +660,14 @@ pub(crate) unsafe fn tick() {
     state
         .defense
         .draw(&scan.elements, template, [width, height], y, toolbar_right);
+    state.airstrike.draw(
+        &scan.elements,
+        template,
+        [width, height],
+        y,
+        toolbar_right,
+        ace_open,
+    );
 
     // One list column below the buttons: ally rows, ally status, enemy rows, enemy status.
     let left = x - width * 0.5;
@@ -872,6 +891,7 @@ unsafe fn hide_ace_options(listed: &[usize]) {
 unsafe fn hide_panel(listed: &[usize]) {
     hide_control(ACE_NAME.to_bytes_with_nul(), &ACE_GUI, listed);
     hide_ace_options(listed);
+    airstrike::hide(listed);
     missile_defense::hide(listed);
     hide_control(ADD_NAME, &ADD_GUI, listed);
     hide_control(ENEMY_ADD_NAME, &ENEMY_ADD_GUI, listed);
@@ -901,14 +921,17 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     let closed_ace = left_click && !ace_button && ACE_OPEN.swap(false, Ordering::Relaxed);
     if name == "EDC_TEST_FIGHT" {
         missile_defense::cancel_request();
+        airstrike::cancel_request();
         silent_strike::cancel_request();
         return false;
     }
     let defense_control = missile_defense::is_control(name);
+    let air_control = airstrike::is_control(name);
     if !panel_toggle
         && !ace_button
         && !ace_option
         && !defense_control
+        && !air_control
         && !matches!(
             name,
             "SW_ALLY_ADD" | "SW_ENEMY_ADD" | "SW_ALLY_CLEAR" | "SW_ALLY_CRASH"
@@ -948,14 +971,21 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
             return true;
         }
         if name.as_bytes() == ACE_DEFENSE_NAME.to_bytes() {
+            state.airstrike.close();
             state.defense.open();
         } else {
             state.defense.close();
+            if name.as_bytes() == airstrike::BUTTON.to_bytes() {
+                state.airstrike.open();
+            } else {
+                state.airstrike.close();
+            }
         }
         drop(state);
         sound::button("Shipworks A.C.E. option");
         if name.as_bytes() == silent_strike::BUTTON.to_bytes() {
             missile_defense::cancel_request();
+            airstrike::cancel_request();
             silent_strike::request();
             // Let the native dispatcher reach the FIGHT comparison with this identifier.
             return false;
@@ -994,6 +1024,11 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
         let has_enemies = !state.enemy_entries.is_empty();
         // A valid LAUNCH falls through to the native click dispatcher and aliases FIGHT.
         return !state.defense.click(name, has_allies, has_enemies);
+    }
+    if air_control {
+        let allies = !state.entries.is_empty();
+        let enemies = !state.enemy_entries.is_empty();
+        return !state.airstrike.click(name, allies, enemies);
     }
     let now = now_ms();
     let clear = name == "SW_ALLY_CLEAR";
@@ -1084,7 +1119,7 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
 
 unsafe extern "C" fn on_fleet(fleet: usize) {
     let _hook = diag::scope("Shipworks test fleet");
-    if missile_defense::requested() {
+    if missile_defense::requested() || airstrike::requested() {
         return;
     }
     let Ok(mut state) = SESSION.try_lock() else {
@@ -1330,6 +1365,7 @@ unsafe extern "C" fn on_enemy_fleet(
     // accumulate the previous fight's enemies into this one.
     prune_enemy_escadra();
     let custom = missile_defense::requested()
+        || airstrike::requested()
         || SESSION
             .try_lock()
             .map(|state| !state.enemy_entries.is_empty())
@@ -1386,7 +1422,7 @@ unsafe extern "C" fn on_enemy_fleet(
 /// init, before the fleet lists are linked.
 unsafe extern "C" fn on_enemy_append(escadra: usize) {
     let _hook = diag::scope("Shipworks test enemies");
-    if missile_defense::requested() {
+    if missile_defense::requested() || airstrike::requested() {
         return;
     }
     let Ok(state) = SESSION.try_lock() else {
@@ -1427,6 +1463,11 @@ unsafe extern "C" fn on_level(path: usize) {
     if level_path == b"Missile.seria" && missile_defense::active() {
         return;
     }
+    if level_path == airstrike::LEVEL.to_bytes() && airstrike::active() {
+        return;
+    }
+    let airstrike_return = airstrike::active();
+    airstrike::leave();
     let missile_return = missile_defense::active();
     missile_defense::leave();
     if level_path == b"Combat.seria"
@@ -1444,8 +1485,12 @@ unsafe extern "C" fn on_level(path: usize) {
         if !missile_return {
             state.defense.close();
         }
+        if !airstrike_return {
+            state.airstrike.close();
+        }
         return;
     }
+    state.airstrike = airstrike::Panel::new();
     state.defense = missile_defense::Panel::new();
     state.panel_expanded = false;
     state.last_panel_toggle_ms = None;

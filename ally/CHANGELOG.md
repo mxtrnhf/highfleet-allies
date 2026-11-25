@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.44 (Shipworks Airstrike):** **A.C.E. → AIRSTRIKE** configures independent groups with a plane type, a 0–15 count slider and a loadout from the live game tables (including mod registrations). Uses game aircraft icons rendered as white silhouettes. **LAUNCH** runs the native bombing encounter against the editor ship and any added allies, or sends friendly aircraft against an enemy-only roster. Mixed rosters are refused. **GROUND / AIRBORNE** sets how the defending ships start. In-game validation pending.
+
 * **v1.3.43 (Shipworks Silent Strike):** **A.C.E. → SILENT STRIKE** opens the normal test pre-combat screen directly. It uses the usual player, ally and enemy rosters, but enemies use the game's landed deployment, including later waves. No separate setup, damage preservation or results viewer. Ordinary **TEST → FIGHT**, Missile Defense and campaign combat are unchanged. In-game validation pending.
 
 * **v1.3.42 (campaign nuclear blast damage in Shipworks):** replaces the sampled damage budget with the campaign's native falloff, part ordering, and armor shielding. The blast spends energy across columns of the live ship's hull, from exposed parts inward. The calculation runs on Shipworks-only scratch data; it does not open or create a campaign save, load the map, or run campaign recovery events. In-game validation pending.
