@@ -1630,7 +1630,11 @@ unsafe fn damage_ship_parts(ship: usize, center: (f32, f32), per_part: f32) -> (
     (hits, destroyed, lost)
 }
 
-/// Call the native Body damage slot (vtable +0x210) and return the HP actually lost.
+/// Apply one part's campaign damage the way `0x1400e6aa0` does: subtract HP
+/// directly, then call the part kill slot (vtable +0x48) at zero. Do **not**
+/// use `Body_ApplyDamage` (vtable +0x210): its death path can explode
+/// ammo/fuel and remove the whole ship, while the campaign map blast never
+/// does that.
 unsafe fn damage_part(part: usize, damage: f32) -> f32 {
     if damage <= 0.0 || !diag::readable_span(part, size_of::<Body>()) {
         return 0.0;
@@ -1647,14 +1651,17 @@ unsafe fn damage_part(part: usize, damage: f32) -> f32 {
     if vtable == 0 {
         return 0.0;
     }
-    // SAFETY: a live Body's vtable carries the damage slot with the native
-    // (damage, directHit, flag, hullContact, defer) contract. The caller
-    // supplies roster-owned parts on the game thread.
-    let apply: unsafe extern "C" fn(usize, f32, u8, u8, u8, u8) -> u8 =
-        std::mem::transmute(read::<usize>(vtable + 0x210));
-    apply(part, damage, 0, 1, 0, 0);
-    let after = diag::rd::<f32>(part.wrapping_add(offset_of!(Body, health))).unwrap_or(0.0);
-    (health - after).max(0.0)
+    let after = (health - damage).max(0.0);
+    write(part.wrapping_add(offset_of!(Body, health)), after);
+    if after <= 0.0 {
+        // SAFETY: a live Body's node kill slot is the same one the campaign
+        // 0x1400e6aa0 calls at vtable+0x48; it removes the part without the
+        // Body_ApplyDamage death explosion. The caller supplies roster-owned
+        // parts on the game thread.
+        let kill: unsafe extern "C" fn(usize) = std::mem::transmute(read::<usize>(vtable + 0x48));
+        kill(part);
+    }
+    health - after
 }
 
 /// Diagnostics: report where the tactical nuke detonated relative to each live defender.

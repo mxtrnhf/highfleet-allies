@@ -30,11 +30,12 @@ runs that handler and supplies the sandbox damage itself. Vanilla kind 4 never
 applies the area pass; the campaign result measured in v1.3.29 is about
 1.8k-2.9k hull and 11-24 destroyed parts per defending ship, i.e. a limited
 number of heavily damaged or destroyed modules rather than a uniform blast.
-As of v1.3.36 the sandbox uses the campaign `Explosion::Update` intensity
+As of v1.3.37 the sandbox uses the campaign `Explosion::Update` intensity
 `min(cap, E / (1e6 * d^3))` at the campaign fleet distance (the 1.0/2.0 floor,
 not the tactical 400-unit proximity fuse), applies that per-part damage to an
-evenly spread sample of the targeted fleet's parts, skips the ship's
-master/root part (the campaign never kills it), and caps the total at a
+evenly spread sample of the targeted fleet's parts, subtracts HP directly and
+calls the part kill slot like `0x1400e6aa0` (no `Body_ApplyDamage` death
+explosion), skips the ship's master/root part, and caps the total at a
 2,500-hull budget scaled by the ship's part count. A near hit costs about
 2.5k-3.5k hull with 11-24 destroyed modules and the ship survives; the
 missile's target link selects the fleet. Campaign kind-4 behavior is
