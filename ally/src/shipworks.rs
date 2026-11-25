@@ -80,14 +80,17 @@ const CLICK_DEBOUNCE_MS: u64 = 120;
 const ENEMY_TEXT_COLOR: u32 = 0xffff_5050;
 const BUTTON_STYLE: ControlStyle = ControlStyle {
     button: true,
+    clickable: true,
     color: None,
 };
 const ROW_STYLE: ControlStyle = ControlStyle {
     button: false,
+    clickable: false,
     color: None,
 };
 const ENEMY_ROW_STYLE: ControlStyle = ControlStyle {
     button: false,
+    clickable: false,
     color: Some(ENEMY_TEXT_COLOR),
 };
 /// Creature side (+0xad4): positive is the player side, negative is the enemy side.
@@ -202,6 +205,7 @@ struct ControlGeometry {
 #[derive(Clone, Copy)]
 struct ControlStyle {
     button: bool,
+    clickable: bool,
     /// Overrides the template text colour (the enemy list's red-dish hue).
     color: Option<u32>,
 }
@@ -843,8 +847,8 @@ unsafe fn create_control(
         gui + offset_of!(Body, layer),
         read::<i32>(template + offset_of!(Body, layer)),
     );
-    write(gui + offset_of!(Body, focusable), u8::from(style.button));
-    write(gui + offset_of!(Gui, clickable), u8::from(style.button));
+    write(gui + offset_of!(Body, focusable), u8::from(style.clickable));
+    write(gui + offset_of!(Gui, clickable), u8::from(style.clickable));
     write(gui + offset_of!(Gui, checkable), 0u8);
     write(gui + offset_of!(Gui, textable), 0u8);
     write(
@@ -855,7 +859,7 @@ unsafe fn create_control(
     );
     write(
         gui + offset_of!(Gui, align),
-        if style.button {
+        if style.clickable {
             read::<i32>(template + offset_of!(Gui, align))
         } else {
             0

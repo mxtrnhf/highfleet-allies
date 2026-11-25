@@ -1,15 +1,17 @@
 # Shipworks test encounters
 
-**v1.3.44 — Airstrike:** In standalone Shipworks, expand **>** and choose
+**v1.3.45 — Airstrike:** In standalone Shipworks, expand **>** and choose
 **A.C.E. → AIRSTRIKE**. **ADD PLANE** adds a group. Click its plane name to
-cycle craft types, click its loadout to cycle that craft's registered options,
-and drag its **0–15** slider to set the number of planes. A zero-count group is
-not launched. **RESET** clears the air groups, not the ship roster. Aircraft
-and loadouts come from the live game tables; modded craft also need a real
-aircraft Body in the game's part library. Icons use each craft's game texture
-with a monochrome silhouette filter. **GROUND / AIRBORNE** applies to the ships,
-not to the attacking planes. Airstrike uses the stock Bombers arena and its
-limit of five defending ships.
+cycle craft types; click a loadout row to equip it. The list shows up to three
+options at a time; scroll with the mouse wheel or the arrows. Set the number
+with the **1–15** slider and multiply it with the **1–8x** slider, up to 120
+planes per group. **X** removes one group and **RESET** clears all air groups,
+not the ship roster. Aircraft and loadouts come from the live game tables;
+modded craft also need an aircraft Body in the game's part library. T-7 and
+LA-29 use their stock silhouettes from Midground4; registered modded planes use
+the small silhouette from Midground1. **GROUND / AIRBORNE** applies to the
+defending ships, not the attacking planes. Airstrike uses the stock Bombers
+arena and its limit of five defending ships.
 
 | Added ships | LAUNCH |
 |---|---|

@@ -24,7 +24,7 @@ use super::{
         LINK_CLEAR_VECTOR, LINK_NODE_STRIDE, LINK_TARGET, LINK_UNLINK, SESSION, SIDE_ALLY,
         SIDE_ENEMY, TEST_FIGHT_FLAG,
     },
-    Launch, ALL_PARTS, ENTRY_LIMIT, LEVEL, MAX_PLANES, NATIVE_NEW,
+    Launch, ALL_PARTS, ENTRY_LIMIT, LEVEL, MAX_MULTIPLIER, MAX_PLANES, NATIVE_NEW,
 };
 
 const FRIENDLY_LIST: usize = 0x1_43a1_58e0;
@@ -54,7 +54,7 @@ const BOMBERS_AUX_LINKS: usize = 0x1_47fc_7590;
 const LIST_LINK: usize = 0x10;
 const LIST_NODE_SIZE: usize = LIST_LINK + LINK_NODE_STRIDE;
 const NATIVE_DELETE: usize = 0x1_4033_40d0;
-const PLANE_LIMIT: usize = ENTRY_LIMIT * MAX_PLANES as usize;
+const PLANE_LIMIT: usize = ENTRY_LIMIT * MAX_PLANES as usize * MAX_MULTIPLIER as usize;
 
 const NATIVE_WAVE_SPACING: usize = 0x1_4036_6578;
 static TEST_WAVE_SPACING: f32 = 100.0;
@@ -257,7 +257,7 @@ unsafe extern "C" fn setup() -> u8 {
     write(TEST_FIGHT_FLAG, 1u8);
     write(
         defenders + FLEET_ALTITUDE,
-        if launch.ground { 1.0f32 } else { 0.0f32 },
+        if launch.ground { 0.0f32 } else { 1.0f32 },
     );
     let started = stock();
     write(defenders + FLEET_ALTITUDE, altitude);
@@ -384,27 +384,25 @@ unsafe fn clear_list(list: usize, limit: usize) {
     if count > limit || !diag::readable_span(head, 2 * size_of::<usize>()) {
         return;
     }
-    let mut cells = [0; PLANE_LIMIT];
+    let mut cells = Vec::with_capacity(count);
     let mut cell = read::<usize>(head);
-    let Some(nodes) = cells.get_mut(..count) else {
-        return;
-    };
     let mut last = head;
-    for node in nodes.iter_mut() {
+    for _ in 0..count {
         if cell == head
             || !diag::readable_span(cell, LIST_NODE_SIZE)
             || read::<usize>(cell + 8) != last
         {
             return;
         }
-        (last, *node, cell) = (cell, cell, read(cell));
+        cells.push(cell);
+        (last, cell) = (cell, read(cell));
     }
     if cell != head || read::<usize>(head + 8) != last {
         return;
     }
     let unlink: unsafe extern "C" fn(usize) = std::mem::transmute(LINK_UNLINK);
     let delete: unsafe extern "C" fn(usize, usize) = std::mem::transmute(NATIVE_DELETE);
-    for &node in nodes.iter() {
+    for node in cells {
         unlink(node + LIST_LINK);
         delete(node, LIST_NODE_SIZE);
     }

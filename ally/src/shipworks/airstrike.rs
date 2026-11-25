@@ -8,21 +8,21 @@ use std::{
     mem::{offset_of, size_of},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
+        Mutex,
     },
 };
 
 use crate::{
     diag,
     native::read,
-    native_layout::{Body, EscadraString, Gui, PartStats, NODE_CODE},
+    native_layout::{Body, Gui, NODE_CODE},
     plane_loadouts, precombat, sound,
     time::now_ms,
 };
 
 use super::{
-    hide_control, native_string, show_control, write, ControlGeometry, BUTTON_GAP, BUTTON_STYLE,
-    CLICK_DEBOUNCE_MS, ENEMY_ROW_STYLE,
+    hide_control, show_control, write, ControlGeometry, ControlStyle, BUTTON_GAP, BUTTON_STYLE,
+    CLICK_DEBOUNCE_MS, COPY_STRING, ENEMY_ROW_STYLE,
 };
 
 pub(super) use encounter::{
@@ -41,17 +41,55 @@ const HEADER_CONTROLS: [&CStr; 6] = [ADD, RESET, START, LAUNCH, STATUS, PAGE];
 static HEADER_GUIS: [AtomicUsize; HEADER_CONTROLS.len()] =
     [const { AtomicUsize::new(0) }; HEADER_CONTROLS.len()];
 
-const ROWS_PER_PAGE: usize = 4;
+const ROWS_PER_PAGE: usize = 2;
 const ENTRY_LIMIT: usize = 8;
 const MAX_PLANES: u8 = 15;
-const ROW_CONTROLS: [[&CStr; 3]; ROWS_PER_PAGE] = [
-    [c"SW_AIR_CRAFT1", c"SW_AIR_LOAD1", c"SW_AIR_COUNT1"],
-    [c"SW_AIR_CRAFT2", c"SW_AIR_LOAD2", c"SW_AIR_COUNT2"],
-    [c"SW_AIR_CRAFT3", c"SW_AIR_LOAD3", c"SW_AIR_COUNT3"],
-    [c"SW_AIR_CRAFT4", c"SW_AIR_LOAD4", c"SW_AIR_COUNT4"],
+const MAX_MULTIPLIER: u8 = 8;
+const LOADOUT_LINES: usize = 3;
+const CRAFT: usize = 0;
+const REMOVE: usize = 1;
+const FINE: usize = 2;
+const MULTIPLIER: usize = 3;
+const FIRST_LOADOUT: usize = 4;
+const SCROLL_UP: usize = FIRST_LOADOUT + LOADOUT_LINES;
+const SCROLL_DOWN: usize = SCROLL_UP + 1;
+const GROUP_CONTROLS: usize = SCROLL_DOWN + 1;
+const ROW_CONTROLS: [[&CStr; GROUP_CONTROLS]; ROWS_PER_PAGE] = [
+    [
+        c"SW_AIR_CRAFT1",
+        c"SW_AIR_DEL1",
+        c"SW_AIR_COUNT1",
+        c"SW_AIR_MULT1",
+        c"SW_AIR_L1A",
+        c"SW_AIR_L1B",
+        c"SW_AIR_L1C",
+        c"SW_AIR_UP1",
+        c"SW_AIR_DOWN1",
+    ],
+    [
+        c"SW_AIR_CRAFT2",
+        c"SW_AIR_DEL2",
+        c"SW_AIR_COUNT2",
+        c"SW_AIR_MULT2",
+        c"SW_AIR_L2A",
+        c"SW_AIR_L2B",
+        c"SW_AIR_L2C",
+        c"SW_AIR_UP2",
+        c"SW_AIR_DOWN2",
+    ],
 ];
-static ROW_GUIS: [[AtomicUsize; 3]; ROWS_PER_PAGE] =
-    [const { [const { AtomicUsize::new(0) }; 3] }; ROWS_PER_PAGE];
+static ROW_GUIS: [[AtomicUsize; GROUP_CONTROLS]; ROWS_PER_PAGE] =
+    [const { [const { AtomicUsize::new(0) }; GROUP_CONTROLS] }; ROWS_PER_PAGE];
+
+const LOADOUT_STYLE: ControlStyle = ControlStyle {
+    button: false,
+    clickable: true,
+    color: Some(0xffe4_d9ac),
+};
+const SELECTED_LOADOUT_STYLE: ControlStyle = ControlStyle {
+    color: Some(0xffa4_d77a),
+    ..LOADOUT_STYLE
+};
 
 const FRAME_WIDTH: usize = 0x1_43a1_58fc;
 const FRAME_HEIGHT: usize = 0x1_43a1_3e5c;
@@ -64,11 +102,11 @@ const SLIDER_SET_VALUE: usize = 0x1_4016_bf00;
 const SLIDER_RENDER_VALUE: usize = 0xe70;
 const SLIDER_IS_FLOAT: usize = 0xe71;
 const NATIVE_NEW: usize = 0x1_4033_4094;
-const GET_STATS: usize = 0x1_4028_1e00;
-// Stats::populateObjects (0x1402821c0) registers m_icon_name after the OID.
-const STATS_ICON: usize = offset_of!(PartStats, unknown_0048h) + size_of::<EscadraString>();
 const ALL_PARTS: usize = 0x1_43a1_39f0;
 
+const HGE: usize = 0x1_43a1_19e0;
+const GET_MOUSE_POS: usize = 0x1_4017_3870;
+const GET_MOUSE_WHEEL: usize = 0x1_4017_3890;
 const MEDIA: usize = 0x1_43a1_19e8;
 const GET_ANIMATION: usize = 0x1_4017_0230;
 const HGE_RENDERER: usize = 0x1_439e_8670;
@@ -78,13 +116,12 @@ const QUAD_TEXTURE: usize = 0x160;
 const QUAD_BLEND: usize = 0x168;
 const QUAD_SIZE: usize = 0x170;
 const ANIMATION_DIMENSIONS: usize = 0x188;
-const COLOR_ADD: u32 = 1;
 const ALPHA_BLEND: u32 = 2;
 
 struct Craft {
     key: CString,
     label: CString,
-    icon: Arc<CStr>,
+    icon: &'static CStr,
     loadouts: Vec<Loadout>,
 }
 
@@ -98,6 +135,8 @@ struct Entry {
     craft: usize,
     loadout: usize,
     count: u8,
+    multiplier: u8,
+    first_loadout: usize,
 }
 
 struct Flight {
@@ -123,8 +162,9 @@ pub(super) struct Panel {
     last_click: Option<(&'static CStr, u64)>,
 }
 
+#[derive(Clone, Copy)]
 struct Icon {
-    name: Arc<CStr>,
+    name: &'static CStr,
     position: [f32; 2],
     size: f32,
 }
@@ -158,6 +198,7 @@ impl Panel {
             };
             entry.craft = craft;
             entry.loadout = loadout;
+            entry.first_loadout = loadout.saturating_sub(LOADOUT_LINES - 1);
             true
         });
         self.crafts = crafts;
@@ -226,6 +267,8 @@ impl Panel {
         show(0, c"ADD PLANE", cell(0.0, 0.55, top), BUTTON_STYLE);
         show(1, c"RESET", cell(0.55, 1.0, top), BUTTON_STYLE);
         let step = height + ROW_GAP;
+        let list_step = height * 0.42;
+        let mouse = wheel_input([frame_width, frame_height]);
         let first = self.page * ROWS_PER_PAGE;
         let mut y = top + step;
         let mut icons = [const { None }; ROWS_PER_PAGE];
@@ -239,14 +282,11 @@ impl Panel {
                 hide_row(listed, names, guis);
                 continue;
             };
-            let Some((craft, loadout)) = selection(&self.crafts, *entry) else {
+            let Some((craft, _)) = selection(&self.crafts, *entry) else {
                 hide_row(listed, names, guis);
                 continue;
             };
-            for (control, label, area) in [
-                (0, &craft.label, cell(0.12, 0.49, y)),
-                (1, &loadout.label, cell(0.0, 1.0, y + step)),
-            ] {
+            let show = |control: usize, label: &CStr, area, style| {
                 show_control(
                     names[control].to_bytes_with_nul(),
                     &guis[control],
@@ -254,27 +294,89 @@ impl Panel {
                     template,
                     label,
                     area,
-                    BUTTON_STYLE,
+                    style,
+                );
+            };
+            show(CRAFT, &craft.label, cell(0.12, 0.44, y), BUTTON_STYLE);
+            show(REMOVE, c"X", cell(0.89, 1.0, y), BUTTON_STYLE);
+            for (control, value, max, suffix, offset) in [
+                (FINE, &mut entry.count, MAX_PLANES, c" PLANES", -0.23),
+                (
+                    MULTIPLIER,
+                    &mut entry.multiplier,
+                    MAX_MULTIPLIER,
+                    c"x",
+                    0.23,
+                ),
+            ] {
+                let mut area = cell(0.44, 0.89, y + height * offset);
+                area.dimensions[1] = height * 0.39;
+                show_slider(
+                    names[control],
+                    &guis[control],
+                    listed,
+                    template,
+                    area,
+                    value,
+                    max,
+                    suffix,
+                    self.restore_counts,
                 );
             }
-            show_slider(
-                names[2],
-                &guis[2],
-                listed,
-                template,
-                cell(0.5, 1.0, y),
-                entry,
-                self.restore_counts,
-            );
+            let list_top = y + height * 0.52 + ROW_GAP;
+            let lines = craft.loadouts.len().min(LOADOUT_LINES);
+            let list_bottom = list_top + list_step * lines as f32;
+            if let Some(([x, mouse_y], scroll)) = mouse {
+                if (left..right).contains(&x) && (list_top..list_bottom).contains(&mouse_y) {
+                    entry.scroll_loadouts(craft, -(scroll as isize));
+                }
+            }
+            for line in 0..LOADOUT_LINES {
+                let control = FIRST_LOADOUT + line;
+                let loadout = entry.first_loadout + line;
+                if let Some(option) = craft.loadouts.get(loadout) {
+                    let mut area = cell(0.0, 0.89, list_top + list_step * (line as f32 + 0.5));
+                    area.dimensions[1] = list_step;
+                    show(
+                        control,
+                        &option.label,
+                        area,
+                        if loadout == entry.loadout {
+                            SELECTED_LOADOUT_STYLE
+                        } else {
+                            LOADOUT_STYLE
+                        },
+                    );
+                } else {
+                    hide_control(names[control].to_bytes_with_nul(), &guis[control], listed);
+                }
+            }
+            for (control, label, visible, line) in [
+                (SCROLL_UP, c"^", entry.first_loadout > 0, 0.5),
+                (
+                    SCROLL_DOWN,
+                    c"v",
+                    entry.first_loadout + LOADOUT_LINES < craft.loadouts.len(),
+                    2.5,
+                ),
+            ] {
+                if visible {
+                    let mut area = cell(0.89, 1.0, list_top + list_step * line);
+                    area.dimensions[1] = list_step;
+                    show(control, label, area, LOADOUT_STYLE);
+                } else {
+                    hide_control(names[control].to_bytes_with_nul(), &guis[control], listed);
+                }
+            }
             *icon = Some(Icon {
-                name: Arc::clone(&craft.icon),
+                name: craft.icon,
                 position: [
                     left + panel_width * 0.06 + frame_width * 0.5,
                     y + frame_height * 0.5,
                 ],
                 size: (height * 1.3).min(panel_width * 0.12),
             });
-            y += 2.0 * step + ROW_GAP;
+            y = list_bottom + height * 0.5 + ROW_GAP;
         }
         if let Ok(mut frame) = ICONS.try_lock() {
             *frame = icons;
@@ -314,13 +416,9 @@ impl Panel {
         if !self.open || active() {
             return false;
         }
-        let Some(id) = control(name) else {
+        let Some(id) = click_control(name) else {
             return false;
         };
-        // The control is a native Slider; allow its input handler to own drag interactions.
-        if ROW_CONTROLS.iter().any(|row| id == row[2]) {
-            return false;
-        }
         let now = now_ms();
         if self.last_click.is_some_and(|(previous, at)| {
             previous == id && now.wrapping_sub(at) <= CLICK_DEBOUNCE_MS
@@ -338,9 +436,11 @@ impl Panel {
                 craft: 0,
                 loadout: 0,
                 count: 1,
+                multiplier: 1,
+                first_loadout: 0,
             });
             let page = (self.entries.len() - 1) / ROWS_PER_PAGE;
-            self.restore_counts |= self.page != page;
+            self.restore_counts = true;
             self.page = page;
         } else if id == RESET {
             self.entries.clear();
@@ -362,14 +462,11 @@ impl Panel {
             }
             let mut flights = Vec::new();
             for &entry in &self.entries {
-                if entry.count == 0 {
-                    continue;
-                }
                 if let Some((craft, loadout)) = selection(&self.crafts, entry) {
                     flights.push(Flight {
                         craft: craft.key.clone(),
                         loadout: loadout.key.clone(),
-                        count: entry.count,
+                        count: entry.count * entry.multiplier,
                     });
                 }
             }
@@ -395,23 +492,70 @@ impl Panel {
                 return true;
             }
             return false;
-        } else if let Some((row, names)) = ROW_CONTROLS
+        } else if let Some((row, control)) = ROW_CONTROLS
             .iter()
             .enumerate()
-            .find(|(_, names)| names.contains(&id))
+            .find_map(|(row, names)| names.iter().position(|&name| name == id).map(|i| (row, i)))
         {
-            if let Some(entry) = self.entries.get_mut(self.page * ROWS_PER_PAGE + row) {
-                if id == names[0] && !self.crafts.is_empty() {
+            let index = self.page * ROWS_PER_PAGE + row;
+            if control == REMOVE && index < self.entries.len() {
+                self.entries.remove(index);
+                self.page = self
+                    .page
+                    .min(self.entries.len().saturating_sub(1) / ROWS_PER_PAGE);
+                self.restore_counts = true;
+            } else if let Some(entry) = self.entries.get_mut(index) {
+                if control == CRAFT && !self.crafts.is_empty() {
                     entry.craft = (entry.craft + 1) % self.crafts.len();
                     entry.loadout = 0;
+                    entry.first_loadout = 0;
                 } else if let Some(craft) = self.crafts.get(entry.craft) {
-                    entry.loadout = (entry.loadout + 1) % craft.loadouts.len();
+                    match control {
+                        SCROLL_UP => entry.scroll_loadouts(craft, -1),
+                        SCROLL_DOWN => entry.scroll_loadouts(craft, 1),
+                        FIRST_LOADOUT..SCROLL_UP => {
+                            let chosen = entry.first_loadout + control - FIRST_LOADOUT;
+                            if craft.loadouts.get(chosen).is_some() {
+                                entry.loadout = chosen;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
         sound::button("Shipworks Airstrike control");
         false
     }
+}
+
+impl Entry {
+    fn scroll_loadouts(&mut self, craft: &Craft, lines: isize) {
+        self.first_loadout = self
+            .first_loadout
+            .saturating_add_signed(lines)
+            .min(craft.loadouts.len().saturating_sub(LOADOUT_LINES));
+    }
+}
+
+/// Read the live editor input cached by HGE. GUI positions are screen-centered.
+unsafe fn wheel_input([width, height]: [f32; 2]) -> Option<([f32; 2], i32)> {
+    let hge = read::<usize>(HGE);
+    if hge == 0 {
+        return None;
+    }
+    // SAFETY: Shipworks' frame pass runs on the HGE owner thread. These getters
+    // read scalar fields only; the position getter fills two local f32s.
+    let wheel: unsafe extern "C" fn(usize) -> i32 = std::mem::transmute(GET_MOUSE_WHEEL);
+    let delta = wheel(hge);
+    if delta == 0 {
+        return None;
+    }
+    let position: unsafe extern "C" fn(usize, *mut f32, *mut f32) =
+        std::mem::transmute(GET_MOUSE_POS);
+    let (mut x, mut y) = (0.0, 0.0);
+    position(hge, &mut x, &mut y);
+    Some(([x - width * 0.5, y - height * 0.5], delta))
 }
 
 fn selection(crafts: &[Craft], entry: Entry) -> Option<(&Craft, &Loadout)> {
@@ -444,7 +588,6 @@ unsafe fn catalog() -> Vec<Craft> {
         return Vec::new();
     };
     let find: unsafe extern "C" fn(usize, *const i8) -> usize = std::mem::transmute(find);
-    let get_stats: unsafe extern "C" fn(i32) -> usize = std::mem::transmute(GET_STATS);
     crafts
         .into_iter()
         .filter_map(|craft| {
@@ -471,30 +614,37 @@ unsafe fn catalog() -> Vec<Craft> {
             if loadouts.is_empty() {
                 return None;
             }
-            let stats = get_stats(read::<i32>(part + offset_of!(Body, part_index)));
-            let icon = native_string(stats + STATS_ICON)
-                .filter(|icon| !icon.to_bytes().is_empty())
-                .unwrap_or_else(|| key.clone());
+            // Atlas animation names (not the object stats' part previews).
+            let icon = match key.as_c_str() {
+                key if key == c"CRAFT_T7" => c"sign_T7",
+                key if key == c"CRAFT_LA29" => c"sign_LA29",
+                _ => c"sign_shell_drone", // Midground1: the tiny aircraft silhouette.
+            };
             Some(Craft {
                 key,
                 label: CString::new(craft.label).ok()?,
-                icon: Arc::from(icon),
+                icon,
                 loadouts,
             })
         })
         .collect()
 }
 
-fn control(name: &str) -> Option<&'static CStr> {
+fn click_control(name: &str) -> Option<&'static CStr> {
     HEADER_CONTROLS
         .into_iter()
         .filter(|&id| id != STATUS)
-        .chain(ROW_CONTROLS.into_iter().flatten())
+        // The native sliders own their own input, including drag interactions.
+        .chain(ROW_CONTROLS.into_iter().flat_map(|row| {
+            row.into_iter()
+                .enumerate()
+                .filter_map(|(index, id)| (index != FINE && index != MULTIPLIER).then_some(id))
+        }))
         .find(|id| id.to_bytes() == name.as_bytes())
 }
 
 pub(super) fn is_control(name: &str) -> bool {
-    control(name).is_some_and(|id| !ROW_CONTROLS.iter().any(|row| id == row[2]))
+    click_control(name).is_some()
 }
 
 pub(super) unsafe fn hide(listed: &[usize]) {
@@ -507,7 +657,11 @@ pub(super) unsafe fn hide(listed: &[usize]) {
     clear_icons();
 }
 
-unsafe fn hide_row(listed: &[usize], names: &[&CStr; 3], guis: &[AtomicUsize; 3]) {
+unsafe fn hide_row(
+    listed: &[usize],
+    names: &[&CStr; GROUP_CONTROLS],
+    guis: &[AtomicUsize; GROUP_CONTROLS],
+) {
     for (name, gui) in names.iter().zip(guis) {
         hide_control(name.to_bytes_with_nul(), gui, listed);
     }
@@ -525,7 +679,9 @@ unsafe fn show_slider(
     listed: &[usize],
     template: usize,
     area: ControlGeometry,
-    entry: &mut Entry,
+    amount: &mut u8,
+    max: u8,
+    suffix: &CStr,
     restore: bool,
 ) {
     let visible = precombat::listed_shown(
@@ -535,7 +691,7 @@ unsafe fn show_slider(
     );
     let Some((gui, created)) =
         precombat::get_or_make_with(name.to_bytes_with_nul(), slot, listed, true, || {
-            make_slider(name, area, template)
+            make_slider(name, area, template, max, suffix)
         })
     else {
         return;
@@ -546,16 +702,22 @@ unsafe fn show_slider(
     }
     if restore || !visible || created {
         let set: unsafe extern "C" fn(usize, f32) = std::mem::transmute(SLIDER_SET_VALUE);
-        set(gui, f32::from(entry.count));
+        set(gui, f32::from(*amount));
     } else {
         let value = read::<f32>(gui + offset_of!(Gui, value));
         if value.is_finite() {
-            entry.count = value.round().clamp(0.0, f32::from(MAX_PLANES)) as u8;
+            *amount = value.floor().clamp(1.0, f32::from(max)) as u8;
         }
     }
 }
 
-unsafe fn make_slider(name: &CStr, area: ControlGeometry, template: usize) -> *mut u8 {
+unsafe fn make_slider(
+    name: &CStr,
+    area: ControlGeometry,
+    template: usize,
+    max: u8,
+    suffix: &CStr,
+) -> *mut u8 {
     // SAFETY: duplicates Shipworks' native Slider recipe (0x1400ceade). Allocate
     // and initialize on the GUI thread; the root then owns its strings and art.
     let new: unsafe extern "C" fn(usize) -> *mut u8 = std::mem::transmute(NATIVE_NEW);
@@ -587,10 +749,11 @@ unsafe fn make_slider(name: &CStr, area: ControlGeometry, template: usize) -> *m
         area.dimensions[0],
         area.dimensions[1],
         c"".as_ptr(),
-        0.0,
-        f32::from(MAX_PLANES),
-        c"slider_green".as_ptr(),
+        1.0,
+        f32::from(max),
+        // Slider's bar art covers the right (unfilled) end of its background.
         c"slider_std".as_ptr(),
+        c"slider_green".as_ptr(),
     );
     let address = gui as usize;
     write(
@@ -608,15 +771,21 @@ unsafe fn make_slider(name: &CStr, area: ControlGeometry, template: usize) -> *m
     );
     write(address + SLIDER_RENDER_VALUE, 1u8);
     write(address + SLIDER_IS_FLOAT, 0u8);
+    let assign: unsafe extern "C" fn(usize, *const i8, usize) -> usize =
+        std::mem::transmute(COPY_STRING);
+    assign(
+        address + offset_of!(Gui, note),
+        suffix.as_ptr(),
+        suffix.to_bytes().len(),
+    );
     precombat::load_gui(address);
     gui
 }
 
-/// Draw the actual media resource using the Default shader's COLORADD filter.
-/// White saturates RGB on the editor's UNORM target; `ps_add` keeps texture
-/// alpha. Only the POD draw packet is copied; the shared animation isn't edited.
+/// Draw the atlas silhouette using texture alpha and the native label colour.
+/// Only the POD draw packet is copied; the shared animation isn't edited.
 pub(super) unsafe fn render_icons() {
-    let Ok(icons) = ICONS.try_lock() else {
+    let Some(icons) = ICONS.try_lock().ok().map(|icons| *icons) else {
         return;
     };
     if icons.iter().all(Option::is_none) {
@@ -657,9 +826,9 @@ pub(super) unsafe fn render_icons() {
             write(vertex, icon.position[0] + x * width * scale);
             write(vertex + 4, icon.position[1] + y * height * scale);
             write(vertex + 8, 0.0f32);
-            write(vertex + 0x18, 0xffff_ffffu32);
+            write(vertex + 0x18, 0xffe4_d9acu32);
         }
-        write(data + QUAD_BLEND, COLOR_ADD | ALPHA_BLEND);
+        write(data + QUAD_BLEND, ALPHA_BLEND);
         render(renderer, data);
     }
 }
