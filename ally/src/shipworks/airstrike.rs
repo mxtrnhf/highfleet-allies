@@ -21,12 +21,14 @@ use crate::{
 };
 
 use super::{
+    damage::{self, Replay, Scenario::Airstrike, Slot},
     hide_control, show_control, write, ControlGeometry, ControlStyle, BUTTON_GAP, BUTTON_STYLE,
-    CLICK_DEBOUNCE_MS, COPY_STRING, ENEMY_ROW_STYLE,
+    CLICK_DEBOUNCE_MS, COPY_STRING, ENEMY_ROW_STYLE, ROW_STYLE,
 };
 
 pub(super) use encounter::{
     active, cancel_request, cancel_unhandled_request, install, leave, load_fight, requested,
+    DEFENDER_LIMIT, DEFENDER_ROSTER,
 };
 
 pub(super) const BUTTON: &CStr = c"SW_ACE_AIR";
@@ -37,7 +39,14 @@ const RESET: &CStr = c"SW_AIR_RESET";
 const START: &CStr = c"SW_AIR_START";
 const STATUS: &CStr = c"SW_AIR_STATUS";
 const PAGE: &CStr = c"SW_AIR_PAGE";
-const HEADER_CONTROLS: [&CStr; 6] = [ADD, RESET, START, LAUNCH, STATUS, PAGE];
+const PRESERVE: &CStr = c"SW_AIR_KEEP";
+const VIEW: &CStr = c"SW_AIR_DMG";
+const PREV: &CStr = c"SW_AIR_PREV";
+const NEXT: &CStr = c"SW_AIR_NEXT";
+const RESULT: &CStr = c"SW_AIR_RESULT";
+const HEADER_CONTROLS: [&CStr; 11] = [
+    ADD, RESET, START, LAUNCH, STATUS, PAGE, PRESERVE, VIEW, PREV, NEXT, RESULT,
+];
 static HEADER_GUIS: [AtomicUsize; HEADER_CONTROLS.len()] =
     [const { AtomicUsize::new(0) }; HEADER_CONTROLS.len()];
 
@@ -149,6 +158,9 @@ struct Launch {
     flights: Vec<Flight>,
     friendly: bool,
     ground: bool,
+    preserve: bool,
+    replay: Vec<(Slot, Replay)>,
+    staged: Vec<(usize, Slot)>,
 }
 
 pub(super) struct Panel {
@@ -158,6 +170,8 @@ pub(super) struct Panel {
     page: usize,
     restore_counts: bool,
     ground: bool,
+    preserve: bool,
+    damage_page: Option<usize>,
     error: Option<&'static CStr>,
     last_click: Option<(&'static CStr, u64)>,
 }
@@ -180,6 +194,8 @@ impl Panel {
             page: 0,
             restore_counts: true,
             ground: false,
+            preserve: false,
+            damage_page: None,
             error: None,
             last_click: None,
         }
@@ -217,8 +233,10 @@ impl Panel {
 
     pub(super) fn close(&mut self) {
         self.open = false;
+        self.damage_page = None;
         self.error = None;
         clear_icons();
+        damage::preview(Airstrike, None);
     }
 
     /// Draw from a complete editor GUI scan, before the native screen render.
@@ -264,9 +282,82 @@ impl Panel {
                 style,
             );
         };
+        let step = height + ROW_GAP;
+        let preserve_label = if self.preserve {
+            c"[X] PRESERVE DAMAGE"
+        } else {
+            c"[ ] PRESERVE DAMAGE"
+        };
+        show(6, preserve_label, cell(0.0, 0.65, top), BUTTON_STYLE);
+        show(
+            7,
+            if self.damage_page.is_some() {
+                c"BACK"
+            } else {
+                c"DMG VIEW"
+            },
+            cell(0.65, 1.0, top),
+            BUTTON_STYLE,
+        );
+        if let Some(index) = self.damage_page {
+            for control in 0..6 {
+                hide_control(
+                    HEADER_CONTROLS[control].to_bytes_with_nul(),
+                    &HEADER_GUIS[control],
+                    listed,
+                );
+            }
+            for (names, guis) in ROW_CONTROLS.iter().zip(&ROW_GUIS) {
+                hide_row(listed, names, guis);
+            }
+            clear_icons();
+            let (count, page) = damage::pages(Airstrike, index);
+            let title = page.as_ref().map_or_else(
+                || c"NO COMBAT RESULTS".into(),
+                |page| page.title(index, count),
+            );
+            let mut title_area = cell(0.0, 1.0, top + step);
+            title_area.position[0] = left;
+            show(10, &title, title_area, ROW_STYLE);
+            let schematic_top = top + step + height * 0.5 + ROW_GAP;
+            let schematic_height = 220.0f32
+                .min((frame_height * 0.5 - schematic_top - height - 2.0 * ROW_GAP).max(0.0));
+            damage::preview(
+                Airstrike,
+                page.filter(|_| schematic_height > 0.0).map(|page| {
+                    let mut area = cell(0.0, 1.0, schematic_top + schematic_height * 0.5);
+                    area.position[0] += frame_width * 0.5;
+                    area.position[1] += frame_height * 0.5;
+                    area.dimensions[1] = schematic_height;
+                    (area, page)
+                }),
+            );
+            let nav_y = schematic_top + schematic_height + height * 0.5 + ROW_GAP;
+            if count > 1 {
+                show(8, c"PREV", cell(0.0, 0.5, nav_y), BUTTON_STYLE);
+                show(9, c"NEXT", cell(0.5, 1.0, nav_y), BUTTON_STYLE);
+            } else {
+                for control in 8..10 {
+                    hide_control(
+                        HEADER_CONTROLS[control].to_bytes_with_nul(),
+                        &HEADER_GUIS[control],
+                        listed,
+                    );
+                }
+            }
+            return;
+        }
+        for control in 8..11 {
+            hide_control(
+                HEADER_CONTROLS[control].to_bytes_with_nul(),
+                &HEADER_GUIS[control],
+                listed,
+            );
+        }
+        damage::preview(Airstrike, None);
+        let top = top + step;
         show(0, c"ADD PLANE", cell(0.0, 0.55, top), BUTTON_STYLE);
         show(1, c"RESET", cell(0.55, 1.0, top), BUTTON_STYLE);
-        let step = height + ROW_GAP;
         let list_step = height * 0.42;
         let mouse = wheel_input([frame_width, frame_height]);
         let first = self.page * ROWS_PER_PAGE;
@@ -412,7 +503,7 @@ impl Panel {
     }
 
     /// Return true only for an accepted LAUNCH, to alias the native FIGHT click.
-    pub(super) unsafe fn click(&mut self, name: &str, allies: bool, enemies: bool) -> bool {
+    pub(super) unsafe fn click(&mut self, name: &str, allies: usize, enemies: usize) -> bool {
         if !self.open || active() {
             return false;
         }
@@ -427,7 +518,24 @@ impl Panel {
         }
         self.last_click = Some((id, now));
         self.error = None;
-        if id == ADD && !self.crafts.is_empty() {
+        if id == PRESERVE {
+            self.preserve = !self.preserve;
+        } else if id == VIEW {
+            self.damage_page = self.damage_page.is_none().then_some(0);
+        } else if id == PREV || id == NEXT {
+            if let Some(index) = self.damage_page {
+                let (count, _) = damage::pages(Airstrike, index);
+                if count > 1 {
+                    self.damage_page = Some(if id == PREV {
+                        (index + count - 1) % count
+                    } else {
+                        (index + 1) % count
+                    });
+                }
+            }
+        } else if self.damage_page.is_some() {
+            return false;
+        } else if id == ADD && !self.crafts.is_empty() {
             if self.entries.len() == ENTRY_LIMIT {
                 self.error = Some(c"PLANE LIST FULL");
                 return false;
@@ -456,7 +564,7 @@ impl Panel {
                 self.restore_counts = true;
             }
         } else if id == LAUNCH {
-            if allies && enemies {
+            if allies != 0 && enemies != 0 {
                 self.error = Some(c"ONLY ONE TEAM IS SUPPORTED");
                 return false;
             }
@@ -483,10 +591,33 @@ impl Panel {
                 self.error = Some(c"AIRCRAFT CHOICES CHANGED");
                 return false;
             }
+            let friendly = enemies != 0;
+            let replay = if self.preserve {
+                damage::replay(Airstrike)
+            } else {
+                Vec::new()
+            };
+            let destroyed = |slot| {
+                replay
+                    .iter()
+                    .any(|(key, state)| *key == slot && matches!(state, Replay::Destroyed))
+            };
+            let all_destroyed = if friendly {
+                (0..enemies).all(|index| destroyed(Slot::Enemy(index)))
+            } else {
+                destroyed(Slot::Editor) && (0..allies).all(|index| destroyed(Slot::Ally(index)))
+            };
+            if all_destroyed {
+                self.error = Some(c"NO SURVIVORS - DISABLE PRESERVE DAMAGE");
+                return false;
+            }
             if encounter::request(Launch {
                 flights,
-                friendly: enemies,
+                friendly,
                 ground: self.ground,
+                preserve: self.preserve,
+                replay,
+                staged: Vec::new(),
             }) {
                 sound::button("Shipworks Airstrike launch");
                 return true;
@@ -633,7 +764,7 @@ unsafe fn catalog() -> Vec<Craft> {
 fn click_control(name: &str) -> Option<&'static CStr> {
     HEADER_CONTROLS
         .into_iter()
-        .filter(|&id| id != STATUS)
+        .filter(|&id| id != STATUS && id != RESULT)
         // The native sliders own their own input, including drag interactions.
         .chain(ROW_CONTROLS.into_iter().flat_map(|row| {
             row.into_iter()
@@ -655,6 +786,7 @@ pub(super) unsafe fn hide(listed: &[usize]) {
         hide_row(listed, names, guis);
     }
     clear_icons();
+    damage::preview(Airstrike, None);
 }
 
 unsafe fn hide_row(

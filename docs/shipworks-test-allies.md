@@ -20,6 +20,14 @@ arena and its limit of five defending ships.
 | Enemies only | Friendly aircraft attack the enemy fleet; watch from spectator view. |
 | Allies and enemies | No launch; the panel displays **ONLY ONE TEAM IS SUPPORTED** in red. |
 
+**v1.3.46 — Airstrike damage:** After the raid returns to Shipworks, use
+**DMG VIEW** and **PREV / NEXT** to inspect the last native module panel of each
+deployed defender. Enable **PRESERVE DAMAGE** before launching to carry survivors'
+damage into the next raid and omit destroyed ships. Disable it to launch with
+fresh designs; adding or clearing roster ships invalidates saved damage too.
+Airstrike and Missile Defense keep separate damage reports and save only
+temporary copies, never the original designs.
+
 **v1.3.43 — Silent Strike:** In standalone Shipworks, expand the tools with
 **>**, then choose **A.C.E. → SILENT STRIKE**. This opens the usual test
 pre-combat screen without a separate setup panel. **ADD** and **ADD ENEMY**
@@ -239,7 +247,8 @@ and GUI geometry `+0x218/+0x21c` remain locally documented RE contracts.
 | `0x1400ceade`, `0x14016b9c0`, `0x14016bf00` | Use the native editor Slider recipe (`0xea8` bytes), including its own drag handler and thumb movement. The panel reads the value only from a live GUI member. |
 | `0x1402821c0`, `0x140170230`, `0x140303fc2` | Resolve `Stats.m_icon_name` to the registered media animation. In the editor label pass, `Default_ps.hlsl`'s `ps_add` with white vertex RGB makes a silhouette on the normalized target while preserving texture alpha. The submitted quad is local; the shared animation and texture are not modified. |
 | `0x1402c5540` → `0x1402ca2b0` | State 1 expects a `MapCraft` with plane Bodies in side A and the defending Escadra in side B. The temporary MapCraft is constructed natively (`0x1400e4530`), never registered in the profile, and used only by this Shipworks scene. The stock group spawner at `0x140267700` sets alignment and arms the planes. |
-| `0x1402d2e61`, `0x1402c5357`, `0x1402c5340` | Set the defender Escadra's altitude only during synchronous setup. In the test scene run the stock raid tick without campaign tutorial events, skip campaign map teardown, then route the shared exit back to Editor. Clear temporary Links with native unregistration before deleting the private MapCraft. The tactical world retains ownership of spawned ships and planes. |
+| `0x1402d2e61`, `0x1402c5357`, `0x1402c5340` | Set the defender Escadra's altitude only during synchronous setup (zero for GROUND). In the test scene run the stock raid tick without campaign tutorial events, capture damage before teardown, skip campaign map teardown, then route the shared exit back to Editor. Clear temporary Links with native unregistration before deleting the private MapCraft. The tactical world retains ownership of spawned ships and planes. |
+| `0x147fc73d8`, `0x1402cb386` | Capture only the matching live Creature links in the Bombers defender vector (maximum five), not planes or the missile roster. The wave-spacing hook loads the stock 2,500-unit increment for campaign Bombers and reduces it for large Shipworks raids. |
 
 ### Silent Strike (Steam 1.163)
 

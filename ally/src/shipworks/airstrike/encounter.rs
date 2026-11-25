@@ -5,7 +5,7 @@ use std::{
     ffi::CStr,
     mem::{offset_of, size_of},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
         Mutex,
     },
 };
@@ -20,9 +20,10 @@ use crate::{
 
 use super::{
     super::{
-        design, missile_defense::vector_span, prune_enemy_escadra, write, COPY_STRING, ENEMY_LIST,
-        LINK_CLEAR_VECTOR, LINK_NODE_STRIDE, LINK_TARGET, LINK_UNLINK, SESSION, SIDE_ALLY,
-        SIDE_ENEMY, TEST_FIGHT_FLAG,
+        damage::{self, Scenario::Airstrike, Slot},
+        missile_defense::vector_span,
+        prune_enemy_escadra, write, COPY_STRING, ENEMY_LIST, LINK_CLEAR_VECTOR, LINK_NODE_STRIDE,
+        LINK_TARGET, LINK_UNLINK, SESSION, SIDE_ALLY, SIDE_ENEMY, TEST_FIGHT_FLAG,
     },
     Launch, ALL_PARTS, ENTRY_LIMIT, LEVEL, MAX_MULTIPLIER, MAX_PLANES, NATIVE_NEW,
 };
@@ -49,15 +50,19 @@ const SCRIPTED_AIRCRAFT: usize = 0x1_47fc_6fdb;
 const BOMBERS_STRATEGIC_RESULT: usize = 0x1_47fc_6fdf;
 const BOMBERS_ACTIVE_PLANES: usize = 0x1_47fc_73b0;
 const BOMBERS_DEFENDER_QUEUE: usize = 0x1_47fc_75a8;
-const BOMBERS_DEFENDERS: usize = 0x1_47fc_73d8;
+// Filled by SCR_BOMBERS' spawner (0x1402a8fc0) and pruned by its tick.
+pub(in crate::shipworks) const DEFENDER_ROSTER: usize = 0x1_47fc_73d8;
+pub(in crate::shipworks) const DEFENDER_LIMIT: usize = 5;
 const BOMBERS_AUX_LINKS: usize = 0x1_47fc_7590;
 const LIST_LINK: usize = 0x10;
 const LIST_NODE_SIZE: usize = LIST_LINK + LINK_NODE_STRIDE;
 const NATIVE_DELETE: usize = 0x1_4033_40d0;
 const PLANE_LIMIT: usize = ENTRY_LIMIT * MAX_PLANES as usize * MAX_MULTIPLIER as usize;
 
-const NATIVE_WAVE_SPACING: usize = 0x1_4036_6578;
-static TEST_WAVE_SPACING: f32 = 100.0;
+const NATIVE_WAVE_SPACING: usize = 0x1_4035_b93c;
+const MAX_WAVE_SPACING: f32 = 100.0;
+const MAX_WAVE_DEPTH: f32 = 3_500.0;
+static WAVE_SPACING: AtomicU32 = AtomicU32::new(MAX_WAVE_SPACING.to_bits());
 
 static REQUEST: Mutex<Option<Launch>> = Mutex::new(None);
 static PENDING_SETUP: Mutex<Option<Launch>> = Mutex::new(None);
@@ -100,11 +105,11 @@ pub(in crate::shipworks) fn active() -> bool {
 /// Called at FIGHT's level load, with the native scratch profile and both
 /// fleets initialized, after validation of the editor design.
 pub(in crate::shipworks) unsafe fn load_fight(resume: u8, flag: u8) {
-    let Some(launch) = REQUEST.try_lock().ok().and_then(|mut slot| slot.take()) else {
+    let Some(mut launch) = REQUEST.try_lock().ok().and_then(|mut slot| slot.take()) else {
         return;
     };
     let load: LoadLevel = std::mem::transmute(LOAD_LEVEL);
-    match stage_defenders(&launch) {
+    match stage_defenders(&mut launch) {
         Ok(()) => {
             if let Ok(mut pending) = PENDING_SETUP.try_lock() {
                 *pending = Some(launch);
@@ -126,33 +131,43 @@ unsafe fn fleet_link(list: usize) -> Option<(usize, usize)> {
     (diag::rd::<u64>(fleet.wrapping_add(NODE_CODE)) == Some(ESCADRA_CODE)).then_some((link, fleet))
 }
 
-unsafe fn stage_defenders(launch: &Launch) -> Result<(), &'static str> {
+unsafe fn stage_defenders(launch: &mut Launch) -> Result<(), &'static str> {
     let (_, editor_fleet) = fleet_link(FRIENDLY_LIST).ok_or("missing Shipworks editor fleet")?;
     let (enemy_link, enemy_fleet) =
         fleet_link(ENEMY_LIST).ok_or("missing Shipworks enemy fleet")?;
-    let (fleet, side, entries) = {
+    let (fleet, side, entries, slot) = {
         let state = SESSION.try_lock().map_err(|_| "Shipworks roster is busy")?;
         if launch.friendly {
-            (enemy_fleet, SIDE_ENEMY, state.enemy_entries.clone())
+            (
+                enemy_fleet,
+                SIDE_ENEMY,
+                state.enemy_entries.clone(),
+                Slot::Enemy as fn(usize) -> Slot,
+            )
         } else {
-            (editor_fleet, SIDE_ALLY, state.entries.clone())
+            (
+                editor_fleet,
+                SIDE_ALLY,
+                state.entries.clone(),
+                Slot::Ally as fn(usize) -> Slot,
+            )
         }
     };
-    let added = entries
-        .iter()
-        .filter(|entry| {
-            let added = design::append(fleet, &entry.path, side).is_some();
-            if !added {
-                log::warn!(
-                    "hf_ally: could not stage Airstrike defender {}",
-                    entry.name.to_string_lossy()
-                );
-            }
-            added
-        })
-        .count();
-    if launch.friendly && added == 0 {
-        return Err("no enemy defender could be loaded");
+    if !launch.friendly {
+        if let Some(ship) = damage::stage_editor(fleet, &launch.replay)? {
+            launch.staged.push((ship, Slot::Editor));
+        }
+    }
+    damage::stage_entries(
+        fleet,
+        side,
+        &entries,
+        slot,
+        &launch.replay,
+        &mut launch.staged,
+    );
+    if launch.staged.is_empty() {
+        return Err("no surviving defender could be loaded");
     }
     // SAFETY: these links are the native FIGHT builder's live, single-element
     // vectors. Their targets are scratch-profile fleets, not campaign objects.
@@ -161,7 +176,7 @@ unsafe fn stage_defenders(launch: &Launch) -> Result<(), &'static str> {
     set_link(enemy_link, fleet);
     log::info!(
         "hf_ally: Shipworks Airstrike staged {} defenders, {} strike flights ({}, {})",
-        added + usize::from(!launch.friendly),
+        launch.staged.len(),
         launch.flights.len(),
         if launch.friendly { "friendly" } else { "enemy" },
         if launch.ground { "ground" } else { "airborne" }
@@ -201,11 +216,11 @@ pub(in crate::shipworks) unsafe fn install(session: &mut PatchSession) -> Result
         .detour_trampoline(0x1_402c_5357, 5, tick)
         .map_err(|err| err.to_string())?;
 
-    // Native groups of three normally start another 2,500 units out. Compress
-    // launch spacing for the sandbox so the last groups reach the defenders.
+    // Native groups of three normally start another 2,500 units out
+    // (ADDSS XMM7,XMM15 at 0x1402cb4a3). Keep the full test raid within reach.
     let mut spacing = Trampoline::new();
     spacing.preserved_call(wave_spacing as *const (), &[], &[], ReturnType::Rax);
-    spacing.bytes(&[0xf3, 0x44, 0x0f, 0x10, 0x38]); // MOVSS XMM15,[RAX]; RAX is dead.
+    spacing.bytes(&[0x66, 0x44, 0x0f, 0x6e, 0xf8]); // MOVD XMM15,EAX; RAX is dead.
     spacing.absolute_jump(0x1_402c_b38f);
     session
         .detour_trampoline(0x1_402c_b386, 9, spacing)
@@ -217,11 +232,11 @@ extern "C" fn is_active() -> bool {
     active()
 }
 
-extern "C" fn wave_spacing() -> usize {
+unsafe extern "C" fn wave_spacing() -> u32 {
     if active() {
-        &TEST_WAVE_SPACING as *const f32 as usize
+        WAVE_SPACING.load(Ordering::Relaxed)
     } else {
-        NATIVE_WAVE_SPACING
+        read(NATIVE_WAVE_SPACING)
     }
 }
 
@@ -254,6 +269,9 @@ unsafe extern "C" fn setup() -> u8 {
     let set_link: SetLinkFn = std::mem::transmute(SET_LINK);
     set_link(link, group);
     OWN_GROUP.store(group, Ordering::Relaxed);
+    let gaps = count.div_ceil(3).saturating_sub(1).max(1);
+    let spacing = MAX_WAVE_SPACING.min(MAX_WAVE_DEPTH / gaps as f32);
+    WAVE_SPACING.store(spacing.to_bits(), Ordering::Relaxed);
     write(TEST_FIGHT_FLAG, 1u8);
     write(
         defenders + FLEET_ALTITUDE,
@@ -261,6 +279,17 @@ unsafe extern "C" fn setup() -> u8 {
     );
     let started = stock();
     write(defenders + FLEET_ALTITUDE, altitude);
+    if started != 0 {
+        if let Some(roster) = Airstrike.combat_roster() {
+            damage::begin(
+                Airstrike,
+                &roster,
+                &launch.staged,
+                launch.preserve,
+                launch.replay,
+            );
+        }
+    }
     log::info!(
         "hf_ally: Shipworks Airstrike handed {count} planes to native Bombers (started={started})"
     );
@@ -337,6 +366,14 @@ unsafe extern "C" fn teardown() {
     if !active() {
         let stock: unsafe extern "C" fn() = std::mem::transmute(BOMBERS_TEARDOWN);
         stock();
+        return;
+    }
+    // Save while the spawned ships are still live and before the shared
+    // level-exit call schedules Editor and releases our scratch fleet links.
+    if let Some(roster) = Airstrike.combat_roster() {
+        damage::finish(&roster);
+    } else {
+        damage::invalidate_replay(Airstrike);
     }
     // The shared level-exit call schedules Editor; leave() releases our staging.
 }
@@ -351,14 +388,15 @@ pub(in crate::shipworks) unsafe fn leave() {
     if let Ok(mut pending) = PENDING_SETUP.try_lock() {
         *pending = None;
     }
+    damage::discard_encounter();
     let group = OWN_GROUP.swap(0, Ordering::Relaxed);
     let clear: unsafe extern "C" fn(usize) = std::mem::transmute(LINK_CLEAR_VECTOR);
     if group != 0 {
         // SAFETY: these globals were filled by the native Bombers setup for
         // this test scene. Destroy only their native link records, not targets.
         clear_list(BOMBERS_ACTIVE_PLANES, PLANE_LIMIT);
-        clear_list(BOMBERS_DEFENDER_QUEUE, super::super::ROSTER_LIMIT + 1);
-        clear(BOMBERS_DEFENDERS);
+        clear_list(BOMBERS_DEFENDER_QUEUE, DEFENDER_LIMIT);
+        clear(DEFENDER_ROSTER);
         clear(BOMBERS_AUX_LINKS);
         write(SCRIPTED_AIRCRAFT, 0u8);
         write(BOMBERS_STRATEGIC_RESULT, 0u8);

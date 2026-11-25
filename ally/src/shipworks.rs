@@ -1030,8 +1030,8 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
         return !state.defense.click(name, has_allies, has_enemies);
     }
     if air_control {
-        let allies = !state.entries.is_empty();
-        let enemies = !state.enemy_entries.is_empty();
+        let allies = state.entries.len();
+        let enemies = state.enemy_entries.len();
         return !state.airstrike.click(name, allies, enemies);
     }
     let now = now_ms();
@@ -1087,7 +1087,8 @@ pub(crate) unsafe fn on_click(name: &str, button: usize) -> bool {
     let serial = state.serial;
     match design::snapshot(serial) {
         Ok(entry) => {
-            damage::invalidate_replay();
+            damage::invalidate_replay(damage::Scenario::MissileDefense);
+            damage::invalidate_replay(damage::Scenario::Airstrike);
             log::info!(
                 "hf_ally: Shipworks {} {}",
                 if enemy_add { "ADD ENEMY" } else { "ADD" },

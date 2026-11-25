@@ -24,7 +24,7 @@ use crate::{
 };
 
 use super::{
-    damage::{self, Replay, Slot},
+    damage::{self, Replay, Scenario::MissileDefense, Slot},
     design, native_string, prune_enemy_escadra, show_control, strategic_blast, write,
     ControlGeometry, BUTTON_GAP, BUTTON_STYLE, CLICK_DEBOUNCE_MS, ENEMY_LIMIT, ENEMY_LIST,
     LINK_CLEAR_VECTOR, LINK_NODE_STRIDE, LINK_TARGET, ROSTER_LIMIT, ROW_STYLE, SESSION, SIDE_ALLY,
@@ -181,15 +181,6 @@ struct Launch {
     staged: Vec<(usize, Slot)>,
 }
 
-impl Launch {
-    fn replay_for(&self, slot: Slot) -> Option<&Replay> {
-        self.replay
-            .iter()
-            .find(|(key, _)| *key == slot)
-            .map(|(_, state)| state)
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 enum DefenderStart {
     Airborne,
@@ -265,7 +256,7 @@ impl Panel {
     pub(super) fn close(&mut self) {
         self.open = false;
         self.page = None;
-        damage::preview(None);
+        damage::preview(MissileDefense, None);
     }
 
     /// Draw against the validated Shipworks TEST template and current GUI list.
@@ -361,24 +352,12 @@ impl Panel {
             hide_viewer(listed);
             return;
         };
-        let (count, page) = damage::pages(page_index);
+        let (count, page) = damage::pages(MissileDefense, page_index);
         let header_y = y + 5.0 * step;
-        let mut title = Vec::new();
-        if let Some(page) = &page {
-            title.extend_from_slice(format!("{}/{}  ", page_index + 1, count).as_bytes());
-            title.extend_from_slice(page.name.to_bytes());
-            if page.destroyed {
-                title.extend_from_slice(b" (DESTROYED)");
-            }
-            if !page.has_panel() {
-                title.extend_from_slice(b" - NO PANEL CAPTURED");
-            }
-        }
-        let title = if title.is_empty() {
-            c"NO COMBAT RESULTS".into()
-        } else {
-            CString::new(title).unwrap_or_else(|_| c"COMBAT RESULTS".into())
-        };
+        let title = page.as_ref().map_or_else(
+            || c"NO COMBAT RESULTS".into(),
+            |page| page.title(page_index, count),
+        );
         show_control(
             PAGE_NAME.to_bytes_with_nul(),
             &PAGE_GUI,
@@ -411,18 +390,21 @@ impl Panel {
             );
         }
         let frame_height = read::<i32>(FRAME_HEIGHT) as f32;
-        damage::preview(page.map(|page| {
-            (
-                ControlGeometry {
-                    position: [
-                        x + frame_width * 0.5,
-                        schematic_y + SCHEMATIC_HEIGHT * 0.5 + frame_height * 0.5,
-                    ],
-                    dimensions: [panel_width, SCHEMATIC_HEIGHT],
-                },
-                page,
-            )
-        }));
+        damage::preview(
+            MissileDefense,
+            page.map(|page| {
+                (
+                    ControlGeometry {
+                        position: [
+                            x + frame_width * 0.5,
+                            schematic_y + SCHEMATIC_HEIGHT * 0.5 + frame_height * 0.5,
+                        ],
+                        dimensions: [panel_width, SCHEMATIC_HEIGHT],
+                    },
+                    page,
+                )
+            }),
+        );
     }
 
     /// True only when the native dispatcher should run its test-fight branch.
@@ -447,7 +429,7 @@ impl Panel {
         }
         if id == PREV_NAME || id == NEXT_NAME {
             if let Some(index) = self.page {
-                let (count, _) = damage::pages(index);
+                let (count, _) = damage::pages(MissileDefense, index);
                 if count > 1 {
                     self.page = Some(if id == PREV_NAME {
                         (index + count - 1) % count
@@ -501,7 +483,7 @@ impl Panel {
             return false;
         };
         let replay = if self.preserve {
-            damage::replay()
+            damage::replay(MissileDefense)
         } else {
             Vec::new()
         };
@@ -524,7 +506,7 @@ impl Panel {
         drop(request);
         log::info!("hf_ally: Shipworks preserve replay: {saved} saved, {destroyed} destroyed");
         self.page = None;
-        damage::preview(None);
+        damage::preview(MissileDefense, None);
         sound::button("Shipworks missile launch");
         true
     }
@@ -569,7 +551,7 @@ unsafe fn hide_viewer(listed: &[usize]) {
     hide_button(listed, PAGE_NAME, &PAGE_GUI);
     hide_button(listed, PREV_NAME, &PREV_GUI);
     hide_button(listed, NEXT_NAME, &NEXT_GUI);
-    damage::preview(None);
+    damage::preview(MissileDefense, None);
 }
 
 pub(super) fn requested() -> bool {
@@ -894,48 +876,27 @@ unsafe fn stage_defenders(launch: &mut Launch) -> Result<(), &'static str> {
         (state.entries.clone(), state.enemy_entries.clone())
     };
     if !matches!(launch.roster, Roster::Strike) {
-        let editor = editor_defender(allies).ok_or("missing editor defender property")?;
-        let get_ship: unsafe extern "C" fn(usize) -> usize = std::mem::transmute(PROPERTY_SHIP);
-        let current = get_ship(editor);
-        if !diag::readable_span(current, size_of::<Creature>())
-            || read::<u64>(current + NODE_CODE) != CREATURE_CODE
-        {
-            return Err("invalid editor defender");
-        }
-        let (ship, remove_original) = match launch.replay_for(Slot::Editor) {
-            Some(Replay::Destroyed) => (None, true),
-            Some(Replay::Saved(snapshot)) => {
-                match design::append(allies, snapshot.path(), SIDE_ALLY) {
-                    Some(ship) => {
-                        log_ship_health("preserved editor ship", c"editor ship", ship);
-                        (Some(ship), true)
-                    }
-                    None => {
-                        log::warn!(
-                            "hf_ally: damaged editor ship could not be loaded; using editor design"
-                        );
-                        (Some(current), false)
-                    }
-                }
-            }
-            None => (Some(current), false),
-        };
-        if remove_original {
-            // SAFETY: FIGHT's original Property is the one native list child
-            // validated above. Like Creature_SpawnFromTemplate (0x1402672c0),
-            // invoke its native kill slot, not a Rust destructor or list edit.
-            let vtable = read::<usize>(editor);
-            let remove: unsafe extern "C" fn(usize) =
-                std::mem::transmute(read::<usize>(vtable + 0x48));
-            remove(editor);
-        }
-        if let Some(ship) = ship {
+        if let Some(ship) = damage::stage_editor(allies, &launch.replay)? {
             launch.staged.push((ship, Slot::Editor));
         }
-        append_defenders(launch, allies, &ally_entries, SIDE_ALLY, Slot::Ally);
+        damage::stage_entries(
+            allies,
+            SIDE_ALLY,
+            &ally_entries,
+            Slot::Ally,
+            &launch.replay,
+            &mut launch.staged,
+        );
     }
     if matches!(launch.roster, Roster::Strike | Roster::Mixed) {
-        append_defenders(launch, enemies, &enemy_entries, SIDE_ENEMY, Slot::Enemy);
+        damage::stage_entries(
+            enemies,
+            SIDE_ENEMY,
+            &enemy_entries,
+            Slot::Enemy,
+            &launch.replay,
+            &mut launch.staged,
+        );
         if matches!(launch.roster, Roster::Strike) && launch.staged.is_empty() {
             return Err("no surviving enemy defenders; turn Preserve Damage off to reset");
         }
@@ -964,64 +925,6 @@ unsafe fn stage_defenders(launch: &mut Launch) -> Result<(), &'static str> {
     Ok(())
 }
 
-unsafe fn editor_defender(fleet: usize) -> Option<usize> {
-    let children = fleet + offset_of!(Node, children);
-    let count = diag::rd::<usize>(children + offset_of!(SentinelList<usize>, length))?;
-    let head = diag::rd::<usize>(children)?;
-    let first = diag::rd::<usize>(head)?;
-    if count != 1 || first == head || diag::rd::<usize>(first)? != head {
-        return None;
-    }
-    diag::rd::<usize>(first + offset_of!(SentinelListNode<usize>, value))
-        .filter(|&property| diag::readable_span(property, size_of::<Node>()))
-        .filter(|&property| read::<usize>(property + design::MASTER_TARGET) == fleet)
-}
-
-unsafe fn append_defenders(
-    launch: &mut Launch,
-    fleet: usize,
-    entries: &[super::Entry],
-    side: f32,
-    slot: impl Fn(usize) -> Slot,
-) {
-    for (index, entry) in entries.iter().enumerate() {
-        let key = slot(index);
-        let (ship, source) = match launch.replay_for(key) {
-            Some(Replay::Destroyed) => continue,
-            Some(Replay::Saved(snapshot)) => {
-                let ship = design::append(fleet, snapshot.path(), side).or_else(|| {
-                    log::warn!(
-                        "hf_ally: damaged snapshot for {} could not be loaded; using design",
-                        entry.name.to_string_lossy()
-                    );
-                    design::append(fleet, &entry.path, side)
-                });
-                (ship, "preserved snapshot")
-            }
-            None => (design::append(fleet, &entry.path, side), "design"),
-        };
-        if let Some(ship) = ship {
-            log_ship_health(source, &entry.name, ship);
-            launch.staged.push((ship, key));
-        } else {
-            log::warn!(
-                "hf_ally: could not stage missile defender {}",
-                entry.name.to_string_lossy()
-            );
-        }
-    }
-}
-
-/// Diagnostics for Preserve Damage: log the live part damage on a staged ship.
-unsafe fn log_ship_health(source: &str, name: &CStr, ship: usize) {
-    if let Some((parts, damaged, health, health_max)) = design::health_summary(ship) {
-        log::info!(
-            "hf_ally: staged {source} {}: {damaged}/{parts} parts below max health, hull {health:.0}/{health_max:.0}",
-            name.to_string_lossy()
-        );
-    }
-}
-
 unsafe fn single_link(vector: usize) -> Option<usize> {
     let (begin, count) = vector_span(vector, LINK_NODE_STRIDE, 1)?;
     (count == 1).then_some(begin)
@@ -1041,8 +944,14 @@ unsafe extern "C" fn spawn_defenders() {
     if let Some(launch) = launch.filter(|launch| prepare_missile(launch)) {
         write(TEST_FIGHT_FLAG, 1u8);
         original();
-        if let Some(roster) = combat_roster() {
-            damage::begin(&roster, &launch.staged, launch.preserve, launch.replay);
+        if let Some(roster) = MissileDefense.combat_roster() {
+            damage::begin(
+                MissileDefense,
+                &roster,
+                &launch.staged,
+                launch.preserve,
+                launch.replay,
+            );
         }
     } else {
         log::warn!(
@@ -1053,18 +962,9 @@ unsafe extern "C" fn spawn_defenders() {
     }
 }
 
-unsafe fn combat_roster() -> Option<Vec<usize>> {
-    let (begin, count) = vector_span(ROSTER_BEGIN, LINK_NODE_STRIDE, CUSTOM_DEFENDER_LIMIT)?;
-    Some(
-        (0..count)
-            .map(|i| read::<usize>(begin + i * LINK_NODE_STRIDE + LINK_TARGET))
-            .collect(),
-    )
-}
-
 /// Campaign diagnostics: hull and part damage of the live missile-defense roster.
 unsafe fn log_campaign_roster(phase: &str) {
-    let Some(roster) = combat_roster() else {
+    let Some(roster) = MissileDefense.combat_roster() else {
         log::info!("hf_ally: campaign roster {phase}: unavailable");
         return;
     };
@@ -1081,10 +981,10 @@ unsafe fn log_campaign_roster(phase: &str) {
 unsafe extern "C" fn finish_defenders() {
     if active() {
         let _hook = diag::scope("Shipworks missile damage capture");
-        if let Some(roster) = combat_roster() {
+        if let Some(roster) = MissileDefense.combat_roster() {
             damage::finish(&roster);
         } else {
-            damage::invalidate_replay();
+            damage::invalidate_replay(MissileDefense);
         }
     } else {
         log_campaign_roster("teardown");
@@ -1423,7 +1323,7 @@ unsafe fn sandbox_nuclear_impact(body: usize) -> Option<((f32, f32), f32, f32)> 
     // projectile side alone) identifies an impact against our combat roster.
     let target =
         diag::rd::<usize>(body.wrapping_add(offset_of!(Body, projectile_link_1) + LINK_TARGET))?;
-    let roster = combat_roster()?;
+    let roster = MissileDefense.combat_roster()?;
     if !roster.contains(&target)
         || !diag::readable_span(target, size_of::<Creature>())
         || !live_ship(target)
@@ -1452,7 +1352,7 @@ unsafe fn sandbox_nuclear_impact(body: usize) -> Option<((f32, f32), f32, f32)> 
 /// Apply the campaign's hull damage stage to the live sandbox fleet, without
 /// invoking the campaign's map simulation, Profile, or recovery scene.
 unsafe fn apply_sandbox_nuclear_damage(center: (f32, f32), yield_power: f32, target_side: f32) {
-    let Some(roster) = combat_roster() else {
+    let Some(roster) = MissileDefense.combat_roster() else {
         return;
     };
     for (index, ship) in roster.into_iter().enumerate() {

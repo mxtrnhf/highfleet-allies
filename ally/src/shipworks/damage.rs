@@ -1,8 +1,8 @@
-//! Missile Defense results: native replay volumes and frozen vanilla combat panels.
+//! A.C.E. results: native replay volumes and frozen vanilla combat panels.
 
 use std::{
     cell::Cell,
-    ffi::CString,
+    ffi::{CStr, CString},
     mem::{offset_of, size_of},
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -22,10 +22,38 @@ use crate::{
 };
 
 use super::{
-    design,
+    airstrike, design,
     missile_defense::{self, vector_span, CUSTOM_DEFENDER_LIMIT},
-    ControlGeometry, EDITOR_MODE, LINK_NODE_STRIDE, LINK_TARGET,
+    ControlGeometry, Entry, EDITOR_MODE, LINK_NODE_STRIDE, LINK_TARGET, SIDE_ALLY,
 };
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Scenario {
+    MissileDefense,
+    Airstrike,
+}
+
+const SCENARIOS: usize = 2;
+
+impl Scenario {
+    fn roster(self) -> (usize, usize) {
+        match self {
+            Self::MissileDefense => (ROSTER_BEGIN, CUSTOM_DEFENDER_LIMIT),
+            Self::Airstrike => (airstrike::DEFENDER_ROSTER, airstrike::DEFENDER_LIMIT),
+        }
+    }
+
+    /// Read the active scene's live ship Links on the game thread.
+    pub(super) unsafe fn combat_roster(self) -> Option<Vec<usize>> {
+        let (vector, limit) = self.roster();
+        let (begin, count) = vector_span(vector, LINK_NODE_STRIDE, limit)?;
+        Some(
+            (0..count)
+                .map(|index| read(begin + index * LINK_NODE_STRIDE + LINK_TARGET))
+                .collect(),
+        )
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Slot {
@@ -67,6 +95,7 @@ struct CombatShip {
 }
 
 struct Encounter {
+    scenario: Scenario,
     preserve: bool,
     ships: Vec<CombatShip>,
     already_destroyed: Vec<(Slot, Replay)>,
@@ -88,6 +117,18 @@ impl Page {
     pub(super) fn has_panel(&self) -> bool {
         self.image.is_some()
     }
+
+    pub(super) fn title(&self, index: usize, count: usize) -> CString {
+        let mut title = format!("{}/{}  ", index + 1, count).into_bytes();
+        title.extend_from_slice(self.name.to_bytes());
+        if self.destroyed {
+            title.extend_from_slice(b" (DESTROYED)");
+        }
+        if !self.has_panel() {
+            title.extend_from_slice(b" - NO PANEL CAPTURED");
+        }
+        CString::new(title).unwrap_or_else(|_| c"COMBAT RESULTS".into())
+    }
 }
 
 #[derive(Default)]
@@ -104,44 +145,47 @@ struct Preview {
 }
 
 static ENCOUNTER: Mutex<Option<Encounter>> = Mutex::new(None);
-static REPORT: Mutex<Option<Report>> = Mutex::new(None);
-static PREVIEW: Mutex<Option<Preview>> = Mutex::new(None);
+static REPORTS: Mutex<[Option<Report>; SCENARIOS]> = Mutex::new([const { None }; SCENARIOS]);
+static PREVIEWS: Mutex<[Option<Preview>; SCENARIOS]> = Mutex::new([None; SCENARIOS]);
 static SERIAL: AtomicUsize = AtomicUsize::new(0);
 
-pub(super) fn pages(index: usize) -> (usize, Option<Page>) {
-    REPORT
+pub(super) fn pages(scenario: Scenario, index: usize) -> (usize, Option<Page>) {
+    REPORTS
         .try_lock()
         .ok()
-        .and_then(|report| {
-            let report = report.as_ref()?;
+        .and_then(|reports| {
+            let report = reports[scenario as usize].as_ref()?;
             Some((report.pages.len(), report.pages.get(index).cloned()))
         })
         .unwrap_or_default()
 }
 
-pub(super) fn replay() -> Vec<(Slot, Replay)> {
-    REPORT
+pub(super) fn replay(scenario: Scenario) -> Vec<(Slot, Replay)> {
+    REPORTS
         .try_lock()
         .ok()
-        .and_then(|report| Some(report.as_ref()?.replay.clone()))
+        .and_then(|reports| Some(reports[scenario as usize].as_ref()?.replay.clone()))
         .unwrap_or_default()
 }
 
-pub(super) fn invalidate_replay() {
-    let replay = REPORT
-        .try_lock()
-        .ok()
-        .and_then(|mut report| Some(std::mem::take(&mut report.as_mut()?.replay)));
+pub(super) fn invalidate_replay(scenario: Scenario) {
+    let replay = REPORTS.try_lock().ok().and_then(|mut reports| {
+        Some(std::mem::take(
+            &mut reports[scenario as usize].as_mut()?.replay,
+        ))
+    });
     drop(replay);
 }
 
 pub(super) fn clear() {
-    if let Ok(mut report) = REPORT.try_lock() {
-        let old = report.take();
-        drop(report);
+    if let Ok(mut reports) = REPORTS.try_lock() {
+        let old = std::mem::take(&mut *reports);
+        drop(reports);
         drop(old);
     }
-    preview(None);
+    if let Ok(mut previews) = PREVIEWS.try_lock() {
+        previews.fill(None);
+    }
 }
 
 pub(super) fn discard_encounter() {
@@ -150,9 +194,9 @@ pub(super) fn discard_encounter() {
     }
 }
 
-pub(super) fn preview(page: Option<(ControlGeometry, Page)>) {
-    if let Ok(mut preview) = PREVIEW.try_lock() {
-        *preview = page.and_then(|(area, page)| {
+pub(super) fn preview(scenario: Scenario, page: Option<(ControlGeometry, Page)>) {
+    if let Ok(mut previews) = PREVIEWS.try_lock() {
+        previews[scenario as usize] = page.and_then(|(area, page)| {
             Some(Preview {
                 area,
                 image: page.image?,
@@ -161,9 +205,94 @@ pub(super) fn preview(page: Option<(ControlGeometry, Page)>) {
     }
 }
 
+/// Borrow the editor fleet built by FIGHT and optionally replace its one
+/// original ship with a preserved volume. `None` means it was destroyed.
+pub(super) unsafe fn stage_editor(
+    fleet: usize,
+    replay: &[(Slot, Replay)],
+) -> Result<Option<usize>, &'static str> {
+    let (property, original) = design::editor_defender(fleet).ok_or("invalid editor defender")?;
+    let ship = match replay_for(replay, Slot::Editor) {
+        Some(Replay::Destroyed) => None,
+        Some(Replay::Saved(snapshot)) => match design::append(fleet, snapshot.path(), SIDE_ALLY) {
+            Some(ship) => {
+                log_ship_health("preserved editor ship", c"editor ship", ship);
+                Some(ship)
+            }
+            None => {
+                log::warn!("hf_ally: damaged editor ship could not be loaded; using editor design");
+                return Ok(Some(original));
+            }
+        },
+        None => return Ok(Some(original)),
+    };
+    // SAFETY: this is FIGHT's validated original Property in a scratch fleet.
+    // Use the same native kill virtual as Creature_SpawnFromTemplate, not a
+    // Rust destructor or a raw list edit.
+    let vtable = read::<usize>(property);
+    let remove: unsafe extern "C" fn(usize) = std::mem::transmute(read::<usize>(vtable + 0x48));
+    remove(property);
+    Ok(ship)
+}
+
+/// Append roster snapshots, taking the native damage volume instead of the
+/// fresh design when available. Destroyed slots are deliberately left out.
+pub(super) unsafe fn stage_entries(
+    fleet: usize,
+    side: f32,
+    entries: &[Entry],
+    slot: impl Fn(usize) -> Slot,
+    replay: &[(Slot, Replay)],
+    staged: &mut Vec<(usize, Slot)>,
+) {
+    for (index, entry) in entries.iter().enumerate() {
+        let key = slot(index);
+        let (ship, source) = match replay_for(replay, key) {
+            Some(Replay::Destroyed) => continue,
+            Some(Replay::Saved(snapshot)) => match design::append(fleet, snapshot.path(), side) {
+                Some(ship) => (Some(ship), "preserved snapshot"),
+                None => {
+                    log::warn!(
+                        "hf_ally: damaged snapshot for {} could not be loaded; using design",
+                        entry.name.to_string_lossy()
+                    );
+                    (design::append(fleet, &entry.path, side), "design")
+                }
+            },
+            None => (design::append(fleet, &entry.path, side), "design"),
+        };
+        if let Some(ship) = ship {
+            log_ship_health(source, &entry.name, ship);
+            staged.push((ship, key));
+        } else {
+            log::warn!(
+                "hf_ally: could not stage defender {}",
+                entry.name.to_string_lossy()
+            );
+        }
+    }
+}
+
+fn replay_for(replay: &[(Slot, Replay)], slot: Slot) -> Option<&Replay> {
+    replay
+        .iter()
+        .find(|(key, _)| *key == slot)
+        .map(|(_, state)| state)
+}
+
+unsafe fn log_ship_health(source: &str, name: &CStr, ship: usize) {
+    if let Some((parts, damaged, health, health_max)) = design::health_summary(ship) {
+        log::info!(
+            "hf_ally: staged {source} {}: {damaged}/{parts} parts below max health, hull {health:.0}/{health_max:.0}",
+            name.to_string_lossy()
+        );
+    }
+}
+
 /// Called after the native spawner has populated its combat Link vector. The
 /// spawner moves the template's existing bodies; it does not clone Creature.
 pub(super) unsafe fn begin(
+    scenario: Scenario,
     roster: &[usize],
     staged: &[(usize, Slot)],
     preserve: bool,
@@ -197,19 +326,21 @@ pub(super) unsafe fn begin(
         });
     }
     log::info!(
-        "hf_ally: recording damage for {} missile defenders",
+        "hf_ally: recording {scenario:?} damage for {} defenders",
         ships.len()
     );
     previous.retain(|(_, state)| matches!(state, Replay::Destroyed));
     // Keep the last completed report intact if a new launch aborts. Each bank
     // is reused, so repeatedly launching never grows the render-target pool.
-    let bank = REPORT
+    let first_bank = scenario as usize * 2;
+    let bank = REPORTS
         .try_lock()
         .ok()
-        .and_then(|report| Some(1 - report.as_ref()?.bank))
-        .unwrap_or(0);
+        .and_then(|reports| Some(reports[scenario as usize].as_ref()?.bank ^ 1))
+        .unwrap_or(first_bank);
     if let Ok(mut encounter) = ENCOUNTER.try_lock() {
         *encounter = Some(Encounter {
+            scenario,
             preserve,
             ships,
             already_destroyed: previous,
@@ -279,8 +410,9 @@ pub(super) unsafe fn finish(roster: &[usize]) {
         });
     }
     log::info!(
-        "hf_ally: captured {} missile damage pages ({} native panels), {} saved ships; render frames: {} ({} HUD hidden, {} panel suppressed)",
+        "hf_ally: captured {} {:?} damage pages ({} native panels), {} saved ships; render frames: {} ({} HUD hidden, {} panel suppressed)",
         report.pages.len(),
+        encounter.scenario,
         report.pages.iter().filter(|page| page.has_panel()).count(),
         report
             .replay
@@ -291,8 +423,8 @@ pub(super) unsafe fn finish(roster: &[usize]) {
         encounter.hidden_hud_frames,
         encounter.suppressed_frames,
     );
-    if let Ok(mut latest) = REPORT.try_lock() {
-        let old = latest.replace(report);
+    if let Ok(mut latest) = REPORTS.try_lock() {
+        let old = latest[encounter.scenario as usize].replace(report);
         drop(latest);
         drop(old);
     }
@@ -305,17 +437,17 @@ unsafe fn live_identity(ship: usize, id: i64) -> bool {
         && read::<i64>(ship + offset_of!(Node, id)) == id
 }
 
-// Two banks keep the published report separate from the encounter in progress.
+// Two banks per scenario separate the published report from the live encounter.
 // The depth surface is cleared by every DrawBattleShipPanel call and is never
 // composited, so one depth surface serves both banks.
 struct Targets {
-    images: [[Option<PanelImage>; CUSTOM_DEFENDER_LIMIT]; 2],
+    images: [[Option<PanelImage>; CUSTOM_DEFENDER_LIMIT]; SCENARIOS * 2],
     depth: Option<usize>,
     failed: bool,
 }
 
 static TARGETS: Mutex<Targets> = Mutex::new(Targets {
-    images: [[None; CUSTOM_DEFENDER_LIMIT]; 2],
+    images: [[None; CUSTOM_DEFENDER_LIMIT]; SCENARIOS * 2],
     depth: None,
     failed: false,
 });
@@ -343,7 +475,7 @@ unsafe fn target(bank: usize, index: usize) -> Option<(PanelImage, usize)> {
     } else {
         targets.failed = true;
         drop(targets);
-        log::warn!("hf_ally: could not allocate Missile Defense damage panel targets");
+        log::warn!("hf_ally: could not allocate Shipworks damage panel targets");
         None
     }
 }
@@ -370,7 +502,7 @@ unsafe extern "C" fn select_panel_ship(profile: usize, slot: u32) -> usize {
 /// still uses the real HUD flag; spectator mode does not gain a live HUD.
 unsafe extern "C" fn run_panel_pass() -> bool {
     let hud_enabled = read::<u8>(HUD_ENABLED) != 0;
-    if !missile_defense::active() {
+    if !missile_defense::active() && !airstrike::active() {
         return hud_enabled;
     }
     capture_frame(hud_enabled) || hud_enabled
@@ -378,13 +510,11 @@ unsafe extern "C" fn run_panel_pass() -> bool {
 
 /// Returns true if the capture touched the render targets.
 unsafe fn capture_frame(hud_enabled: bool) -> bool {
-    let Some((begin, count)) = vector_span(ROSTER_BEGIN, LINK_NODE_STRIDE, CUSTOM_DEFENDER_LIMIT)
-    else {
-        return false;
-    };
     let Some((bank, index, ship, id)) = (|| {
         let mut encounter = ENCOUNTER.try_lock().ok()?;
         let encounter = encounter.as_mut()?;
+        let (roster, limit) = encounter.scenario.roster();
+        let (begin, count) = vector_span(roster, LINK_NODE_STRIDE, limit)?;
         encounter.render_frames = encounter.render_frames.saturating_add(1);
         if !hud_enabled {
             encounter.hidden_hud_frames = encounter.hidden_hud_frames.saturating_add(1);
@@ -506,7 +636,11 @@ unsafe extern "C" fn render() {
         return;
     }
     super::airstrike::render_icons();
-    let Some(preview) = PREVIEW.try_lock().ok().and_then(|preview| *preview) else {
+    let Some(preview) = PREVIEWS
+        .try_lock()
+        .ok()
+        .and_then(|previews| previews.iter().flatten().next().copied())
+    else {
         return;
     };
     let ControlGeometry {

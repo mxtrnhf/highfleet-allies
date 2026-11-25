@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.46 (Airstrike damage and replay):** **DMG VIEW** shows the native defender module panels from the last Airstrike. **PRESERVE DAMAGE** carries surviving ships and their damage into subsequent Airstrikes on the same roster and leaves destroyed defenders out. Results and replay are separate from Missile Defense; neither edits original designs. Large raids compress aircraft wave spacing, while campaign Bombers keep the stock spacing. In-game validation pending.
+
 * **v1.3.45 (Airstrike setup controls):** fixes the swapped **GROUND** and **AIRBORNE** deployment settings. Plane groups use stock atlas silhouettes, a three-line scrollable loadout list, compact **1–15** and **1–8x** sliders with increasing green fill, and an **X** to remove a group. In-game validation pending.
 
 * **v1.3.44 (Shipworks Airstrike):** **A.C.E. → AIRSTRIKE** configures independent groups with a plane type, a 0–15 count slider and a loadout from the live game tables (including mod registrations). Uses game aircraft icons rendered as white silhouettes. **LAUNCH** runs the native bombing encounter against the editor ship and any added allies, or sends friendly aircraft against an enemy-only roster. Mixed rosters are refused. **GROUND / AIRBORNE** sets how the defending ships start. In-game validation pending.

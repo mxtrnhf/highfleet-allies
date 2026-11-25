@@ -332,6 +332,32 @@ unsafe fn save_volume(roots: Vec<usize>, name: &CStr, suffix: &str) -> Result<CS
     Ok(path)
 }
 
+/// Locate FIGHT's single original editor Property and its Creature.
+///
+/// # Safety
+/// Call on the game thread with the scratch fleet built by FIGHT, before
+/// appending any other ships to it.
+pub(super) unsafe fn editor_defender(fleet: usize) -> Option<(usize, usize)> {
+    let children = fleet + offset_of!(Node, children);
+    let count = diag::rd::<usize>(children + offset_of!(SentinelList<usize>, length))?;
+    let head = diag::rd::<usize>(children)?;
+    let first = diag::rd::<usize>(head)?;
+    if count != 1 || first == head || diag::rd::<usize>(first)? != head {
+        return None;
+    }
+    let property = diag::rd::<usize>(first + offset_of!(SentinelListNode<usize>, value))?;
+    if !diag::readable_span(property, size_of::<Node>())
+        || read::<usize>(property + MASTER_TARGET) != fleet
+    {
+        return None;
+    }
+    let get_ship: unsafe extern "C" fn(usize) -> usize = std::mem::transmute(PROPERTY_SHIP);
+    let ship = get_ship(property);
+    (diag::readable_span(ship, size_of::<Creature>())
+        && read::<u64>(ship + OFF_CODE) == CODE_CREATURE)
+        .then_some((property, ship))
+}
+
 /// Deserialize one fresh volume, then transfer ownership to the already-live FIGHT fleet.
 /// `side` is written to the ship's `+0xad4`: positive for the player fleet, negative for the
 /// enemy fleet.
