@@ -1496,48 +1496,54 @@ unsafe extern "C" fn nuclear_effect(body: usize) -> u32 {
     0
 }
 
-/// Damage every defender with the campaign strategic intensity.
+/// Damage the targeted fleet with the campaign strategic intensity.
 ///
-/// The campaign `Explosion::Update` applies `min(cap, E / (1e6 * d^3))` per
-/// part (cap 999 for an AI ship / 50 for a player ship, distance floored at
-/// 1.0 / 2.0). The exact per-part bounding-box spread inside `0x1400e6aa0` is
-/// not decoded, so the damage is spread as an evenly spaced sample of the
-/// ship's parts while the budget follows the campaign intensity. A close hit
-/// stays at the measured 2.5k-3.5k hull; a distant hit falls to effectively
-/// zero, as in campaign.
+/// The campaign `Explosion::Update` applies `min(cap, E / (1e6 * d^3))` to the
+/// ships of the fleet the map missile reached. The tactical 400-unit proximity
+/// fuse is **not** that map distance: at impact the map missile is at the
+/// fleet, so the distance is the campaign floor (1.0 AI / 2.0 player) for every
+/// ship in the targeted fleet, not each ship's tactical spacing. The exact
+/// per-part bounding-box spread inside `0x1400e6aa0` is not decoded, so the
+/// damage is spread as an evenly spaced sample of each ship's parts. A close
+/// hit stays at the measured 2.5k-3.5k hull; a nuke that never reaches the
+/// fleet would have no map impact and is not represented here.
 unsafe fn apply_sandbox_nuclear_damage(body: usize, yield_power: f32) {
+    if !yield_power.is_finite() || yield_power <= 0.0 {
+        return;
+    }
     let Some((blast_x, blast_y)) = body_world_position(body) else {
         return;
     };
-    let radius = yield_power.max(0.0).sqrt();
-    if radius <= 0.0 {
-        return;
-    }
     let Some(roster) = combat_roster() else {
         return;
     };
+    // The missile's target link identifies the fleet the map missile reached.
+    // If it is unavailable, keep the old behaviour and damage the whole roster.
+    let target =
+        diag::rd::<usize>(body.wrapping_add(offset_of!(Body, projectile_link_1) + LINK_TARGET))
+            .unwrap_or(0);
+    let target_side = if target != 0 && diag::readable_span(target, size_of::<Creature>()) {
+        read::<f32>(target + OFF_SIDE)
+    } else {
+        0.0
+    };
     for (index, ship) in roster.into_iter().enumerate() {
-        let Some(bridge) = diag::rd::<usize>(ship.wrapping_add(design::MASTER_TARGET))
+        let ship_side = read::<f32>(ship + OFF_SIDE);
+        if target_side != 0.0 && ship_side * target_side <= 0.0 {
+            continue;
+        }
+        let Some(_bridge) = diag::rd::<usize>(ship.wrapping_add(design::MASTER_TARGET))
             .filter(|&bridge| diag::readable_span(bridge, size_of::<Body>()))
             .filter(|&bridge| read::<usize>(bridge + NODE_OWNER) == ship)
         else {
             continue;
         };
-        let Some((ship_x, ship_y)) = body_world_position(bridge) else {
-            continue;
-        };
-        let dx = ship_x - blast_x;
-        let dy = ship_y - blast_y;
-        let distance = (dx * dx + dy * dy).sqrt();
-        if distance >= radius {
-            continue;
-        }
-        let player_side = read::<f32>(ship + OFF_SIDE) > 0.0;
-        let distance = distance.max(if player_side {
+        let player_side = ship_side > 0.0;
+        let distance = if player_side {
             CAMPAIGN_NUKE_DISTANCE_FLOOR_PLAYER
         } else {
             CAMPAIGN_NUKE_DISTANCE_FLOOR_AI
-        });
+        };
         let cap = if player_side {
             CAMPAIGN_NUKE_PLAYER_CAP
         } else {
@@ -1550,7 +1556,7 @@ unsafe fn apply_sandbox_nuclear_damage(body: usize, yield_power: f32) {
             continue;
         }
         log::info!(
-            "hf_ally: sandbox nuke ship {index}: distance {distance:.1}, cap {cap:.0}, per-part {per_part:.4}"
+            "hf_ally: sandbox nuke ship {index}: side {ship_side:+.0}, distance {distance:.1}, cap {cap:.0}, per-part {per_part:.4}"
         );
         damage_ship_parts(ship, (blast_x, blast_y), per_part);
     }
