@@ -1,12 +1,23 @@
 # HighFleet Allies v@PACK_VERSION@
 
+**Experimental prerelease — not stable.** Features and balance may change, and
+some new encounters have not been validated in game. Back up your saves and
+configuration before trying it.
+
 Includes **hf_ally v@ALLY_VERSION@**, **hf_ai v@AI_VERSION@**, **hf_qol v@QOL_VERSION@**, and the updated **Allies Manual V2** (`Allies_Manual_V2.pdf`).
 
-## What changed since v1.3.5
+## What changed since v1.3.6
 
-- **Allies:** Press **Z** to order your allies to attack the selected enemy. Shipworks allies now respect `max_allies`, `ally_delay_seconds`, and the three-game-second spacing between deployments. Includes a Map Mode Extended compatibility fix and fixes for gunpod aircraft retargeting.
-- **Combat AI:** Set separate reload rates for enemies and AI allies. Common missile evasion now requests full throttle while retaining native obstacle avoidance and gravity compensation.
-- **QoL:** Optional skippable intro restoration, pre-fire line visibility for both sides, and an independent enemy warning sound toggle. The pack ships the active `Modloader/config/qol.json`; there is no `qol.full.json` to rename.
+- **Shipworks A.C.E. (Advanced Custom Encounters):** Try Missile Defense, Airstrike, and Silent Strike from the new menu. The mod's Shipworks toolbar can be collapsed without clearing the rosters.
+- **Missile Defense:** Select conventional or nuclear strategic missiles from a scrollable list, and deploy defenders on the ground or airborne. Anti-radiation missiles target active radar or jammers. Damage View shows defender module panels; Preserve Damage carries surviving ships and damage into later launches on the same roster. Nuclear effects and damage have been reworked toward campaign behavior, but balance and fidelity remain under investigation.
+- **Airstrike:** Configure aircraft groups, counts and loadouts from the game's live tables, choose ground or airborne defenders, and launch against a friendly or enemy-only roster. Damage View and Preserve Damage support replaying successive raids. Mixed friendly and enemy rosters are not supported in this mode.
+- **Silent Strike:** Start a test battle through the usual pre-combat screen with enemies deployed landed.
+- **Shipworks usability:** Identical same-name roster snapshots are grouped with counts; different refits remain separate. Missile and aircraft-loadout pickers have scrolling and selected-row highlights.
+- **Diagnostics and compatibility:** Improved hang diagnostics and hook lock handling; QoL pre-fire warnings now use patchy source validation.
+
+Many of the latest Airstrike, Silent Strike, damage-preservation and nuclear
+changes still need in-game validation. Nuclear damage may differ from campaign
+results. Please report reproducible problems with logs.
 
 ## Install
 
