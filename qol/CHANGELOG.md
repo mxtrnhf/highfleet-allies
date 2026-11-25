@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.4
+
+- Use patchy's built-in source validation and `ProcessModule` for the pre-fire
+  warning patches, matching the upstream QoL review cleanup.
+- No behavior change.
+
 ## 0.2.3
 
 - Sync with [logdot/highfleet-qol `c07b521`](https://github.com/logdot/highfleet-qol/commit/c07b521): use shared native layouts for gun blocking and aircraft, and use the upstream skippable intro.
