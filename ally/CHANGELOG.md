@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.79 (shelling targeting arrow):** clicking SHELLING draws a cruise-missile-style arrow from the firing fleet to the map cursor until a city is selected or targeting is cancelled. The preview and FIRE controls work as before.
+
 * **v1.3.76 (dirt-heavy loud raid and clean entry):** at least twice as many representative dirt impacts as hull impacts; much louder tactical sound with frequent clipped transients. Raid tracers use the stock 180 mm HE glow palette instead of a plain line. Hide the tactical level's visible assembly with the native BLACK overlay, then fade it out during the wind-only opening. In-game validation pending.
 
 * **v1.3.75 (mobile barrages and wind before the salvos):** remove the fleet speed hold. Map tracers launch from the moving fleet and keep their original paths after launch. Put terrain lower in the tactical shot, open with 2.5 seconds of wind before the first rounds, and use irregular clusters and longer gaps instead of a steady rhythm. Strategic timing and damage rules are unchanged. In-game validation pending.

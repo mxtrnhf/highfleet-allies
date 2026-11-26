@@ -219,20 +219,31 @@ unsafe extern "C" fn on_map_frame() {
     if !ENABLED.load(Relaxed) || read::<u8>(CAMPAIGN_MAP) == 0 {
         return;
     }
-    let clock: f64 = read(CAMPAIGN_HOUR_CLOCK);
-    let firing_fleet = {
+    let (targeting_fleet, firing_fleet) = {
         let Ok(menu) = MENU.try_lock() else {
             return;
         };
-        menu.barrage.as_ref().map(|barrage| barrage.fleet)
+        let targeting = match menu.phase {
+            Phase::PickCity { fleet } => Some(fleet),
+            _ => None,
+        };
+        (
+            targeting,
+            menu.barrage.as_ref().map(|barrage| barrage.fleet),
+        )
     };
-    let Some(fleet) = firing_fleet else {
-        return;
-    };
-    // The visualization belongs to the barrage, not to the current fleet selection.
-    // No MENU lock is held across native resource or renderer calls.
-    // SAFETY: M11 map draw seam with the native world-line renderer active.
-    visual::draw_with_clock(clock, firing_fleet_position(fleet));
+    // SAFETY: M11 runs on the game thread with the native line renderer active.
+    // The menu snapshot holds no lock across renderer calls.
+    let targeting_origin = targeting_fleet
+        .filter(|fleet| map_ready() && read::<usize>(PLAYER_ESCADRA) == fleet.0)
+        .and_then(|fleet| firing_fleet_position(fleet));
+    if let Some(origin) = targeting_origin {
+        visual::draw_targeting_arrow(origin);
+    }
+    // The barrage visualization continues even when a different fleet is selected.
+    if let Some(fleet) = firing_fleet {
+        visual::draw_with_clock(read(CAMPAIGN_HOUR_CLOCK), firing_fleet_position(fleet));
+    }
 }
 
 /// The current profile's bounded fleet pointer slot range.

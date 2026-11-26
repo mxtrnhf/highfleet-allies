@@ -9,11 +9,18 @@
 //! lines perform the game's own campaign projection and clipping and need no font or sprite state.
 
 use std::{
+    mem::offset_of,
     sync::{
         atomic::{AtomicBool, Ordering::Relaxed},
         Mutex,
     },
     time::{Duration, Instant},
+};
+
+use crate::{
+    diag::rd,
+    native::{plausible, read},
+    native_layout::Body,
 };
 
 use super::estimate::{flight_seconds, shell_hit};
@@ -27,6 +34,13 @@ pub const MAX_IMPACTS: usize = 24;
 const MAX_SIMULATED_ROUNDS: u32 = 250_000;
 
 const DRAW_WORLD_LINE: usize = 0x1_4024_8ba0;
+const WORLD_TO_SCREEN: usize = 0x1_401a_dfc0;
+const MAP_ZOOM_MODE: usize = 0x1_403c_11cc;
+const CURSOR_BODY: usize = 0x1_403c_0d40;
+const VIEW_CENTER: usize = 0x1_4801_fd10;
+const AIM_COLOR: u32 = 0xffff_ffff;
+const AIM_LINE_WIDTH: f32 = 2.0;
+const AIM_HEAD_LENGTH: f32 = 18.0;
 const BURST_FRACTION: f64 = 0.06;
 const MIN_BURST_SECONDS: f64 = 15.0;
 /// Give the last bursts a visible fade even when the final campaign tick jumps.
@@ -452,6 +466,63 @@ fn sample(clock: f64, origin: Option<[f32; 2]>) -> bool {
 pub(super) unsafe fn world_line(from: [f32; 2], to: [f32; 2], width: f32, color: u32) {
     let draw: DrawWorldLineFn = std::mem::transmute(DRAW_WORLD_LINE);
     draw(from.into(), to.into(), width, color, 0, 0, 0.0, 1, 0.0);
+}
+
+/// Draws a fleet-to-cursor arrow with the same screen-space layout as `MISSILE_MARK`.
+///
+/// # Safety
+/// Call only on the Steam 1.163 campaign render seam, with the live cursor and map projection
+/// owned by the game thread. The native projection takes only a mod-owned point.
+pub(super) unsafe fn draw_targeting_arrow(mut origin: [f32; 2]) {
+    // Input_HandleMouseMove (0x140187260) keeps this cursor body's position centered on the view.
+    let cursor: usize = read(CURSOR_BODY);
+    if !plausible(cursor) {
+        return;
+    }
+    let Some([cursor_x, cursor_y]) = rd::<[f32; 2]>(cursor + offset_of!(Body, position_x)) else {
+        return;
+    };
+    let [center_x, center_y]: [f32; 2] = read(VIEW_CENTER);
+    let tip = [cursor_x + center_x, cursor_y + center_y];
+
+    // Match Gfx_DrawWorldLine's campaign projection (0x140248d02), then keep the
+    // arrowhead's size in screen pixels, as in the native MISSILE_MARK pass (0x1401522c2).
+    let project: unsafe extern "win64" fn(*mut [f32; 2], bool, f32) =
+        std::mem::transmute(WORLD_TO_SCREEN);
+    let scale = if read::<i32>(MAP_ZOOM_MODE) == 1 {
+        1.3
+    } else {
+        1.0
+    };
+    project(&mut origin, false, scale);
+
+    let dx = tip[0] - origin[0];
+    let dy = tip[1] - origin[1];
+    let length = dx.hypot(dy);
+    if !length.is_finite() || length < 1.0 {
+        return;
+    }
+    let head = AIM_HEAD_LENGTH.min(length * 0.5) / length;
+    let back = [tip[0] - dx * head, tip[1] - dy * head];
+    let side = [-dy * head * 0.5, dx * head * 0.5];
+    let draw: DrawWorldLineFn = std::mem::transmute(DRAW_WORLD_LINE);
+    for (from, to) in [
+        (origin, tip),
+        (tip, [back[0] + side[0], back[1] + side[1]]),
+        (tip, [back[0] - side[0], back[1] - side[1]]),
+    ] {
+        draw(
+            from.into(),
+            to.into(),
+            AIM_LINE_WIDTH,
+            AIM_COLOR,
+            0,
+            1,
+            0.0,
+            1,
+            0.0,
+        );
+    }
 }
 
 unsafe fn draw_shells(frame: &Frame) {
