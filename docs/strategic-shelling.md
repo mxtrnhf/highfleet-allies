@@ -102,9 +102,13 @@ absolute part counts and HP; a template can lose parts and still show 100% HP.
   cross-shaped centre. Dots keep travelling when another fleet is selected and
   follow the battery's launch cadence. At high cadence up to 24 airborne rounds
   are sampled by a fixed per-barrage stride, so a dot keeps its identity through
-  impact instead of jumping as the sampling window moves. Small pale bursts are
-  misses and larger orange bursts are effective hits. The visual fade does not
-  hold up tactical resolution.
+  impact instead of jumping as the sampling window moves. Small pale crosses are
+  misses and slightly larger orange crosses are effective hits. Each burst lives
+  1.2–2.5 s and is placed in screen space inside the 32 px `gui_std` city
+  marker, so consecutive hits flash at different points of the circle at any map
+  zoom. The visual fade does not hold up tactical resolution. Burst placement
+  uses `Vec2_WorldToScreen` (`0x1401adfc0`) only to measure pixels per world
+  unit; the cross itself is submitted through `Gfx_DrawWorldLine`.
 
 ## Native integration (Steam 1.163)
 
@@ -161,8 +165,11 @@ absolute part counts and HP; a template can lose parts and still show 100% HP.
   ramps alpha down by `dt / +0x3d0`, and state 3 is inert. The raid holds the
   `BLACK` cover opaque (`state 3`, alpha 1) across the level load, fades it out
   over 0.7 s when the wind cue plays, and later fades it back in over 1 s before
-  the damage handoff. This hides the visible level assembly without a new
-  asset.
+  the damage handoff. The fade-in creates a fresh element with
+  `Gui_CreateBlackOverlay` (`0x1401ca120`, mode 1) because the level-load
+  instance can be unlinked before the replay ends; the returned pointer is
+  polled for alpha instead of the singleton. This hides the visible level
+  assembly without a new asset.
 - At a tactical strike, `FX_SpawnExplosionDebris` (`0x1401c7270`) creates
   the stock particles and transient effect light. Shelling does not call
   `Body_Explode`, create a damaging projectile, or run a native blast pass.

@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.85 (guaranteed fade and moving hit markers):** create a fresh stock BLACK overlay for the shelling fade so it always runs for a full second even after the level-load instance is unlinked. Replace the map's world-space impact mark with smaller screen-space crosses scattered inside the 32 px city marker, each flashing for 1.2–2.5 s, so successive hits land at different points of the city circle.
+
 * **v1.3.84 (fade to black and full kill-cue suppression):** fade the spectator scene to black over one second with the stock BLACK overlay before applying the cached result, instead of cutting to black in a single frame. Suppress the native kill confirmation at all six queue sites (Body_DieExplode and the five ShipStatusCheck "lost ship" branches), keep suppressing for five seconds after the native return, and report the suppressed count in the raid summary.
 
 * **v1.3.83 (blackout before shelling damage):** present an opaque black frame before applying the cached result and keep the screen covered until native raid teardown. Suppress the native kill-confirmation cue during shelling raids. Log the blackout handoff, defender identities and health before playback and around damage application, and absolute hull HP and part counts on subsequent spawns.

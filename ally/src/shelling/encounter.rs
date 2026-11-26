@@ -55,6 +55,9 @@ const PRESENT_CALL: usize = 0x1_4031_81fc;
 const GFX_PRESENT: usize = 0x1_4008_5e80;
 const CLEAR_BACK_BUFFER: usize = 0x1_4008_36f0;
 const RENDER_DISABLED: usize = 0x1c5;
+// Gui_CreateBlackOverlay: mode 1 starts transparent at state 0 (fade toward the target).
+const CREATE_BLACKOUT: usize = 0x1_401c_a120;
+type CreateBlackoutFn = unsafe extern "win64" fn(u8, f32, u32, f32, usize, i32, u8) -> usize;
 // Body_DieExplode and all five ShipStatusCheck "ship lost" branches queue this code;
 // PlayRadioSounds_ maps 0x1b to radio_kill_01–03.
 const KILL_CONFIRMATION: i32 = 0x1b;
@@ -156,6 +159,7 @@ struct Raid {
     time: f64,
     finish_at: Option<f64>,
     closing: Option<Closing>,
+    overlay: Option<usize>,
     flights: Vec<Flight>,
     frame: Option<Frame>,
     destroyed: usize,
@@ -471,6 +475,7 @@ unsafe extern "C" fn after_setup() -> u8 {
                 time: now,
                 finish_at: None,
                 closing: None,
+                overlay: None,
                 flights: Vec::with_capacity(MAX_IN_FLIGHT),
                 frame: None,
                 destroyed: 0,
@@ -518,7 +523,14 @@ unsafe fn hull(ship: usize) -> Option<Hull> {
 /// Called on the game thread after the native HUD overlay is initialized. Only fixed scalar
 /// fields on the game-owned singleton are written; no pointer is retained or dropped.
 unsafe fn hold_blackout(rate: f32, alpha: f32) {
-    let overlay = read::<usize>(BLACKOUT_OVERLAY);
+    hold_blackout_on(read::<usize>(BLACKOUT_OVERLAY), rate, alpha);
+}
+
+/// Freeze one black overlay element in its opaque state.
+///
+/// # Safety
+/// `overlay` must be a live game-owned GUI element on the game thread.
+unsafe fn hold_blackout_on(overlay: usize, rate: f32, alpha: f32) {
     if overlay == 0 || !readable_span(overlay, BLACKOUT_ALPHA + size_of::<f32>()) {
         return;
     }
@@ -549,31 +561,29 @@ unsafe fn fade_blackout_out(rate: f32) {
     ((overlay + BLACKOUT_STATE) as *mut i32).write_unaligned(state);
 }
 
-/// Arm the black overlay's native fade-to-opaque transition.
+/// Create a fresh stock BLACK overlay armed to fade to opaque over `seconds`.
 ///
-/// Logic id 10000 ramps alpha toward `BLACKOUT_TARGET` by `dt / BLACKOUT_RATE` per tick,
-/// so a one-second fade needs a rate of 1.0 with the target at 1.0. State 0 is the
-/// fade-in arm; state 1 is the held opaque result.
+/// The level-load overlay can be unlinked before the replay ends, so polling the singleton
+/// is unreliable. Creating the element with mode 1 gives a private pointer at alpha 0 and
+/// state 0; logic id 10000 then ramps it toward 1.0 by `dt / seconds` per tick.
 ///
 /// # Safety
-/// Same game-thread singleton contract as [`hold_blackout`].
-unsafe fn begin_blackout_fade(seconds: f32) {
-    let overlay = read::<usize>(BLACKOUT_OVERLAY);
+/// Call on the game thread while the native raid scene and its GUI root are alive.
+unsafe fn begin_blackout_fade(seconds: f32) -> Option<usize> {
+    let create: CreateBlackoutFn = std::mem::transmute(CREATE_BLACKOUT);
+    let overlay = create(1, seconds.max(0.01), 0xff00_0000, 1.0, 0, 0, 0);
     if overlay == 0 || !readable_span(overlay, BLACKOUT_ALPHA + size_of::<f32>()) {
-        return;
+        return None;
     }
     *((overlay + BLACKOUT_LOGIC_ACTIVE) as *mut u8) = 1;
-    ((overlay + BLACKOUT_TARGET) as *mut f32).write_unaligned(1.0);
-    ((overlay + BLACKOUT_RATE) as *mut f32).write_unaligned(seconds.max(0.01));
-    ((overlay + BLACKOUT_STATE) as *mut i32).write_unaligned(0);
+    Some(overlay)
 }
 
-/// Current alpha of the native blackout overlay, if the singleton is readable.
+/// Current alpha of a black overlay element, if it is still readable.
 ///
 /// # Safety
-/// Reads only fixed scalars from the game-owned singleton; valid on the game thread.
-unsafe fn blackout_alpha() -> Option<f32> {
-    let overlay = read::<usize>(BLACKOUT_OVERLAY);
+/// Reads only fixed scalars from a game-owned GUI element on the game thread.
+unsafe fn blackout_alpha(overlay: usize) -> Option<f32> {
     if overlay == 0 || !readable_span(overlay, BLACKOUT_ALPHA + size_of::<f32>()) {
         return None;
     }
@@ -586,13 +596,19 @@ unsafe fn blackout_alpha() -> Option<f32> {
 ///
 /// # Safety
 /// Runs on the raid game thread while the native scene and its overlay are alive.
-unsafe fn handle_blackout_fade(now: f64, started: f64, force_at: f64, start_alpha: f32) {
-    let alpha = blackout_alpha();
+unsafe fn handle_blackout_fade(
+    overlay: Option<usize>,
+    now: f64,
+    started: f64,
+    force_at: f64,
+    start_alpha: f32,
+) -> bool {
+    let alpha = overlay.and_then(|overlay| blackout_alpha(overlay));
     let opaque = alpha.is_some_and(|alpha| alpha >= OPAQUE_ALPHA);
     let progressed = alpha.is_some_and(|alpha| alpha > start_alpha + 0.01);
     let stalled = !progressed && now - started >= FADE_STALL_SECONDS;
     if !opaque && !stalled && now < force_at {
-        return;
+        return false;
     }
     if !opaque {
         log::warn!(
@@ -604,18 +620,16 @@ unsafe fn handle_blackout_fade(now: f64, started: f64, force_at: f64, start_alph
             },
             now - started
         );
-        hold_blackout(0.1, 1.0);
+        if let Some(overlay) = overlay {
+            hold_blackout_on(overlay, 0.1, 1.0);
+        }
     }
     log::info!(
         "hf_ally: shelling blackout reached opaque after {:.2}s (alpha={:?})",
         now - started,
-        blackout_alpha()
+        overlay.and_then(|overlay| blackout_alpha(overlay))
     );
-    if let Ok(mut state) = RAID.lock() {
-        if let State::Active(raid) = &mut *state {
-            raid.closing = Some(Closing::WaitingForBlackFrame);
-        }
-    }
+    true
 }
 
 unsafe extern "C" fn tick() -> u8 {
@@ -643,7 +657,19 @@ unsafe extern "C" fn tick() -> u8 {
                     force_at,
                     start_alpha,
                 }) => {
-                    handle_blackout_fade(now, started, force_at, start_alpha);
+                    if let Ok(mut state) = RAID.lock() {
+                        if let State::Active(raid) = &mut *state {
+                            if handle_blackout_fade(
+                                raid.overlay,
+                                now,
+                                started,
+                                force_at,
+                                start_alpha,
+                            ) {
+                                raid.closing = Some(Closing::WaitingForBlackFrame);
+                            }
+                        }
+                    }
                     1
                 }
                 Some(Closing::WaitingForBlackFrame) => 1,
@@ -660,7 +686,12 @@ unsafe extern "C" fn tick() -> u8 {
                     if replay_tick(now) == 0 {
                         if let Ok(mut state) = RAID.lock() {
                             if let State::Active(raid) = &mut *state {
-                                let start_alpha = blackout_alpha().unwrap_or(0.0);
+                                // SAFETY: the native raid scene still owns the GUI root.
+                                let overlay = begin_blackout_fade(FADE_TO_BLACK_SECONDS);
+                                raid.overlay = overlay;
+                                let start_alpha = overlay
+                                    .and_then(|overlay| blackout_alpha(overlay))
+                                    .unwrap_or(0.0);
                                 raid.closing = Some(Closing::FadingToBlack {
                                     started: now,
                                     force_at: now
@@ -669,10 +700,8 @@ unsafe extern "C" fn tick() -> u8 {
                                     start_alpha,
                                 });
                                 log::info!(
-                                    "hf_ally: shelling replay ended; fading to black over {FADE_TO_BLACK_SECONDS:.1}s before applying damage (alpha={start_alpha:.3})"
+                                    "hf_ally: shelling replay ended; fading to black over {FADE_TO_BLACK_SECONDS:.1}s before applying damage (overlay={overlay:?}, alpha={start_alpha:.3})"
                                 );
-                                // SAFETY: the native raid scene still owns the full-screen overlay.
-                                begin_blackout_fade(FADE_TO_BLACK_SECONDS);
                             }
                         }
                     }
@@ -817,7 +846,7 @@ unsafe fn simulate_damage() {
 /// # Safety
 /// The raid owns this native scene on the game thread through the return deadline.
 unsafe fn commit_damage(now: f64) {
-    let damage = {
+    let (damage, overlay) = {
         let Ok(mut state) = RAID.lock() else {
             return;
         };
@@ -828,12 +857,14 @@ unsafe fn commit_damage(now: f64) {
             return;
         }
         raid.closing = Some(Closing::SettlingUntil(now + DAMAGE_SETTLE_SECONDS));
-        std::mem::take(&mut raid.damage)
+        (std::mem::take(&mut raid.damage), raid.overlay)
     };
     // Keep the black through the native removal and return; the fade to black already
     // finished, so pinning the stock overlay opaque cannot hide a visible transition.
     // SAFETY: the raid still owns the native scene and its full-screen overlay.
-    hold_blackout(0.05, 1.0);
+    if let Some(overlay) = overlay {
+        hold_blackout_on(overlay, 0.05, 1.0);
+    }
     log_defender_roster("after replay, before cached damage");
     let mut planned = 0;
     let mut changed = 0;
