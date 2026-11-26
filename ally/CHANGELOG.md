@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.83 (blackout before shelling damage):** present an opaque black frame before applying the cached result and keep the screen covered until native raid teardown. Suppress the native kill-confirmation cue during shelling raids. Log the blackout handoff, defender identities and health before playback and around damage application, and absolute hull HP and part counts on subsequent spawns.
+
 * **v1.3.82 (pristine shelling replay and clipped heavy volleys):** run the HE simulation on copied pre-raid hull geometry and HP. The replay shows the garrison as it looked before this barrage, then the game applies the cached outcome under blackout before returning to the map. Fix the native garrison link used to keep damaged ship records from being unloaded. Follow-up firing uses bursts of two to five clipped stock big-far cannon reports, with no lighter gun or rumble layers.
 
 * **v1.3.81 (simulate shelling before replay; opening salvo audio):** resolve effective hits against the garrison before the spectator replay starts. Tracers, impacts, and dirt bursts use recorded positions and apply no damage. FIRE plays the turret servo and crew call before the opening salvo, then plays one randomly selected distant report per working barrel in quick succession before returning to the normal firing audio.

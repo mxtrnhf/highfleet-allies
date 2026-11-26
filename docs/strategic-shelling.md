@@ -61,13 +61,18 @@ The tactical mix is deliberately much louder, with frequent stock samples
 whose transients are already clipped, mixed with metal impacts and cracks.
 It follows the same `shelling_sounds` setting as the map.
 
-After the replay, the scene fades to black and transfers the precomputed final
-HP and part losses to the actual defenders. Native missile-scene teardown
+After the replay, the video task presents a fully black frame before the
+game thread transfers precomputed final HP and part losses to the actual
+defenders. The cover remains through teardown and the native kill-confirmation
+cue is suppressed for the raid. Native missile-scene teardown
 returns survivors to the campaign. The raid disables unloading on the linked
 garrison to preserve full ship records. No damage is queued
 for normal enemy combat spawns. `shelling simulation complete before replay` records
 the damage totals, `shelling campaign damage retained` records the unload opt-out, and
-`shelling raid native return completed` records the teardown.
+`shelling raid native return completed` records the teardown. The log includes
+`shelling black frame presented`, defender IDs, driver state, HP and part
+counts before the replay and around damage application. `ALLY SPAWN` includes
+absolute part counts and HP; a template can lose parts and still show 100% HP.
 
 ## Barrage behaviour
 

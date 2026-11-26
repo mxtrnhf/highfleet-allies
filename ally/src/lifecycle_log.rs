@@ -232,13 +232,6 @@ pub(crate) unsafe fn log_spawn(template: usize, caller: usize) {
     ));
     // spawns are rare and the point of the exercise: their own budget, never shared with ADD lines
     let level = level_name();
-    let health = if template != 0 {
-        crate::shelling::template_health_fraction(template)
-            .map(|value| format!("{value:.0}%"))
-            .unwrap_or_else(|| "?".into())
-    } else {
-        "?".into()
-    };
     let spawn_n = SPAWN_LINES.fetch_add(1, Ordering::Relaxed);
     let budget = line_budget();
     if spawn_n >= budget {
@@ -247,6 +240,13 @@ pub(crate) unsafe fn log_spawn(template: usize, caller: usize) {
         }
         return;
     }
+    let health = crate::shelling::template_health_summary(template).map_or_else(
+        || "?".to_owned(),
+        |(parts, damaged, hp, max)| {
+            let percent = (100.0 * hp / max).clamp(0.0, 100.0);
+            format!("{percent:.0}% hull={hp:.0}/{max:.0} parts={parts} damaged={damaged}")
+        },
+    );
     log::info!(
         "ALLY SPAWN level={level} {} t={:.2} template={template:#x} class={:#x} hp={health} caller_rva={:#x}",
         scene(),

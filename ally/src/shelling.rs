@@ -347,12 +347,12 @@ pub(super) unsafe fn is_ship(ship: usize) -> bool {
         && read::<u8>(ship + NODE_CODE) & CREATURE_CLASS == CREATURE_CLASS
 }
 
-/// Current part-health fraction of a spawn template (`Creature_SpawnFromTemplate`'s
-/// argument), for diagnosing whether strategic damage reaches combat.
+/// Part count, damaged count, and current/max HP of a spawn template's remaining parts.
+/// Absolute counts and HP reveal damage that the percentage alone can hide.
 ///
 /// # Safety
 /// Call on the game thread with a spawn template that is still valid.
-pub(crate) unsafe fn template_health_fraction(template: usize) -> Option<f32> {
+pub(crate) unsafe fn template_health_summary(template: usize) -> Option<(usize, usize, f32, f32)> {
     if !plausible(template) || !readable_span(template, offset_of!(Node, children)) {
         return None;
     }
@@ -363,6 +363,8 @@ pub(crate) unsafe fn template_health_fraction(template: usize) -> Option<f32> {
     let mut node: usize = read(head);
     let mut current = 0.0f32;
     let mut maximum = 0.0f32;
+    let mut parts = 0;
+    let mut damaged = 0;
     for _ in 0..SHIP_LIST_LIMIT * 64 {
         if node == head {
             break;
@@ -375,13 +377,15 @@ pub(crate) unsafe fn template_health_fraction(template: usize) -> Option<f32> {
             let health: f32 = read(part + offset_of!(Body, health));
             let max: f32 = read(part + offset_of!(Body, health_max));
             if health.is_finite() && max.is_finite() && max > 0.0 {
+                parts += 1;
+                damaged += usize::from(health < max);
                 current += health.max(0.0);
                 maximum += max;
             }
         }
         node = read(node);
     }
-    (maximum > 0.0).then_some((100.0 * current / maximum).clamp(0.0, 100.0))
+    (node == head && maximum > 0.0).then_some((parts, damaged, current, maximum))
 }
 
 /// One borrowed target per fleet property, including zero for an unresolved

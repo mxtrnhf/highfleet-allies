@@ -11,8 +11,9 @@ use patchy::{Condition, PatchSession, ReturnType, Trampoline};
 
 use crate::{
     diag::readable_span,
-    native::{read, roster, CLOCK, SCENE_FLAGS},
-    native_layout::{Creature, Link},
+    native::{read, roster, CLOCK, OFF_ACTIVE, OFF_STATE, SCENE_FLAGS},
+    native_layout::{Creature, Link, Node},
+    shipworks::ship_health_summary,
     sound,
 };
 
@@ -41,6 +42,15 @@ const BATTLE_RENDER: usize = 0x1_4030_50a0;
 const BATTLE_RENDER_CALL: usize = 0x1_4030_0d7d;
 const COMBAT_EVENTS: usize = 0x1_4029_a7d0;
 const COMBAT_EVENTS_CALL: usize = 0x1_4030_93fa;
+// SomethingVideoTask presents once here, after its final compositing flush.
+const PRESENT_CALL: usize = 0x1_4031_81fc;
+const GFX_PRESENT: usize = 0x1_4008_5e80;
+const CLEAR_BACK_BUFFER: usize = 0x1_4008_36f0;
+const RENDER_DISABLED: usize = 0x1c5;
+// Body_DieExplode queues 0x1b; PlayRadioSounds_ maps it to radio_kill_01–03.
+const DEATH_RADIO_CALL: usize = 0x1_4002_4021;
+const QUEUE_RADIO: usize = 0x1_402c_99e0;
+const KILL_CONFIRMATION: i32 = 0x1b;
 const MAX_DEFENDERS: usize = 4; // Native setup limit.
 const MAX_VISIBLE_HITS_PER_DEFENDER: u32 = 3;
 const SIMULATED_HITS_PER_TICK: usize = 8;
@@ -116,11 +126,18 @@ struct Raid {
     next_at: f64,
     time: f64,
     finish_at: Option<f64>,
-    return_at: Option<f64>,
+    closing: Option<Closing>,
     flights: Vec<Flight>,
     frame: Option<Frame>,
     destroyed: usize,
     hull_hp_lost: f32,
+}
+
+#[derive(Clone, Copy)]
+enum Closing {
+    WaitingForBlackFrame,
+    BlackFramePresented,
+    SettlingUntil(f64),
 }
 
 impl Raid {
@@ -348,6 +365,20 @@ pub(super) unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
         .detour_trampoline(COMBAT_EVENTS_CALL, 5, overlay)
         .map_err(|err| err.to_string())?;
 
+    let mut present = Trampoline::new();
+    present.absolute_call(present_frame as *const ());
+    present.relative_jump(PRESENT_CALL + 5);
+    session
+        .detour_trampoline(PRESENT_CALL, 5, present)
+        .map_err(|err| err.to_string())?;
+
+    let mut death_radio = Trampoline::new();
+    death_radio.absolute_call(queue_death_radio as *const ());
+    death_radio.relative_jump(DEATH_RADIO_CALL + 5);
+    session
+        .detour_trampoline(DEATH_RADIO_CALL, 5, death_radio)
+        .map_err(|err| err.to_string())?;
+
     presentation::install(session)
 }
 
@@ -389,7 +420,7 @@ unsafe extern "C" fn after_setup() -> u8 {
                 next_at: f64::INFINITY,
                 time: now,
                 finish_at: None,
-                return_at: None,
+                closing: None,
                 flights: Vec::with_capacity(MAX_IN_FLIGHT),
                 frame: None,
                 destroyed: 0,
@@ -459,7 +490,7 @@ unsafe fn fade_blackout_out(rate: f32) {
 
 unsafe extern "C" fn tick() -> u8 {
     let phase = RAID.lock().ok().and_then(|state| match &*state {
-        State::Active(raid) => Some((raid.simulation_done, raid.return_at)),
+        State::Active(raid) => Some((raid.simulation_done, raid.closing)),
         _ => None,
     });
     match phase {
@@ -471,20 +502,86 @@ unsafe extern "C" fn tick() -> u8 {
             simulate_damage();
             1
         }
-        Some((true, return_at)) => {
+        Some((true, closing)) => {
             let now = read::<f64>(CLOCK);
             if !now.is_finite() {
                 return 1;
             }
-            if let Some(return_at) = return_at {
-                return u8::from(now < return_at);
+            match closing {
+                Some(Closing::WaitingForBlackFrame) => 1,
+                Some(Closing::BlackFramePresented) => {
+                    commit_damage(now);
+                    1
+                }
+                Some(Closing::SettlingUntil(until)) if now >= until => {
+                    log_defender_roster("after cached damage, before native return");
+                    0
+                }
+                Some(Closing::SettlingUntil(_)) => 1,
+                None => {
+                    if replay_tick(now) == 0 {
+                        if let Ok(mut state) = RAID.lock() {
+                            if let State::Active(raid) = &mut *state {
+                                raid.closing = Some(Closing::WaitingForBlackFrame);
+                                log::info!("hf_ally: shelling replay ended; waiting for a black frame before applying damage");
+                            }
+                        }
+                    }
+                    1
+                }
             }
-            if replay_tick(now) == 0 {
-                commit_damage(now);
-            }
-            1
         }
     }
+}
+
+/// Clear the final back buffer after the compositor flush and before the actual swap.
+/// The game thread may only commit after a successful Present of that black frame.
+unsafe extern "C" fn present_frame(engine: usize) {
+    let cover = RAID
+        .lock()
+        .is_ok_and(|state| matches!(&*state, State::Active(raid) if raid.closing.is_some()));
+    if !cover || read::<u8>(engine + RENDER_DISABLED) != 0 {
+        let present: unsafe extern "C" fn(usize) = std::mem::transmute(GFX_PRESENT);
+        present(engine);
+        return;
+    }
+    // SAFETY: this is the stock video-thread present call with the live HGE renderer.
+    // The clear helper targets the swap-chain view, not an intermediate render target.
+    // When rendering is enabled Gfx_Present tail-calls IDXGISwapChain::Present,
+    // passing its HRESULT back in EAX.
+    let clear: unsafe extern "C" fn(usize, f32, f32, f32, f32) =
+        std::mem::transmute(CLEAR_BACK_BUFFER);
+    let present: unsafe extern "C" fn(usize) -> i32 = std::mem::transmute(GFX_PRESENT);
+    clear(engine, 0.0, 0.0, 0.0, 1.0);
+    if present(engine) == 0 {
+        if let Ok(mut state) = RAID.lock() {
+            if let State::Active(raid) = &mut *state {
+                if matches!(raid.closing, Some(Closing::WaitingForBlackFrame)) {
+                    log::info!("hf_ally: shelling black frame presented");
+                    raid.closing = Some(Closing::BlackFramePresented);
+                }
+            }
+        }
+    }
+}
+
+unsafe extern "C" fn queue_death_radio(code: i32) {
+    if code == KILL_CONFIRMATION {
+        if let Ok(state) = RAID.lock() {
+            if let State::Active(raid) = &*state {
+                let phase = match raid.closing {
+                    Some(Closing::SettlingUntil(_)) => "damage application or settling",
+                    Some(_) => "blackout handoff",
+                    None if raid.simulation_done => "replay",
+                    None => "simulation setup",
+                };
+                log::info!("hf_ally: shelling suppressed native kill confirmation during {phase}");
+                return;
+            }
+        }
+    }
+    let queue: unsafe extern "C" fn(i32) = std::mem::transmute(QUEUE_RADIO);
+    queue(code);
 }
 
 /// Resolve effective hits under the loading blackout, before scheduling any replay flights.
@@ -500,6 +597,7 @@ unsafe fn simulate_damage() {
         return;
     };
     if raid.contacts.is_empty() {
+        log_defender_roster("before replay");
         let ships = defenders();
         raid.opening_hulls = ships.iter().filter_map(|&ship| hull(ship)).collect();
         raid.frame = Frame::capture(raid.opening_hulls.iter().copied());
@@ -550,10 +648,13 @@ unsafe fn commit_damage(now: f64) {
         let State::Active(raid) = &mut *state else {
             return;
         };
-        raid.return_at = Some(now + DAMAGE_SETTLE_SECONDS);
+        if !matches!(raid.closing, Some(Closing::BlackFramePresented)) {
+            return;
+        }
+        raid.closing = Some(Closing::SettlingUntil(now + DAMAGE_SETTLE_SECONDS));
         std::mem::take(&mut raid.damage)
     };
-    hold_blackout(0.3, 1.0);
+    log_defender_roster("after replay, before cached damage");
     let mut planned = 0;
     let mut changed = 0;
     for ship in damage {
@@ -562,6 +663,29 @@ unsafe fn commit_damage(now: f64) {
         changed += ship_changed;
     }
     log::info!("hf_ally: shelling simulation outcome applied after replay: {changed}/{planned} native part changes written");
+}
+
+/// Record every roster entry, including inactive ships that the damage resolver skips.
+unsafe fn log_defender_roster(phase: &str) {
+    let ships = roster();
+    log::info!(
+        "hf_ally: shelling roster {phase}: {} linked creatures",
+        ships.len()
+    );
+    for ship in ships.into_iter().filter(|&ship| is_ship(ship)) {
+        let id = read::<i64>(ship + offset_of!(Node, id));
+        let active = read::<i32>(ship + OFF_ACTIVE);
+        let state = read::<i32>(ship + OFF_STATE);
+        let parts = ship_health_summary(ship).map_or_else(
+            || "parts unavailable".to_owned(),
+            |(parts, damaged, hp, max)| {
+                format!("{parts} parts, {damaged} damaged, {hp:.0}/{max:.0} HP")
+            },
+        );
+        log::info!(
+            "hf_ally: shelling defender {id} at {ship:#x}: active={active}, state={state}, {parts}"
+        );
+    }
 }
 
 /// Play sampled hit coordinates and cosmetic ground effects without touching the defenders.

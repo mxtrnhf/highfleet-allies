@@ -201,7 +201,7 @@ pub(super) unsafe fn parts(ship: usize) -> Option<impl Iterator<Item = usize>> {
 /// Diagnostics for Preserve Damage: count live gameplay parts and those below max HP,
 /// plus the summed current and maximum hull health. Read-only; the caller supplies a
 /// Creature validated against the current roster.
-pub(super) unsafe fn health_summary(ship: usize) -> Option<(usize, usize, f32, f32)> {
+pub(crate) unsafe fn health_summary(ship: usize) -> Option<(usize, usize, f32, f32)> {
     let mut total = 0usize;
     let mut damaged = 0usize;
     let mut health_total = 0.0f32;

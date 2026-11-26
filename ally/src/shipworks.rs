@@ -6,6 +6,7 @@ mod airstrike;
 mod controls;
 mod damage;
 mod design;
+pub(crate) use design::health_summary as ship_health_summary;
 mod missile_defense;
 mod silent_strike;
 mod strategic_blast;
