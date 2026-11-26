@@ -102,13 +102,9 @@ absolute part counts and HP; a template can lose parts and still show 100% HP.
   cross-shaped centre. Dots keep travelling when another fleet is selected and
   follow the battery's launch cadence. At high cadence up to 24 airborne rounds
   are sampled by a fixed per-barrage stride, so a dot keeps its identity through
-  impact instead of jumping as the sampling window moves. Small pale crosses are
-  misses and slightly larger orange crosses are effective hits. Each burst lives
-  1.2–2.5 s and is placed in screen space inside the 32 px `gui_std` city
-  marker, so consecutive hits flash at different points of the circle at any map
-  zoom. The visual fade does not hold up tactical resolution. Burst placement
-  uses `Vec2_WorldToScreen` (`0x1401adfc0`) only to measure pixels per world
-  unit; the cross itself is submitted through `Gfx_DrawWorldLine`.
+  impact instead of jumping as the sampling window moves. Small pale bursts are
+  misses and larger orange bursts are effective hits. The visual fade does not
+  hold up tactical resolution.
 
 ## Native integration (Steam 1.163)
 

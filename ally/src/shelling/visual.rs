@@ -37,18 +37,13 @@ const VIEW_CENTER: usize = 0x1_4801_fd10;
 const AIM_COLOR: u32 = 0xffff_ffff;
 const AIM_LINE_WIDTH: f32 = 2.0;
 const AIM_HEAD_LENGTH: f32 = 18.0;
-const BURST_FRACTION: f64 = 0.01;
-const MIN_BURST_SECONDS: f64 = 1.2;
-const MAX_BURST_SECONDS: f64 = 2.5;
+const BURST_FRACTION: f64 = 0.06;
+const MIN_BURST_SECONDS: f64 = 15.0;
 /// Give the last bursts a visible fade even when the final campaign tick jumps.
 const BURST_TAIL: Duration = Duration::from_millis(650);
 const SHELL_LENGTH_WORLD: f32 = 2.8;
 const SHELL_CROSS_WORLD: f32 = 1.8;
 const SHELL_COLOR: u32 = 0xffff_f2a0;
-// The map's MAP_LOCATION sprite (`gui_std`) is 32x32 px; keep bursts inside that circle.
-const CITY_IMPACT_RADIUS_PX: f32 = 10.5;
-const IMPACT_HALF_PX: f32 = 2.0;
-const IMPACT_MISS_HALF_PX: f32 = 1.4;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -82,6 +77,14 @@ impl Cannon {
             Self::Sarmat180
         } else {
             Self::Squall180
+        }
+    }
+
+    fn burst_scale(self) -> f32 {
+        match self {
+            Self::Single180 => 1.0,
+            Self::Sarmat180 => 1.2,
+            Self::Squall180 => 1.5,
         }
     }
 }
@@ -171,8 +174,7 @@ impl Plan {
             flight_seconds,
             period_seconds,
             rounds,
-            burst_lifetime: (duration_seconds * BURST_FRACTION)
-                .clamp(MIN_BURST_SECONDS, MAX_BURST_SECONDS),
+            burst_lifetime: (duration_seconds * BURST_FRACTION).max(MIN_BURST_SECONDS),
             cannon: composition.cannon,
             mounts: composition.mounts,
             magazine_weight: composition.magazine_weight,
@@ -242,18 +244,6 @@ impl Plan {
             ((index.wrapping_mul(53) % 11) as f32 - 5.0) * 2.5 * scale,
         ]
     }
-
-    /// Deterministic point in the unit disc for a round's burst on the city marker.
-    /// Screen-space placement keeps the spread inside the 32 px location circle at any zoom.
-    fn impact_offset(index: u32) -> [f32; 2] {
-        let mut hash = index.wrapping_mul(0x9e37_79b1) ^ 0x85eb_ca6b;
-        hash ^= hash >> 16;
-        hash = hash.wrapping_mul(0x7feb_352d);
-        hash ^= hash >> 15;
-        let angle = (hash & 0xffff) as f32 * (std::f32::consts::TAU / 65_536.0);
-        let radius = ((hash >> 16) as f32 / 65_536.0).sqrt();
-        [angle.cos() * radius, angle.sin() * radius]
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -268,8 +258,7 @@ pub struct ShellPosition {
 pub struct Impact {
     pub world: [f32; 2],
     pub age_fraction: f32,
-    /// Unit-disc offset from the city centre; scaled to screen pixels when drawn.
-    pub offset: [f32; 2],
+    pub scatter: [f32; 2],
     pub effective: bool,
 }
 
@@ -356,7 +345,7 @@ pub fn sample_frame(plan: &Plan, elapsed: f64) -> Frame {
             frame.impacts[frame.impact_count] = Impact {
                 world: plan.target,
                 age_fraction: (age / plan.burst_lifetime) as f32,
-                offset: Plan::impact_offset(index as u32),
+                scatter: plan.impact_scatter(index as u32),
                 effective: plan.is_effective_hit(index as u32),
             };
             frame.impact_count += 1;
@@ -543,53 +532,32 @@ unsafe fn draw_shells(frame: &Frame) {
 }
 
 unsafe fn draw_impacts(frame: &Frame) {
-    let project: unsafe extern "win64" fn(*mut [f32; 2], bool, f32) =
-        std::mem::transmute(WORLD_TO_SCREEN);
-    // Same zoom divisor `Gfx_DrawWorldLine` uses for campaign coordinates.
-    let zoom = if read::<i32>(MAP_ZOOM_MODE) == 1 {
-        1.3
-    } else {
-        1.0
-    };
     for impact in frame.impacts.iter().take(frame.impact_count) {
-        let mut anchor = impact.world;
-        let mut unit = [impact.world[0] + 1.0, impact.world[1]];
-        project(&mut anchor, false, zoom);
-        project(&mut unit, false, zoom);
-        let pixels = (unit[0] - anchor[0]).hypot(unit[1] - anchor[1]);
-        if !pixels.is_finite() || pixels <= 1.0e-4 {
-            continue;
-        }
-        let world_per_pixel = 1.0 / pixels;
         let center = [
-            impact.world[0] + impact.offset[0] * CITY_IMPACT_RADIUS_PX * world_per_pixel,
-            impact.world[1] + impact.offset[1] * CITY_IMPACT_RADIUS_PX * world_per_pixel,
+            impact.world[0] + impact.scatter[0],
+            impact.world[1] + impact.scatter[1],
         ];
         let fade = (1.0 - impact.age_fraction).clamp(0.2, 1.0);
-        let alpha = (fade * if impact.effective { 230.0 } else { 110.0 }) as u32;
+        let alpha = (fade * if impact.effective { 255.0 } else { 120.0 }) as u32;
         let color = (alpha << 24)
             | if impact.effective {
                 0x00ff_7838
             } else {
                 0x00ff_d0a0
             };
-        let half = if impact.effective {
-            IMPACT_HALF_PX
-        } else {
-            IMPACT_MISS_HALF_PX
-        } * (0.8 + 0.4 * impact.age_fraction.clamp(0.0, 1.0))
-            * world_per_pixel;
-        let width = if impact.effective { 1.3 } else { 1.0 };
+        let radius = frame.cannon.burst_scale()
+            * if impact.effective { 5.0 } else { 2.5 }
+            * (0.8 + impact.age_fraction.clamp(0.0, 1.0));
         world_line(
-            [center[0] - half, center[1]],
-            [center[0] + half, center[1]],
-            width,
+            [center[0] - radius, center[1]],
+            [center[0] + radius, center[1]],
+            if impact.effective { 4.0 } else { 2.0 },
             color,
         );
         world_line(
-            [center[0], center[1] - half],
-            [center[0], center[1] + half],
-            width,
+            [center[0], center[1] - radius],
+            [center[0], center[1] + radius],
+            if impact.effective { 4.0 } else { 2.0 },
             color,
         );
     }
