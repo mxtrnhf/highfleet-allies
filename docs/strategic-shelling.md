@@ -61,15 +61,20 @@ The tactical mix is deliberately much louder, with frequent stock samples
 whose transients are already clipped, mixed with metal impacts and cracks.
 It follows the same `shelling_sounds` setting as the map.
 
-After the replay, the video task presents a fully black frame before the
-game thread transfers precomputed final HP and part losses to the actual
-defenders. The cover remains through teardown and the native kill-confirmation
-cue is suppressed for the raid. Native missile-scene teardown
+After the replay, the stock BLACK overlay fades the scene to black over one
+second, then the video task presents a fully black frame before the game thread
+transfers precomputed final HP and part losses to the actual defenders. The
+cover remains through teardown. The native kill-confirmation cue is suppressed
+at all six queue sites (`Body_DieExplode` and the five `ShipStatusCheck` "lost
+ship" branches) and stays suppressed for five seconds after the native return,
+because status checks can run during the handoff. Native missile-scene teardown
 returns survivors to the campaign. The raid disables unloading on the linked
 garrison to preserve full ship records. No damage is queued
 for normal enemy combat spawns. `shelling simulation complete before replay` records
 the damage totals, `shelling campaign damage retained` records the unload opt-out, and
-`shelling raid native return completed` records the teardown. The log includes
+`shelling raid native return completed` records the teardown and the number of
+suppressed kill cues. The log includes `shelling replay ended; fading to black`,
+`shelling blackout reached opaque` with the observed duration and alpha,
 `shelling black frame presented`, defender IDs, driver state, HP and part
 counts before the replay and around damage application. `ALLY SPAWN` includes
 absolute part counts and HP; a template can lose parts and still show 100% HP.
@@ -149,10 +154,14 @@ absolute part counts and HP; a template can lose parts and still show 100% HP.
   tracers invert that same projection to enter from above the viewport
   and draw before the stock battle overlay flush (`0x140309408`), not through
   the player target-box branch.
-- `Gui_BlackoutOverlay_BeginClear` (`0x1402130b0`) uses the singleton at
-  `0x143a13b08`. The raid holds its `BLACK` state opaque across the level
-  load, then sets the state/rate so the stock GUI fades it to clear while
-  the wind cue plays. This hides the visible level assembly without a new
+- `Gui_BlackoutOverlay_BeginClear` (`0x1402130b0`) and `_BeginOpaque`
+  (`0x140213fc0`) use the singleton at `0x143a13b08`. Logic id 10000 handles the
+  element in `creatureLogic`: state 0 ramps alpha (`+0x8f8`) toward the target
+  at `+0x3d4` by `dt / +0x3d0` per tick, state 1 holds that target, state 2
+  ramps alpha down by `dt / +0x3d0`, and state 3 is inert. The raid holds the
+  `BLACK` cover opaque (`state 3`, alpha 1) across the level load, fades it out
+  over 0.7 s when the wind cue plays, and later fades it back in over 1 s before
+  the damage handoff. This hides the visible level assembly without a new
   asset.
 - At a tactical strike, `FX_SpawnExplosionDebris` (`0x1401c7270`) creates
   the stock particles and transient effect light. Shelling does not call

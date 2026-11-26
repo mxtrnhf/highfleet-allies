@@ -4,7 +4,10 @@
 
 use std::{
     mem::{offset_of, size_of},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        Mutex,
+    },
 };
 
 use patchy::{Condition, PatchSession, ReturnType, Trampoline};
@@ -37,7 +40,12 @@ const MISSILE_TICK: usize = 0x1_402d_4330;
 const BLACKOUT_OVERLAY: usize = 0x1_43a1_3b08;
 const BLACKOUT_STATE: usize = 0x3cc;
 const BLACKOUT_RATE: usize = 0x3d0;
+// Fade-in target alpha (m_logic_f2); state 0 ramps alpha toward this value.
+const BLACKOUT_TARGET: usize = 0x3d4;
 const BLACKOUT_ALPHA: usize = 0x8f8;
+const BLACKOUT_LOGIC_ACTIVE: usize = 0x3c8;
+// Parent link target; the native fade-out branch is skipped when this is set.
+const BLACKOUT_PARENT: usize = 0x498;
 const BATTLE_RENDER: usize = 0x1_4030_50a0;
 const BATTLE_RENDER_CALL: usize = 0x1_4030_0d7d;
 const COMBAT_EVENTS: usize = 0x1_4029_a7d0;
@@ -47,10 +55,31 @@ const PRESENT_CALL: usize = 0x1_4031_81fc;
 const GFX_PRESENT: usize = 0x1_4008_5e80;
 const CLEAR_BACK_BUFFER: usize = 0x1_4008_36f0;
 const RENDER_DISABLED: usize = 0x1c5;
-// Body_DieExplode queues 0x1b; PlayRadioSounds_ maps it to radio_kill_01–03.
-const DEATH_RADIO_CALL: usize = 0x1_4002_4021;
-const QUEUE_RADIO: usize = 0x1_402c_99e0;
+// Body_DieExplode and all five ShipStatusCheck "ship lost" branches queue this code;
+// PlayRadioSounds_ maps 0x1b to radio_kill_01–03.
 const KILL_CONFIRMATION: i32 = 0x1b;
+const QUEUE_RADIO: usize = 0x1_402c_99e0;
+const KILL_RADIO_CALLS: [usize; 6] = [
+    // Body_DieExplode: a destroyed part can queue the confirmation directly.
+    0x1_4002_4021,
+    // ShipStatusCheck: low thrust, no fuel/power, critical parts.
+    0x1_4006_ae23,
+    0x1_4006_af6e,
+    0x1_4006_b0e4,
+    0x1_4006_b270,
+    0x1_4006_b3df,
+];
+// A queued code may still drain after the native return; keep blocking brief insertions.
+const KILL_RADIO_TAIL_SECONDS: f64 = 5.0;
+const FADE_TO_BLACK_SECONDS: f32 = 1.0;
+// If the native fade does not advance, cover the scene after this delay.
+const FADE_TIMEOUT_MARGIN_SECONDS: f64 = 1.5;
+// A fade that has not moved at all after this long is not running; stop waiting for it.
+const FADE_STALL_SECONDS: f64 = 0.5;
+const OPAQUE_ALPHA: f32 = 0.999;
+// Logic id 10000: state 0 fades in, state 1 holds opaque, state 2 fades out, state 3 is clear.
+const FADE_OUT_STATE: i32 = 2;
+const OPAQUE_STATE: i32 = 3;
 const MAX_DEFENDERS: usize = 4; // Native setup limit.
 const MAX_VISIBLE_HITS_PER_DEFENDER: u32 = 3;
 const SIMULATED_HITS_PER_TICK: usize = 8;
@@ -135,10 +164,29 @@ struct Raid {
 
 #[derive(Clone, Copy)]
 enum Closing {
+    /// The native BLACK overlay is fading from clear to opaque; the scene is still visible.
+    FadingToBlack {
+        started: f64,
+        force_at: f64,
+        start_alpha: f32,
+    },
     WaitingForBlackFrame,
     BlackFramePresented,
     SettlingUntil(f64),
 }
+
+impl Closing {
+    fn covers_screen(self) -> bool {
+        !matches!(self, Self::FadingToBlack { .. })
+    }
+}
+
+/// Live kill-cue suppression. The raid arms it at native setup, and teardown keeps it
+/// armed briefly so status checks during the return cannot queue a stale confirmation.
+static KILL_SUPPRESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
+static KILL_SUPPRESSION_UNTIL: AtomicU64 = AtomicU64::new(0);
+static SUPPRESSED_KILL_CUES: AtomicU32 = AtomicU32::new(0);
+static LAST_KILL_LOG: AtomicU64 = AtomicU64::new(0);
 
 impl Raid {
     fn roll(&mut self) -> u32 {
@@ -372,12 +420,14 @@ pub(super) unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
         .detour_trampoline(PRESENT_CALL, 5, present)
         .map_err(|err| err.to_string())?;
 
-    let mut death_radio = Trampoline::new();
-    death_radio.absolute_call(queue_death_radio as *const ());
-    death_radio.relative_jump(DEATH_RADIO_CALL + 5);
-    session
-        .detour_trampoline(DEATH_RADIO_CALL, 5, death_radio)
-        .map_err(|err| err.to_string())?;
+    for &call in &KILL_RADIO_CALLS {
+        let mut kill_radio = Trampoline::new();
+        kill_radio.absolute_call(suppress_kill_radio as *const ());
+        kill_radio.relative_jump(call + 5);
+        session
+            .detour_trampoline(call, 5, kill_radio)
+            .map_err(|err| err.to_string())?;
+    }
 
     presentation::install(session)
 }
@@ -428,6 +478,10 @@ unsafe extern "C" fn after_setup() -> u8 {
             }));
             // SAFETY: the native level setup has initialized its full-screen HUD overlay.
             hold_blackout(0.3, 1.0);
+            KILL_SUPPRESSION_ACTIVE.store(true, Ordering::Relaxed);
+            KILL_SUPPRESSION_UNTIL.store(0, Ordering::Relaxed);
+            SUPPRESSED_KILL_CUES.store(0, Ordering::Relaxed);
+            LAST_KILL_LOG.store(0, Ordering::Relaxed);
             return 1;
         }
     }
@@ -468,7 +522,7 @@ unsafe fn hold_blackout(rate: f32, alpha: f32) {
     if overlay == 0 || !readable_span(overlay, BLACKOUT_ALPHA + size_of::<f32>()) {
         return;
     }
-    ((overlay + BLACKOUT_STATE) as *mut i32).write_unaligned(3);
+    ((overlay + BLACKOUT_STATE) as *mut i32).write_unaligned(OPAQUE_STATE);
     ((overlay + BLACKOUT_RATE) as *mut f32).write_unaligned(rate);
     ((overlay + BLACKOUT_ALPHA) as *mut f32).write_unaligned(alpha);
 }
@@ -479,13 +533,89 @@ unsafe fn hold_blackout(rate: f32, alpha: f32) {
 /// Same game-thread singleton contract as [`hold_blackout`].
 unsafe fn fade_blackout_out(rate: f32) {
     let overlay = read::<usize>(BLACKOUT_OVERLAY);
-    if overlay == 0 || !readable_span(overlay, BLACKOUT_STATE + size_of::<i32>()) {
+    if overlay == 0 || !readable_span(overlay, BLACKOUT_ALPHA + size_of::<f32>()) {
         return;
     }
-    // `Gui_BlackoutOverlay_BeginClear` arms state 0 with the incoming rate, then the GUI fades
-    // it to state 1. Writing both fields mirrors that stock transition.
+    *((overlay + BLACKOUT_LOGIC_ACTIVE) as *mut u8) = 1;
+    // Logic id 10000: state 2 ramps alpha down by dt/rate until it reaches zero, but the
+    // handler skips linked elements. Those clear through state 0 with a zero target.
+    let state = if read::<usize>(overlay + BLACKOUT_PARENT) != 0 {
+        ((overlay + BLACKOUT_TARGET) as *mut f32).write_unaligned(0.0);
+        0
+    } else {
+        FADE_OUT_STATE
+    };
+    ((overlay + BLACKOUT_RATE) as *mut f32).write_unaligned(rate.max(0.01));
+    ((overlay + BLACKOUT_STATE) as *mut i32).write_unaligned(state);
+}
+
+/// Arm the black overlay's native fade-to-opaque transition.
+///
+/// Logic id 10000 ramps alpha toward `BLACKOUT_TARGET` by `dt / BLACKOUT_RATE` per tick,
+/// so a one-second fade needs a rate of 1.0 with the target at 1.0. State 0 is the
+/// fade-in arm; state 1 is the held opaque result.
+///
+/// # Safety
+/// Same game-thread singleton contract as [`hold_blackout`].
+unsafe fn begin_blackout_fade(seconds: f32) {
+    let overlay = read::<usize>(BLACKOUT_OVERLAY);
+    if overlay == 0 || !readable_span(overlay, BLACKOUT_ALPHA + size_of::<f32>()) {
+        return;
+    }
+    *((overlay + BLACKOUT_LOGIC_ACTIVE) as *mut u8) = 1;
+    ((overlay + BLACKOUT_TARGET) as *mut f32).write_unaligned(1.0);
+    ((overlay + BLACKOUT_RATE) as *mut f32).write_unaligned(seconds.max(0.01));
     ((overlay + BLACKOUT_STATE) as *mut i32).write_unaligned(0);
-    ((overlay + BLACKOUT_RATE) as *mut f32).write_unaligned(rate);
+}
+
+/// Current alpha of the native blackout overlay, if the singleton is readable.
+///
+/// # Safety
+/// Reads only fixed scalars from the game-owned singleton; valid on the game thread.
+unsafe fn blackout_alpha() -> Option<f32> {
+    let overlay = read::<usize>(BLACKOUT_OVERLAY);
+    if overlay == 0 || !readable_span(overlay, BLACKOUT_ALPHA + size_of::<f32>()) {
+        return None;
+    }
+    let alpha = read::<f32>(overlay + BLACKOUT_ALPHA);
+    alpha.is_finite().then(|| alpha.clamp(0.0, 1.0))
+}
+
+/// Advance the fade-to-black handoff, falling back to an immediate opaque cover if the
+/// native transition does not run or does not complete in time.
+///
+/// # Safety
+/// Runs on the raid game thread while the native scene and its overlay are alive.
+unsafe fn handle_blackout_fade(now: f64, started: f64, force_at: f64, start_alpha: f32) {
+    let alpha = blackout_alpha();
+    let opaque = alpha.is_some_and(|alpha| alpha >= OPAQUE_ALPHA);
+    let progressed = alpha.is_some_and(|alpha| alpha > start_alpha + 0.01);
+    let stalled = !progressed && now - started >= FADE_STALL_SECONDS;
+    if !opaque && !stalled && now < force_at {
+        return;
+    }
+    if !opaque {
+        log::warn!(
+            "hf_ally: shelling native blackout fade {} after {:.2}s (alpha={alpha:?}); forcing opaque",
+            if stalled {
+                "did not advance"
+            } else {
+                "did not finish"
+            },
+            now - started
+        );
+        hold_blackout(0.1, 1.0);
+    }
+    log::info!(
+        "hf_ally: shelling blackout reached opaque after {:.2}s (alpha={:?})",
+        now - started,
+        blackout_alpha()
+    );
+    if let Ok(mut state) = RAID.lock() {
+        if let State::Active(raid) = &mut *state {
+            raid.closing = Some(Closing::WaitingForBlackFrame);
+        }
+    }
 }
 
 unsafe extern "C" fn tick() -> u8 {
@@ -508,6 +638,14 @@ unsafe extern "C" fn tick() -> u8 {
                 return 1;
             }
             match closing {
+                Some(Closing::FadingToBlack {
+                    started,
+                    force_at,
+                    start_alpha,
+                }) => {
+                    handle_blackout_fade(now, started, force_at, start_alpha);
+                    1
+                }
                 Some(Closing::WaitingForBlackFrame) => 1,
                 Some(Closing::BlackFramePresented) => {
                     commit_damage(now);
@@ -522,8 +660,19 @@ unsafe extern "C" fn tick() -> u8 {
                     if replay_tick(now) == 0 {
                         if let Ok(mut state) = RAID.lock() {
                             if let State::Active(raid) = &mut *state {
-                                raid.closing = Some(Closing::WaitingForBlackFrame);
-                                log::info!("hf_ally: shelling replay ended; waiting for a black frame before applying damage");
+                                let start_alpha = blackout_alpha().unwrap_or(0.0);
+                                raid.closing = Some(Closing::FadingToBlack {
+                                    started: now,
+                                    force_at: now
+                                        + f64::from(FADE_TO_BLACK_SECONDS)
+                                        + FADE_TIMEOUT_MARGIN_SECONDS,
+                                    start_alpha,
+                                });
+                                log::info!(
+                                    "hf_ally: shelling replay ended; fading to black over {FADE_TO_BLACK_SECONDS:.1}s before applying damage (alpha={start_alpha:.3})"
+                                );
+                                // SAFETY: the native raid scene still owns the full-screen overlay.
+                                begin_blackout_fade(FADE_TO_BLACK_SECONDS);
                             }
                         }
                     }
@@ -537,9 +686,9 @@ unsafe extern "C" fn tick() -> u8 {
 /// Clear the final back buffer after the compositor flush and before the actual swap.
 /// The game thread may only commit after a successful Present of that black frame.
 unsafe extern "C" fn present_frame(engine: usize) {
-    let cover = RAID
-        .lock()
-        .is_ok_and(|state| matches!(&*state, State::Active(raid) if raid.closing.is_some()));
+    let cover = RAID.lock().is_ok_and(|state| {
+        matches!(&*state, State::Active(raid) if raid.closing.is_some_and(Closing::covers_screen))
+    });
     if !cover || read::<u8>(engine + RENDER_DISABLED) != 0 {
         let present: unsafe extern "C" fn(usize) = std::mem::transmute(GFX_PRESENT);
         present(engine);
@@ -565,23 +714,50 @@ unsafe extern "C" fn present_frame(engine: usize) {
     }
 }
 
-unsafe extern "C" fn queue_death_radio(code: i32) {
-    if code == KILL_CONFIRMATION {
-        if let Ok(state) = RAID.lock() {
-            if let State::Active(raid) = &*state {
-                let phase = match raid.closing {
-                    Some(Closing::SettlingUntil(_)) => "damage application or settling",
-                    Some(_) => "blackout handoff",
-                    None if raid.simulation_done => "replay",
-                    None => "simulation setup",
-                };
-                log::info!("hf_ally: shelling suppressed native kill confirmation during {phase}");
-                return;
-            }
+/// Drop the stock kill confirmation before it enters the audio queue.
+///
+/// Native 0x1b cues come from `Body_DieExplode` and five `ShipStatusCheck` branches
+/// (low thrust, no fuel, no power, critical parts). The confirmation is a response to
+/// the shelled garrison dying, so it is wrong for the spectator replay. Suppression ends
+/// a few seconds after the native return so status checks during teardown stay quiet.
+unsafe extern "C" fn suppress_kill_radio(code: i32) {
+    let now = read::<f64>(CLOCK);
+    if code == KILL_CONFIRMATION && kill_radio_suppressed(now) {
+        let count = SUPPRESSED_KILL_CUES.fetch_add(1, Ordering::Relaxed) + 1;
+        let last = f64::from_bits(LAST_KILL_LOG.load(Ordering::Relaxed));
+        // Status checks run every AI tick; log at most once per second but count them all.
+        if count == 1 || now - last >= 1.0 {
+            LAST_KILL_LOG.store(now.to_bits(), Ordering::Relaxed);
+            log::info!(
+                "hf_ally: shelling suppressed native kill confirmation during {} ({count} so far)",
+                kill_radio_phase()
+            );
         }
+        return;
     }
     let queue: unsafe extern "C" fn(i32) = std::mem::transmute(QUEUE_RADIO);
     queue(code);
+}
+
+fn kill_radio_suppressed(now: f64) -> bool {
+    KILL_SUPPRESSION_ACTIVE.load(Ordering::Relaxed)
+        || now < f64::from_bits(KILL_SUPPRESSION_UNTIL.load(Ordering::Relaxed))
+}
+
+fn kill_radio_phase() -> &'static str {
+    RAID.try_lock()
+        .map_or("raid teardown", |state| match &*state {
+            State::Active(raid) => match raid.closing {
+                Some(Closing::FadingToBlack { .. }) => "the fade to black",
+                Some(Closing::WaitingForBlackFrame) | Some(Closing::BlackFramePresented) => {
+                    "the blackout handoff"
+                }
+                Some(Closing::SettlingUntil(_)) => "damage application or settling",
+                None if raid.simulation_done => "the replay",
+                None => "simulation setup",
+            },
+            _ => "raid teardown",
+        })
 }
 
 /// Resolve effective hits under the loading blackout, before scheduling any replay flights.
@@ -654,6 +830,10 @@ unsafe fn commit_damage(now: f64) {
         raid.closing = Some(Closing::SettlingUntil(now + DAMAGE_SETTLE_SECONDS));
         std::mem::take(&mut raid.damage)
     };
+    // Keep the black through the native removal and return; the fade to black already
+    // finished, so pinning the stock overlay opaque cannot hide a visible transition.
+    // SAFETY: the raid still owns the native scene and its full-screen overlay.
+    hold_blackout(0.05, 1.0);
     log_defender_roster("after replay, before cached damage");
     let mut planned = 0;
     let mut changed = 0;
@@ -803,6 +983,13 @@ unsafe fn schedule_round(raid: &mut Raid, total: usize, now: f64) {
 }
 
 extern "C" fn after_teardown() {
+    // The raid owns its scene until this callback, so the clock is live here.
+    let now = unsafe { read::<f64>(CLOCK) };
+    if now.is_finite() {
+        KILL_SUPPRESSION_UNTIL.store((now + KILL_RADIO_TAIL_SECONDS).to_bits(), Ordering::Relaxed);
+    }
+    KILL_SUPPRESSION_ACTIVE.store(false, Ordering::Relaxed);
+    let suppressed = SUPPRESSED_KILL_CUES.load(Ordering::Relaxed);
     let raid = RAID
         .lock()
         .ok()
@@ -810,7 +997,7 @@ extern "C" fn after_teardown() {
     if let Some(State::Active(raid)) = raid {
         let applied = raid.contacts.len() as u32;
         log::info!(
-            "hf_ally: shelling raid native return completed: {applied}/{} effective hits resolved ({} shown, {} unshown), {} unresolved, {} ground misses shown, {} parts removed",
+            "hf_ally: shelling raid native return completed: {applied}/{} effective hits resolved ({} shown, {} unshown), {} unresolved, {} ground misses shown, {} parts removed, {suppressed} kill cues suppressed",
             raid.effective_hits,
             raid.shown_hits,
             applied.saturating_sub(raid.shown_hits),

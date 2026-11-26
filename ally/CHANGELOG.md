@@ -1,5 +1,7 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.84 (fade to black and full kill-cue suppression):** fade the spectator scene to black over one second with the stock BLACK overlay before applying the cached result, instead of cutting to black in a single frame. Suppress the native kill confirmation at all six queue sites (Body_DieExplode and the five ShipStatusCheck "lost ship" branches), keep suppressing for five seconds after the native return, and report the suppressed count in the raid summary.
+
 * **v1.3.83 (blackout before shelling damage):** present an opaque black frame before applying the cached result and keep the screen covered until native raid teardown. Suppress the native kill-confirmation cue during shelling raids. Log the blackout handoff, defender identities and health before playback and around damage application, and absolute hull HP and part counts on subsequent spawns.
 
 * **v1.3.82 (pristine shelling replay and clipped heavy volleys):** run the HE simulation on copied pre-raid hull geometry and HP. The replay shows the garrison as it looked before this barrage, then the game applies the cached outcome under blackout before returning to the map. Fix the native garrison link used to keep damaged ship records from being unloaded. Follow-up firing uses bursts of two to five clipped stock big-far cannon reports, with no lighter gun or rumble layers.
