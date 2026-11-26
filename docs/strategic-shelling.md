@@ -38,9 +38,10 @@ The firing window lasts the selected 10, 30 or 60 minutes; the last shells
 are still in flight when it ends. The map shows **LANDING** until they arrive.
 
 At the end of an uninterrupted barrage with effective hits and a hostile
-garrison, the tactical scene resolves effective rounds against surviving
-defenders under the BLACK overlay. After the simulation completes, the overlay
-fades out during a 2.6-second wind-only opening. The fixed shot gives most of
+garrison, the tactical scene copies the defenders' starting module positions
+and health and resolves effective rounds against those copies under the BLACK
+overlay. After the simulation completes, the overlay fades out during a
+2.6-second wind-only opening. The replay shows the pre-barrage ships. The fixed shot gives most of
 the frame to the sky and places sampled ground near 93% of the viewport height.
 The native impact effect supplies flash, smoke and flying debris. Representative
 dirt strikes are spread over clear terrain in the shot and are at least twice
@@ -60,10 +61,10 @@ The tactical mix is deliberately much louder, with frequent stock samples
 whose transients are already clipped, mixed with metal impacts and cracks.
 It follows the same `shelling_sounds` setting as the map.
 
-After the last impact, the encounter returns through native missile-scene
-teardown so damaged ships go back to the campaign. Garrison fleets that take
-actual damage keep full ship records; the campaign no longer discards their
-damage by replacing them with pristine compact designs. No damage is queued
+After the replay, the scene fades to black and transfers the precomputed final
+HP and part losses to the actual defenders. Native missile-scene teardown
+returns survivors to the campaign. The raid disables unloading on the linked
+garrison to preserve full ship records. No damage is queued
 for normal enemy combat spawns. `shelling simulation complete before replay` records
 the damage totals, `shelling campaign damage retained` records the unload opt-out, and
 `shelling raid native return completed` records the teardown.
@@ -81,8 +82,9 @@ the damage totals, `shelling campaign damage retained` records the unload opt-ou
 - FIRE starts the turret servo and localized crew acknowledgement together.
   Once both enabled cues finish, one random `shell_out_big_far_01..04` report
   plays per working barrel (one for the 1-180, two for the Sarmat, and six for
-  the Squall) in quick succession. Normal layered reports then resume every
-  6.8–7.8 seconds while the firing fleet is selected. `"shelling_sounds": false`
+  the Squall) in quick succession. Bursts of two to five big-far cannon reports
+  with stock clipped transients follow every 6.8–7.8 seconds while the firing
+  fleet is selected. `"shelling_sounds": false`
   turns off the servo, reports, raid wind, and impacts; crew radio follows
   `ally_sounds`.
 - Map visualization uses the native `Gfx_DrawWorldLine` primitive on the M11
@@ -128,7 +130,8 @@ the damage totals, `shelling campaign damage retained` records the unload opt-ou
   expanded ships with a compact design (`0x140111f3e`); the gate checks the
   timed `m_damageCounter`, not each part's remaining HP. The raid clears the
   native `canBeUnloaded` flag only on a garrison that takes damage, through the
-  ship's own fleet link. That flag is serialized by `Escadra_RegisterProperties`
+   ship's resolved fleet pointer at `Creature+0xa70`, as read directly by
+   native extraction at `0x14020f3d3`. That flag is serialized by `Escadra_RegisterProperties`
   (`0x14010085b`) and keeps the whole fleet resident, trading memory for
   preserved ship state without a second damage path.
 - The level is a host for the native encounter contract, not the owner of

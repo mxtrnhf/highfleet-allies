@@ -19,8 +19,8 @@ use super::{
 const ESCADRA_ROLE: usize = 0x3a8;
 // Serialized as `canBeUnloaded` by Escadra_RegisterProperties at 0x14010085b.
 const ESCADRA_CAN_BE_UNLOADED: usize = 0x52c;
-// Creature's campaign Escadra Link, used by native tactical extraction at 0x14020f3d3.
-const CREATURE_ESCADRA_LINK: usize = 0xa70;
+// Creature's resolved Escadra pointer: extraction reads it directly at 0x14020f3d3.
+const CREATURE_ESCADRA: usize = 0xa70;
 const GARRISON_ROLE: i32 = 2;
 const SIDE_SLOT: usize = 0x178;
 const CITY_RADIUS: f32 = 5.0;
@@ -55,21 +55,30 @@ const _: () = {
     assert!(SHIP_LOAD_TIME + size_of::<f64>() <= size_of::<Creature>());
     assert!(SHIP_DESIGN_NAME + size_of::<EscadraString>() <= size_of::<Creature>());
     assert!(PART_RADIUS + size_of::<f32>() <= size_of::<Body>());
-    assert!(CREATURE_ESCADRA_LINK + size_of::<Link>() <= size_of::<Creature>());
+    assert!(CREATURE_ESCADRA + size_of::<usize>() <= size_of::<Creature>());
 };
 
 #[derive(Clone, Copy)]
 struct ImpactPart {
-    body: usize,
+    id: i64,
+    address: usize,
     position: Point,
     radius: f32,
+    armour: bool,
+    health_before: f32,
+    health: f32,
+}
+
+pub(super) struct DefenderDamage {
+    ship_id: i64,
+    ship_address: usize,
+    parts: Vec<ImpactPart>,
 }
 
 pub(super) struct ImpactReport {
     pub point: Point,
     pub destroyed: usize,
-    pub health_before: f32,
-    pub health_after: f32,
+    pub hull_hp_lost: f32,
 }
 
 /// Read the same compact/full discriminator as the native fleet preparer.
@@ -168,92 +177,131 @@ unsafe fn has_ship_design(ship: usize) -> bool {
         .is_some_and(|children| children != 0 && children <= MAX_PARTS)
 }
 
-/// Aim through a live module, then resolve the first contact and its shielded HE blast.
-///
-/// # Safety
-/// Game-thread tactical encounter tick with a live assembled defender and
-/// initialized part lists, outside the native physics traversal.
-pub(super) unsafe fn apply_to_ship(
-    ship: usize,
-    aim_roll: u64,
-    direction: f32,
-) -> Option<ImpactReport> {
-    if !is_ship(ship) {
-        return None;
+impl DefenderDamage {
+    /// Copy only the identities, geometry and HP needed by the HE simulation.
+    ///
+    /// # Safety
+    /// `ship` belongs to the initialized tactical roster on the game thread.
+    pub(super) unsafe fn capture(ship: usize) -> Self {
+        Self {
+            ship_id: read(ship + offset_of!(Node, id)),
+            ship_address: ship,
+            parts: impact_parts(ship),
+        }
     }
-    let fleet: usize = read(ship + CREATURE_ESCADRA_LINK + offset_of!(Link, target));
-    let all_parts = creature_parts(ship);
-    let health_before = health_total(&all_parts);
-    let parts = impact_parts(ship, all_parts);
-    let aim_index = (aim_roll as usize).checked_rem(parts.len())?;
-    let aim = parts.get(aim_index)?.position;
-    let (surface, point) = first_contact(&parts, aim, direction)?;
-    if !point.iter().all(|coordinate| coordinate.is_finite()) {
-        return None;
-    }
-    let radius = HE_EXPLOSIVE_POWER.sqrt();
-    let mut nearby: Vec<_> = parts
-        .into_iter()
-        .filter(|part| part.body != surface.body)
-        .filter_map(|part| {
-            let [x, y] = relative(part.position, point);
-            let edge = (x.hypot(y) - part.radius).max(0.0);
-            (edge < radius).then_some((edge, part))
-        })
-        .collect();
-    nearby.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
 
-    let mut transmission = [1.0_f32; SHADOW_BINS];
-    let mut budget = MAX_HP_PER_IMPACT;
-    let mut destroyed = 0;
-    let candidates = std::iter::once((0.0, surface)).chain(nearby);
-    for (edge, part) in candidates {
-        if budget < 1.0 {
-            break;
+    /// Resolve one shielded HE blast entirely against the copied ship.
+    pub(super) fn simulate_hit(&mut self, aim_roll: u64, direction: f32) -> Option<ImpactReport> {
+        let live_parts = self.parts.iter().filter(|part| part.health > 0.0);
+        let aim_index = (aim_roll as usize).checked_rem(live_parts.clone().count())?;
+        let aim = live_parts.clone().nth(aim_index)?.position;
+        let (surface, point) = first_contact(&self.parts, aim, direction)?;
+        if !point.iter().all(|coordinate| coordinate.is_finite()) {
+            return None;
         }
-        if !part_is_eligible(ship, part.body) {
-            continue;
-        }
-        let span = angular_span(point, part);
-        let visibility = span.clone().map(|bin| transmission[bin]).sum::<f32>() / span.len() as f32;
-        let armour = is_armour(part.body);
-        let damage = (10.0 * radius * (1.0 - edge / radius).powi(2) * visibility).floor();
-        let damage = if armour {
-            (damage / ARMOUR_HE_DIVISOR).floor()
-        } else {
-            damage
-        }
-        .min(budget);
-        if damage < 1.0 {
-            continue;
-        }
-        if let Some((killed, absorbed)) = damage_part(part.body, damage) {
-            if armour {
+        let radius = HE_EXPLOSIVE_POWER.sqrt();
+        let mut nearby: Vec<_> = self
+            .parts
+            .iter()
+            .enumerate()
+            .filter(|&(index, part)| index != surface && part.health > 0.0)
+            .filter_map(|(index, part)| {
+                let [x, y] = relative(part.position, point);
+                let edge = (x.hypot(y) - part.radius).max(0.0);
+                (edge < radius).then_some((edge, index))
+            })
+            .collect();
+        nearby.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+
+        let mut transmission = [1.0_f32; SHADOW_BINS];
+        let mut budget = MAX_HP_PER_IMPACT;
+        let mut destroyed = 0;
+        let mut hull_hp_lost = 0.0;
+        for (edge, index) in std::iter::once((0.0, surface)).chain(nearby) {
+            if budget < 1.0 {
+                break;
+            }
+            let Some(part) = self.parts.get_mut(index) else {
+                continue;
+            };
+            let span = angular_span(point, *part);
+            let visibility =
+                span.clone().map(|bin| transmission[bin]).sum::<f32>() / span.len() as f32;
+            let damage = (10.0 * radius * (1.0 - edge / radius).powi(2) * visibility).floor();
+            let damage = if part.armour {
+                (damage / ARMOUR_HE_DIVISOR).floor()
+            } else {
+                damage
+            }
+            .min(budget);
+            if damage < 1.0 {
+                continue;
+            }
+            let absorbed = part.health.min(damage);
+            part.health -= absorbed;
+            hull_hp_lost += absorbed;
+            destroyed += usize::from(part.health == 0.0);
+            if part.armour {
                 for bin in span {
                     if let Some(energy) = transmission.get_mut(bin) {
-                        *energy = (*energy - absorbed).max(0.0);
+                        *energy = (*energy - absorbed / damage).max(0.0);
                     }
                 }
             }
             budget -= damage;
-            destroyed += usize::from(killed);
-            // The native kill queues dead nodes and may invalidate the ship hierarchy.
-            // Do not touch more saved part addresses if a critical loss killed the defender.
-            if killed && (!is_ship(ship) || !crate::native::live_ship(ship)) {
+        }
+        (hull_hp_lost > 0.0).then_some(ImpactReport {
+            point,
+            destroyed,
+            hull_hp_lost,
+        })
+    }
+
+    /// Materialize recorded HP and missing parts once, after the replay has ended.
+    ///
+    /// # Safety
+    /// `ships` is a fresh native tactical roster outside physics traversal. Each
+    /// part's cached address is only an identity and is matched against that ship's
+    /// current part list before native removal.
+    pub(super) unsafe fn commit(&self, ships: &[usize]) -> (usize, usize) {
+        let mut changes: Vec<_> = self
+            .parts
+            .iter()
+            .filter(|part| part.health < part.health_before)
+            .collect();
+        let planned = changes.len();
+        if planned == 0 {
+            return (0, 0);
+        }
+        let Some(ship) = ships.iter().copied().find(|&ship| {
+            ship == self.ship_address
+                && is_ship(ship)
+                && crate::native::live_ship(ship)
+                && read::<i64>(ship + offset_of!(Node, id)) == self.ship_id
+        }) else {
+            return (planned, 0);
+        };
+        changes.sort_unstable_by_key(|part| part.health == 0.0);
+        let mut native_parts = creature_parts(ship);
+        native_parts.sort_unstable();
+        // Preserve the actual linked garrison before a lethal change can remove the ship.
+        preserve_campaign_damage(read(ship + CREATURE_ESCADRA));
+        let mut changed = 0;
+        for impact in changes {
+            let part = impact.address;
+            if native_parts.binary_search(&part).is_err()
+                || !part_is_eligible(ship, part)
+                || read::<i64>(part + offset_of!(Node, id)) != impact.id
+            {
+                continue;
+            }
+            changed += usize::from(write_part_health(part, impact.health));
+            if !is_ship(ship) || !crate::native::live_ship(ship) {
                 break;
             }
         }
+        (planned, changed)
     }
-    if budget == MAX_HP_PER_IMPACT {
-        return None;
-    }
-    preserve_campaign_damage(fleet);
-    Some(ImpactReport {
-        point,
-        destroyed,
-        health_before,
-        health_after: health_total(&creature_parts(ship)),
-    })
 }
 
 /// Preserve the garrison's native assembled ship records, including in the campaign save.
@@ -266,8 +314,11 @@ unsafe fn preserve_campaign_damage(fleet: usize) {
         || !readable_span(fleet, ESCADRA_CAN_BE_UNLOADED + size_of::<u8>())
         || read::<u16>(fleet + NODE_CODE) != ESCADRA_CLASS
         || read::<i32>(fleet + ESCADRA_ROLE) != GARRISON_ROLE
-        || read::<u8>(fleet + ESCADRA_CAN_BE_UNLOADED) == 0
     {
+        log::warn!("hf_ally: shelling damage carryover: defender has no matching garrison link");
+        return;
+    }
+    if read::<u8>(fleet + ESCADRA_CAN_BE_UNLOADED) == 0 {
         return;
     }
     // SAFETY: fixed scalar on the verified live fleet. This is the stock opt-out for full designs.
@@ -284,17 +335,19 @@ fn relative([x, y]: Point, [ox, oy]: Point) -> Point {
 
 /// Intersect the incoming line with the parts' native bounding circles. The first intersection,
 /// not the randomly selected (possibly internal) module, gets the direct hit.
-fn first_contact(parts: &[ImpactPart], aim: Point, direction: f32) -> Option<(ImpactPart, Point)> {
+fn first_contact(parts: &[ImpactPart], aim: Point, direction: f32) -> Option<(usize, Point)> {
     let [x, y] = approach_offset(direction);
     let length = x.hypot(y);
     let [nx, ny] = [x / length, y / length];
     let (part, front) = parts
         .iter()
-        .filter_map(|&part| {
+        .enumerate()
+        .filter(|&(_, part)| part.health > 0.0)
+        .filter_map(|(index, part)| {
             let [dx, dy] = relative(part.position, aim);
             let lateral = dx * ny - dy * nx;
             let chord_sq = part.radius * part.radius - lateral * lateral;
-            (chord_sq >= 0.0).then(|| (part, dx * nx + dy * ny + chord_sq.sqrt()))
+            (chord_sq >= 0.0).then(|| (index, dx * nx + dy * ny + chord_sq.sqrt()))
         })
         .max_by(|a, b| a.1.total_cmp(&b.1))?;
     Some((part, [aim[0] + front * nx, aim[1] + front * ny]))
@@ -347,8 +400,8 @@ unsafe fn creature_parts(ship: usize) -> Vec<usize> {
     result
 }
 
-unsafe fn impact_parts(ship: usize, all_parts: Vec<usize>) -> Vec<ImpactPart> {
-    all_parts
+unsafe fn impact_parts(ship: usize) -> Vec<ImpactPart> {
+    creature_parts(ship)
         .into_iter()
         .filter(|&part| part_is_eligible(ship, part))
         .filter_map(|body| {
@@ -360,27 +413,18 @@ unsafe fn impact_parts(ship: usize, all_parts: Vec<usize>) -> Vec<ImpactPart> {
             } else {
                 1.0
             };
+            let health = read(body + offset_of!(Body, health));
             Some(ImpactPart {
-                body,
+                id: read(body + offset_of!(Node, id)),
+                address: body,
                 position,
                 radius,
+                armour: is_armour(body),
+                health_before: health,
+                health,
             })
         })
         .collect()
-}
-
-unsafe fn health_total(parts: &[usize]) -> f32 {
-    let mut total = 0.0f32;
-    for &part in parts {
-        if !readable_span(part, size_of::<Body>()) || read::<i32>(part + OFF_ACTIVE) == 0 {
-            continue;
-        }
-        let health = read::<f32>(part + offset_of!(Body, health));
-        if health.is_finite() && health > 0.0 {
-            total += health;
-        }
-    }
-    total
 }
 
 /// Real modules are eligible regardless of role, linkage or depth. Frame and Creature objects
@@ -422,19 +466,19 @@ unsafe fn is_armour(part: usize) -> bool {
         .is_some_and(|category| category & ARMOUR_CATEGORY != 0)
 }
 
-/// Applies one localized damage packet. Zero-HP parts use the native non-explosive kill slot; the
-/// shell's explosion has already been simulated, so this must not start a second secondary blast.
-unsafe fn damage_part(part: usize, damage: f32) -> Option<(bool, f32)> {
+/// Transfer the simulated final HP. Zero uses the native non-explosive removal path.
+unsafe fn write_part_health(part: usize, after: f32) -> bool {
     let health_address = part + offset_of!(Body, health);
     let health = read::<f32>(health_address);
-    let after = (health - damage).max(0.0);
     if after >= health {
-        return None;
+        return false;
     }
-    let killed = after == 0.0;
-    if killed {
+    if after == 0.0 {
         let vtable = read::<usize>(part);
-        let entry = rd::<usize>(vtable.checked_add(KILL_SLOT)?).filter(|&entry| entry != 0)?;
+        let Some(entry) = rd::<usize>(vtable.saturating_add(KILL_SLOT)).filter(|&entry| entry != 0)
+        else {
+            return false;
+        };
         // SAFETY: this live tactical Body is removed through its own native lifecycle. The slot
         // queues dead-node collection and never transfers ownership to Rust.
         let kill: unsafe extern "C" fn(usize) = std::mem::transmute(entry);
@@ -443,7 +487,7 @@ unsafe fn damage_part(part: usize, damage: f32) -> Option<(bool, f32)> {
     } else {
         (health_address as *mut f32).write_unaligned(after);
     }
-    Some((killed, (health / damage).min(1.0)))
+    true
 }
 
 /// Borrowed hostile garrison fleets docked at `city`. Use only in the map

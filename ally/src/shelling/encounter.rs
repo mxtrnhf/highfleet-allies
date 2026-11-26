@@ -48,6 +48,7 @@ const MAX_GROUND_ROUNDS: u32 = 30;
 const MAX_IN_FLIGHT: usize = 6;
 const WIND_ONLY_SECONDS: f64 = 2.6;
 const AFTERMATH_SECONDS: f64 = 1.2;
+const DAMAGE_SETTLE_SECONDS: f64 = 0.5;
 // Tactical raid tracer descent duration (seconds from top of sky to impact).
 // Increase FLIGHT_SECONDS_BASE for slower, more readable descending shells; decrease for faster shells.
 const FLIGHT_SECONDS_BASE: f64 = 0.58;
@@ -100,6 +101,7 @@ struct Raid {
     effective_hits: u32,
     seed: u64,
     incoming_direction: f32,
+    damage: Vec<strike::DefenderDamage>,
     contacts: Vec<Point>,
     simulation_done: bool,
     opening_hulls: Vec<Hull>,
@@ -114,6 +116,7 @@ struct Raid {
     next_at: f64,
     time: f64,
     finish_at: Option<f64>,
+    return_at: Option<f64>,
     flights: Vec<Flight>,
     frame: Option<Frame>,
     destroyed: usize,
@@ -371,6 +374,7 @@ unsafe extern "C" fn after_setup() -> u8 {
                 } else {
                     1.0
                 },
+                damage: Vec::new(),
                 contacts: Vec::new(),
                 simulation_done: false,
                 opening_hulls: Vec::new(),
@@ -385,6 +389,7 @@ unsafe extern "C" fn after_setup() -> u8 {
                 next_at: f64::INFINITY,
                 time: now,
                 finish_at: None,
+                return_at: None,
                 flights: Vec::with_capacity(MAX_IN_FLIGHT),
                 frame: None,
                 destroyed: 0,
@@ -454,7 +459,7 @@ unsafe fn fade_blackout_out(rate: f32) {
 
 unsafe extern "C" fn tick() -> u8 {
     let phase = RAID.lock().ok().and_then(|state| match &*state {
-        State::Active(raid) => Some(raid.simulation_done),
+        State::Active(raid) => Some((raid.simulation_done, raid.return_at)),
         _ => None,
     });
     match phase {
@@ -462,17 +467,22 @@ unsafe extern "C" fn tick() -> u8 {
             let stock: unsafe extern "C" fn() -> u8 = std::mem::transmute(MISSILE_TICK);
             stock()
         }
-        Some(false) => {
+        Some((false, _)) => {
             simulate_damage();
             1
         }
-        Some(true) => {
+        Some((true, return_at)) => {
             let now = read::<f64>(CLOCK);
-            if now.is_finite() {
-                replay_tick(now)
-            } else {
-                1
+            if !now.is_finite() {
+                return 1;
             }
+            if let Some(return_at) = return_at {
+                return u8::from(now < return_at);
+            }
+            if replay_tick(now) == 0 {
+                commit_damage(now);
+            }
+            1
         }
     }
 }
@@ -481,6 +491,7 @@ unsafe extern "C" fn tick() -> u8 {
 ///
 /// # Safety
 /// Called by the native raid tick with live defenders, outside the native physics traversal.
+/// Native state is only read when capturing the opening ships.
 unsafe fn simulate_damage() {
     let Ok(mut state) = RAID.lock() else {
         return;
@@ -489,54 +500,68 @@ unsafe fn simulate_damage() {
         return;
     };
     if raid.contacts.is_empty() {
-        raid.opening_hulls = defenders()
-            .into_iter()
-            .filter_map(|ship| hull(ship))
-            .collect();
+        let ships = defenders();
+        raid.opening_hulls = ships.iter().filter_map(|&ship| hull(ship)).collect();
         raid.frame = Frame::capture(raid.opening_hulls.iter().copied());
+        raid.damage = ships
+            .into_iter()
+            .map(|ship| strike::DefenderDamage::capture(ship))
+            .collect();
     }
     let resolved = raid.contacts.len() as u32;
     let total = raid.effective_hits;
-    let seed = raid.seed;
-    let direction = raid.incoming_direction;
-    drop(state);
-
-    let mut impacts = [const { None }; SIMULATED_HITS_PER_TICK];
-    let mut no_target = false;
-    for (index, slot) in (resolved..total).zip(&mut impacts) {
-        // Native part removal can invalidate a previous target, so read a fresh roster.
-        let ships = defenders();
-        let Some(start) = (index as usize).checked_rem(ships.len()) else {
-            no_target = true;
+    for index in (resolved..total).take(SIMULATED_HITS_PER_TICK) {
+        let report = (index as usize)
+            .checked_rem(raid.damage.len())
+            .and_then(|start| {
+                let (before, after) = raid.damage.split_at_mut(start);
+                let roll = round_roll(raid.seed.rotate_left(31), index);
+                after
+                    .iter_mut()
+                    .chain(before)
+                    .find_map(|ship| ship.simulate_hit(roll, raid.incoming_direction))
+            });
+        let Some(report) = report else {
+            raid.simulation_done = true;
             break;
         };
-        let (before, after) = ships.split_at(start);
-        let aim_roll = round_roll(seed.rotate_left(31), index);
-        *slot = after
-            .iter()
-            .chain(before)
-            .find_map(|&ship| strike::apply_to_ship(ship, aim_roll, direction));
-        if slot.is_none() {
-            no_target = true;
-            break;
-        }
+        raid.contacts.push(report.point);
+        raid.destroyed += report.destroyed;
+        raid.hull_hp_lost += report.hull_hp_lost;
     }
-    if let Ok(mut state) = RAID.lock() {
-        if let State::Active(raid) = &mut *state {
-            for report in impacts.into_iter().flatten() {
-                raid.contacts.push(report.point);
-                raid.destroyed += report.destroyed;
-                raid.hull_hp_lost += (report.health_before - report.health_after).max(0.0);
-            }
-            if no_target || raid.contacts.len() == total as usize {
-                raid.simulation_done = true;
-                log::info!(
-                    "hf_ally: shelling simulation complete before replay: {}/{total} effective hits resolved, {} parts removed, {:.0} hull HP lost",
-                    raid.contacts.len(), raid.destroyed, raid.hull_hp_lost,
-                );
-            }
-        }
+    if raid.simulation_done || raid.contacts.len() == total as usize {
+        raid.simulation_done = true;
+        log::info!(
+            "hf_ally: shelling simulation complete before replay: {}/{total} effective hits resolved, {} parts removed, {:.0} hull HP lost",
+            raid.contacts.len(), raid.destroyed, raid.hull_hp_lost,
+        );
     }
+}
+
+/// Apply the already calculated outcome under blackout and let native removal settle.
+///
+/// # Safety
+/// The raid owns this native scene on the game thread through the return deadline.
+unsafe fn commit_damage(now: f64) {
+    let damage = {
+        let Ok(mut state) = RAID.lock() else {
+            return;
+        };
+        let State::Active(raid) = &mut *state else {
+            return;
+        };
+        raid.return_at = Some(now + DAMAGE_SETTLE_SECONDS);
+        std::mem::take(&mut raid.damage)
+    };
+    hold_blackout(0.3, 1.0);
+    let mut planned = 0;
+    let mut changed = 0;
+    for ship in damage {
+        let (ship_planned, ship_changed) = ship.commit(&defenders());
+        planned += ship_planned;
+        changed += ship_changed;
+    }
+    log::info!("hf_ally: shelling simulation outcome applied after replay: {changed}/{planned} native part changes written");
 }
 
 /// Play sampled hit coordinates and cosmetic ground effects without touching the defenders.

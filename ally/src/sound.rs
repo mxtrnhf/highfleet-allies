@@ -67,8 +67,7 @@ const SND_JOIN: [&[u8]; 3] = [
 /// `Map_BuildMissileMarkers` (`0x1401c4ee0`), with kind 0xb and base volume 30.0.
 const SND_BUTTON: &[u8] = b"button_01\0";
 const BUTTON_VOLUME: f32 = 30.0;
-/// The four stock `Media/Snd/shell_out_big_far_*` samples (6.5 s each), paired with a
-/// restrained low-end rumble bed (`explosion_big_far_*` / `artillery_01`) for distant thunder.
+/// The four stock `Media/Snd/shell_out_big_far_*` samples.
 const SND_SHELL: [&[u8]; 4] = [
     b"shell_out_big_far_01\0",
     b"shell_out_big_far_02\0",
@@ -81,7 +80,6 @@ const SND_SHELL_RUMBLE: [&[u8]; 4] = [
     b"explosion_big_far_03\0",
     b"explosion_big_far_04\0",
 ];
-const SND_SHELL_BED: &[u8] = b"artillery_01\0";
 const SND_SHELL_WINDUP: &[u8] = b"gunfire_servo\0";
 const SND_SHELL_RADIO_FIRE: [&[u8]; 4] = [
     b"radio_go1_01\0",
@@ -261,28 +259,13 @@ pub(crate) unsafe fn shelling_radio_abort() {
     }
 }
 
-/// Distant thunderous artillery volley: primary gun report plus a restrained low-end rumble
-/// layer scaled gently by battery magazine weight, with periodic distant artillery bed.
-pub(crate) unsafe fn shelling_volley(weight: u32, volley_count: u32) {
-    if !SHELLING_SOUNDS.load(Ordering::Relaxed) {
-        return;
-    }
-    let scale = (weight.min(48) as f32) / 48.0;
-    let report_pitch = 0.90 + (pick(15) as f32) * 0.01;
-    let _ = play_sfx_silent(
-        SND_SHELL[pick(SND_SHELL.len())],
-        SHELL_VOLUME + 12.0 * scale,
-        report_pitch,
-    );
-    let rumble_pitch = 0.78 + (pick(11) as f32) * 0.01;
-    let _ = play_sfx_silent(
-        SND_SHELL_RUMBLE[pick(SND_SHELL_RUMBLE.len())],
-        34.0 + 12.0 * scale,
-        rumble_pitch,
-    );
-    if volley_count.is_multiple_of(3) {
-        let bed_pitch = 0.94 + (pick(9) as f32) * 0.01;
-        let _ = play_sfx_silent(SND_SHELL_BED, 32.0 + 8.0 * scale, bed_pitch);
+/// One shot of a follow-up burst. The stock 01 WAV has ~5,100 clipped samples;
+/// preserve that crack at the source instead of distorting the entire game mix.
+pub(crate) unsafe fn shelling_burst_shot(weight: u32) {
+    if SHELLING_SOUNDS.load(Ordering::Relaxed) {
+        let pitch = 0.90 + pick(15) as f32 * 0.01;
+        let volume = 80.0 + 12.0 * (weight.min(48) as f32 / 48.0);
+        let _ = play_sfx_silent(SND_SHELL[0], volume, pitch);
     }
 }
 

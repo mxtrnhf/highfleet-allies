@@ -147,14 +147,14 @@ struct Barrage {
     effective_hits: u32,
     next_report: Instant,
     opening_reports_left: u32,
-    volley_count: u32,
+    burst_reports_left: usize,
     seed: u64,
     city: [f32; 2],
 }
 
 enum BarrageReport {
     Opening(u32),
-    Volley(u32, u32),
+    Burst(u32),
 }
 
 enum Phase {
@@ -659,18 +659,24 @@ pub(crate) unsafe fn tick() {
         {
             return None;
         }
-        barrage.next_report =
-            wall_now + WallDuration::from_millis((SOUND_GAP_MS + pick(SOUND_JITTER_MS)) as u64);
-        let count = barrage.volley_count;
-        barrage.volley_count = count.saturating_add(1);
-        Some(BarrageReport::Volley(weight, count))
+        if barrage.burst_reports_left == 0 {
+            barrage.burst_reports_left = 2 + pick(4);
+        }
+        barrage.burst_reports_left -= 1;
+        let gap = if barrage.burst_reports_left > 0 {
+            OPENING_SHOT_GAP_MS
+        } else {
+            (SOUND_GAP_MS + pick(SOUND_JITTER_MS)) as u64
+        };
+        barrage.next_report = wall_now + WallDuration::from_millis(gap);
+        Some(BarrageReport::Burst(weight))
     });
     if let Some(report) = report {
         drop(menu);
         // SAFETY: live map GUI; no MENU lock is held across the native sound call.
         match report {
             BarrageReport::Opening(weight) => sound::shelling_opening_shot(weight),
-            BarrageReport::Volley(weight, count) => sound::shelling_volley(weight, count),
+            BarrageReport::Burst(weight) => sound::shelling_burst_shot(weight),
         }
         let Ok(locked) = MENU.try_lock() else {
             return;
@@ -1025,7 +1031,7 @@ pub(crate) unsafe fn on_click(name: &str, gui: usize, button: usize) -> bool {
             effective_hits: 0,
             next_report: Instant::now() + WallDuration::from_millis(sound::shelling_prelude_ms()),
             opening_reports_left,
-            volley_count: 0,
+            burst_reports_left: 0,
             seed,
             city,
         });
