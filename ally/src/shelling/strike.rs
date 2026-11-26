@@ -1,9 +1,6 @@
 //! Garrison lookup and localized damage for the short shelling encounter.
 
-use std::{
-    mem::{offset_of, size_of},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::mem::{offset_of, size_of};
 
 use crate::{
     diag::{rd, readable_span},
@@ -60,24 +57,6 @@ const _: () = {
     assert!(PART_RADIUS + size_of::<f32>() <= size_of::<Body>());
     assert!(CREATURE_ESCADRA_LINK + size_of::<Link>() <= size_of::<Creature>());
 };
-
-static RANDOM: AtomicU64 = AtomicU64::new(0);
-
-fn random_u64() -> u64 {
-    let mut x = RANDOM.load(Ordering::Relaxed);
-    if x == 0 {
-        x = 0x9e37_79b9_7f4a_7c15 ^ (crate::time::pick(1 << 30) as u64 + 1);
-    }
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    RANDOM.store(x, Ordering::Relaxed);
-    x
-}
-
-fn random_index(len: usize) -> Option<usize> {
-    (len != 0).then(|| (random_u64() >> 33) as usize % len)
-}
 
 #[derive(Clone, Copy)]
 struct ImpactPart {
@@ -189,26 +168,14 @@ unsafe fn has_ship_design(ship: usize) -> bool {
         .is_some_and(|children| children != 0 && children <= MAX_PARTS)
 }
 
-/// Choose a sightline through a live module and predict the first exposed contact.
-/// Only coordinates cross frames; resolve the actual contact again at landing.
-///
-/// # Safety
-/// `ship` is a checked live Creature on the game thread.
-pub(super) unsafe fn aim(ship: usize, direction: f32) -> Option<(Point, Point)> {
-    let parts = impact_parts(ship, creature_parts(ship));
-    let aim = parts.get(random_index(parts.len())?)?.position;
-    let (_, contact) = first_contact(&parts, aim, direction)?;
-    Some((aim, contact))
-}
-
-/// Resolve the first surface contact, then a short nearest-first blast with armour shielding.
+/// Aim through a live module, then resolve the first contact and its shielded HE blast.
 ///
 /// # Safety
 /// Game-thread tactical encounter tick with a live assembled defender and
 /// initialized part lists, outside the native physics traversal.
 pub(super) unsafe fn apply_to_ship(
     ship: usize,
-    aim: Point,
+    aim_roll: u64,
     direction: f32,
 ) -> Option<ImpactReport> {
     if !is_ship(ship) {
@@ -218,7 +185,12 @@ pub(super) unsafe fn apply_to_ship(
     let all_parts = creature_parts(ship);
     let health_before = health_total(&all_parts);
     let parts = impact_parts(ship, all_parts);
+    let aim_index = (aim_roll as usize).checked_rem(parts.len())?;
+    let aim = parts.get(aim_index)?.position;
     let (surface, point) = first_contact(&parts, aim, direction)?;
+    if !point.iter().all(|coordinate| coordinate.is_finite()) {
+        return None;
+    }
     let radius = HE_EXPLOSIVE_POWER.sqrt();
     let mut nearby: Vec<_> = parts
         .into_iter()
@@ -272,9 +244,10 @@ pub(super) unsafe fn apply_to_ship(
             }
         }
     }
-    if budget < MAX_HP_PER_IMPACT {
-        preserve_campaign_damage(fleet);
+    if budget == MAX_HP_PER_IMPACT {
+        return None;
     }
+    preserve_campaign_damage(fleet);
     Some(ImpactReport {
         point,
         destroyed,

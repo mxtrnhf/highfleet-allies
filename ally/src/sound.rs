@@ -144,6 +144,19 @@ pub(crate) fn configure_shelling(enabled: bool) {
     SHELLING_SOUNDS.store(enabled, Ordering::Relaxed);
 }
 
+/// Let both concurrently played cues finish before the first barrel fires.
+pub(crate) fn shelling_prelude_ms() -> u64 {
+    if SHELLING_SOUNDS.load(Ordering::Relaxed) {
+        // Stock servo is 4.484 s at unity pitch (4.671 s at our 0.96 pitch).
+        4_750
+    } else if RADIO_SOUNDS.load(Ordering::Relaxed) {
+        // Longest stock firing acknowledgement across Russian and English is 3.800 s.
+        3_850
+    } else {
+        0
+    }
+}
+
 /// Plays one sound by its `sound.res` name (NUL-terminated); `what` is for the log.
 ///
 /// # Safety
@@ -220,7 +233,16 @@ pub(crate) unsafe fn button(what: &str) {
 /// Play heavy turret servo wind-up as cannons slew into firing elevation.
 pub(crate) unsafe fn shelling_windup() {
     if SHELLING_SOUNDS.load(Ordering::Relaxed) {
-        let _ = play_sfx_silent(SND_SHELL_WINDUP, SHELL_WINDUP_VOLUME, 0.96);
+        let result = play_sfx_silent(SND_SHELL_WINDUP, SHELL_WINDUP_VOLUME, 0.96);
+        log::info!("ALLY sound (shelling wind-up) gunfire_servo -> {result}");
+    }
+}
+
+/// Play one randomly selected distant shot for one barrel in the opening salvo.
+pub(crate) unsafe fn shelling_opening_shot(weight: u32) {
+    if SHELLING_SOUNDS.load(Ordering::Relaxed) {
+        let volume = SHELL_VOLUME + 12.0 * (weight.min(48) as f32 / 48.0);
+        play_sfx(SND_SHELL[pick(SND_SHELL.len())], volume, "shelling opening");
     }
 }
 

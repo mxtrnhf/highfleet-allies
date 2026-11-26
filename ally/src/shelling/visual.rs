@@ -1,8 +1,6 @@
 //! Per-round strategic shell flight and impact rendering.
 //!
-//! Every round has a launch time, a flight time and a deterministic effective-hit result. The
-//! parent consumes effective impacts as they land; rendering and damage therefore share one
-//! simulation rather than rolling unrelated damage when a countdown expires.
+//! The campaign firing plan supplies the effective-hit results. This module only displays them.
 //!
 //! Drawing uses the game's native `Gfx_DrawWorldLine` (`0x140248ba0`) in world-coordinate mode.
 //! The earlier font-marker overlay submitted no visible geometry on the campaign map. Native world
@@ -23,15 +21,13 @@ use crate::{
     native_layout::Body,
 };
 
-use super::estimate::{flight_seconds, shell_hit};
+use super::estimate::flight_seconds;
 
 /// Upper bound on individually rendered shells in one frame. All rounds remain simulated; at
 /// extreme cadence the drawn rounds are sampled across the entire route instead of at the muzzle.
 pub const MAX_SHELLS: usize = 24;
 /// Upper bound on impact bursts drawn in one frame.
 pub const MAX_IMPACTS: usize = 24;
-/// Bound schedule construction even with badly modified weapon stats.
-const MAX_SIMULATED_ROUNDS: u32 = 250_000;
 
 const DRAW_WORLD_LINE: usize = 0x1_4024_8ba0;
 const WORLD_TO_SCREEN: usize = 0x1_401a_dfc0;
@@ -44,7 +40,7 @@ const AIM_HEAD_LENGTH: f32 = 18.0;
 const BURST_FRACTION: f64 = 0.06;
 const MIN_BURST_SECONDS: f64 = 15.0;
 /// Give the last bursts a visible fade even when the final campaign tick jumps.
-pub(super) const BURST_TAIL: Duration = Duration::from_millis(650);
+const BURST_TAIL: Duration = Duration::from_millis(650);
 const SHELL_LENGTH_WORLD: f32 = 2.8;
 const SHELL_CROSS_WORLD: f32 = 1.8;
 const SHELL_COLOR: u32 = 0xffff_f2a0;
@@ -146,8 +142,7 @@ impl Plan {
         start_clock: f64,
         duration_seconds: f64,
         composition: Composition,
-        round_hit_chance: f64,
-        seed: u64,
+        effective_hits: Vec<u32>,
     ) -> Option<Self> {
         let finite = origin
             .iter()
@@ -158,7 +153,6 @@ impl Plan {
             || !duration_seconds.is_finite()
             || duration_seconds <= 0.0
             || composition.rounds == 0
-            || composition.rounds > MAX_SIMULATED_ROUNDS
         {
             return None;
         }
@@ -170,9 +164,6 @@ impl Plan {
         let tracer_stride = peak_airborne.min(rounds).max(1).div_ceil(MAX_SHELLS as u32);
         let mut tracer_origins = Vec::with_capacity(rounds.div_ceil(tracer_stride) as usize);
         tracer_origins.push(origin);
-        let effective_hits = (0..rounds)
-            .filter(|&index| shell_hit(seed, index, round_hit_chance))
-            .collect();
         Some(Self {
             target,
             last_observation: (0.0, origin),
@@ -240,17 +231,6 @@ impl Plan {
 
     fn is_effective_hit(&self, index: u32) -> bool {
         self.effective_hits.binary_search(&index).is_ok()
-    }
-
-    /// Number of effective shells whose individual flight has reached the city.
-    fn landed_hit_count(&self, elapsed: f64) -> u32 {
-        let latest = ((elapsed - self.flight_seconds) / self.period_seconds).floor() as i64;
-        if latest < 0 {
-            return 0;
-        }
-        let latest = (latest as u64).min(u64::from(self.rounds.saturating_sub(1))) as u32;
-        self.effective_hits
-            .partition_point(|&index| index <= latest) as u32
     }
 
     fn shell_spread(index: u32) -> f32 {
@@ -399,28 +379,23 @@ pub(crate) fn begin(
     start_clock: f64,
     duration_seconds: f64,
     composition: Composition,
-    round_hit_chance: f64,
-    seed: u64,
-) -> bool {
+    effective_hits: Vec<u32>,
+) {
     let Some(plan) = Plan::new(
         origin,
         target,
         start_clock,
         duration_seconds,
         composition,
-        round_hit_chance,
-        seed,
+        effective_hits,
     ) else {
-        return false;
+        return;
     };
     if let Ok(mut state) = STATE.try_lock() {
         state.plan = Some(plan);
         state.elapsed = 0.0;
         state.finished_at = None;
         DRAW_LOGGED.store(false, Relaxed);
-        true
-    } else {
-        false
     }
 }
 
@@ -430,13 +405,6 @@ pub(crate) fn clear() {
         state.elapsed = 0.0;
         state.finished_at = None;
     }
-}
-
-/// Effective shells that have landed by this campaign clock, including hits from earlier frames.
-pub(crate) fn landed_hit_count(clock: f64) -> Option<u32> {
-    let state = STATE.lock().ok()?;
-    let plan = state.plan.as_ref()?;
-    Some(plan.landed_hit_count(plan.elapsed(clock)?))
 }
 
 fn sample(clock: f64, origin: Option<[f32; 2]>) -> bool {

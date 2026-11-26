@@ -12,11 +12,12 @@ use patchy::{Condition, PatchSession, ReturnType, Trampoline};
 use crate::{
     diag::readable_span,
     native::{read, roster, CLOCK, SCENE_FLAGS},
-    native_layout::{Creature, Link, Node},
+    native_layout::{Creature, Link},
     sound,
 };
 
 use super::{
+    estimate::round_roll,
     is_ship,
     presentation::{self, Frame, Hull, Point},
     strike,
@@ -41,7 +42,8 @@ const BATTLE_RENDER_CALL: usize = 0x1_4030_0d7d;
 const COMBAT_EVENTS: usize = 0x1_4029_a7d0;
 const COMBAT_EVENTS_CALL: usize = 0x1_4030_93fa;
 const MAX_DEFENDERS: usize = 4; // Native setup limit.
-const MAX_ROUNDS_PER_DEFENDER: u32 = 3;
+const MAX_VISIBLE_HITS_PER_DEFENDER: u32 = 3;
+const SIMULATED_HITS_PER_TICK: usize = 8;
 const MAX_GROUND_ROUNDS: u32 = 30;
 const MAX_IN_FLIGHT: usize = 6;
 const WIND_ONLY_SECONDS: f64 = 2.6;
@@ -67,7 +69,9 @@ impl Bombardment {
         // Compress thousands of real misses into a short scene without making a single gun
         // and a full battery look alike.
         let volume_bands = (1 + misses / 100).ilog2();
-        let hull_share = self.hits.min(MAX_ROUNDS_PER_DEFENDER * 4);
+        let hull_share = self
+            .hits
+            .min(MAX_VISIBLE_HITS_PER_DEFENDER * MAX_DEFENDERS as u32);
         // The dirt is the spectacle: show at least twice as many misses as hull hits.
         let representative = (2 + 3 * volume_bands).max(2 * hull_share);
         representative.min(MAX_GROUND_ROUNDS).min(misses)
@@ -75,16 +79,8 @@ impl Bombardment {
 }
 
 #[derive(Clone, Copy)]
-struct ShipTarget {
-    ship_id: i64,
-    aim_offset: Point,
-    contact_offset: Point,
-}
-
-#[derive(Clone, Copy)]
 struct Flight {
-    ship: Option<ShipTarget>,
-    direction: f32,
+    ground: bool,
     point: Point,
     fired_at: f64,
     lands_at: f64,
@@ -101,13 +97,15 @@ enum Cadence {
 }
 
 struct Raid {
-    hits: u32,
+    effective_hits: u32,
+    seed: u64,
     incoming_direction: f32,
-    opening_defenders: [i64; MAX_DEFENDERS],
-    next_hit: u32,
-    hit_impacts: u32,
+    contacts: Vec<Point>,
+    simulation_done: bool,
+    opening_hulls: Vec<Hull>,
+    next_visible_hit: usize,
+    shown_hits: u32,
     ground_impacts: u32,
-    opening_count: u8,
     opening_started: bool,
     cadence: Cadence,
     ground_left: u32,
@@ -119,6 +117,7 @@ struct Raid {
     flights: Vec<Flight>,
     frame: Option<Frame>,
     destroyed: usize,
+    hull_hp_lost: f32,
 }
 
 impl Raid {
@@ -365,17 +364,19 @@ unsafe extern "C" fn after_setup() -> u8 {
             let ground_left = volume.ground_rounds();
             // Allocate raid-local storage once, at native setup, not in the render callback.
             *state = State::Active(Box::new(Raid {
-                hits: volume.hits,
+                effective_hits: volume.hits,
+                seed: volume.seed,
                 incoming_direction: if volume.incoming_direction < 0.0 {
                     -1.0
                 } else {
                     1.0
                 },
-                opening_defenders: [0; MAX_DEFENDERS],
-                next_hit: 0,
-                hit_impacts: 0,
+                contacts: Vec::new(),
+                simulation_done: false,
+                opening_hulls: Vec::new(),
+                next_visible_hit: 0,
+                shown_hits: 0,
                 ground_impacts: 0,
-                opening_count: 0,
                 opening_started: false,
                 cadence: Cadence::Irregular { left: 0 },
                 ground_left,
@@ -387,6 +388,7 @@ unsafe extern "C" fn after_setup() -> u8 {
                 flights: Vec::with_capacity(MAX_IN_FLIGHT),
                 frame: None,
                 destroyed: 0,
+                hull_hp_lost: 0.0,
             }));
             // SAFETY: the native level setup has initialized its full-screen HUD overlay.
             hold_blackout(0.3, 1.0);
@@ -420,13 +422,6 @@ unsafe fn hull(ship: usize) -> Option<Hull> {
     (radius.is_finite() && radius > 0.0).then_some(Hull { center, radius })
 }
 
-unsafe fn ship_by_id(ships: &[usize], id: i64) -> Option<usize> {
-    ships
-        .iter()
-        .copied()
-        .find(|&ship| read::<i64>(ship + offset_of!(Node, id)) == id)
-}
-
 /// Keep the stock full-screen BLACK overlay opaque while the level finishes loading.
 ///
 /// # Safety
@@ -458,57 +453,118 @@ unsafe fn fade_blackout_out(rate: f32) {
 }
 
 unsafe extern "C" fn tick() -> u8 {
-    let now = read::<f64>(CLOCK);
-    let active = RAID
-        .lock()
-        .is_ok_and(|state| matches!(*state, State::Active(_)));
-    if !active {
-        let stock: unsafe extern "C" fn() -> u8 = std::mem::transmute(MISSILE_TICK);
-        return stock();
+    let phase = RAID.lock().ok().and_then(|state| match &*state {
+        State::Active(raid) => Some(raid.simulation_done),
+        _ => None,
+    });
+    match phase {
+        None => {
+            let stock: unsafe extern "C" fn() -> u8 = std::mem::transmute(MISSILE_TICK);
+            stock()
+        }
+        Some(false) => {
+            simulate_damage();
+            1
+        }
+        Some(true) => {
+            let now = read::<f64>(CLOCK);
+            if now.is_finite() {
+                replay_tick(now)
+            } else {
+                1
+            }
+        }
     }
-    if !now.is_finite() {
-        return 0;
-    }
-    let ships = defenders();
+}
+
+/// Resolve effective hits under the loading blackout, before scheduling any replay flights.
+///
+/// # Safety
+/// Called by the native raid tick with live defenders, outside the native physics traversal.
+unsafe fn simulate_damage() {
     let Ok(mut state) = RAID.lock() else {
-        return 0;
+        return;
+    };
+    let State::Active(raid) = &mut *state else {
+        return;
+    };
+    if raid.contacts.is_empty() {
+        raid.opening_hulls = defenders()
+            .into_iter()
+            .filter_map(|ship| hull(ship))
+            .collect();
+        raid.frame = Frame::capture(raid.opening_hulls.iter().copied());
+    }
+    let resolved = raid.contacts.len() as u32;
+    let total = raid.effective_hits;
+    let seed = raid.seed;
+    let direction = raid.incoming_direction;
+    drop(state);
+
+    let mut impacts = [const { None }; SIMULATED_HITS_PER_TICK];
+    let mut no_target = false;
+    for (index, slot) in (resolved..total).zip(&mut impacts) {
+        // Native part removal can invalidate a previous target, so read a fresh roster.
+        let ships = defenders();
+        let Some(start) = (index as usize).checked_rem(ships.len()) else {
+            no_target = true;
+            break;
+        };
+        let (before, after) = ships.split_at(start);
+        let aim_roll = round_roll(seed.rotate_left(31), index);
+        *slot = after
+            .iter()
+            .chain(before)
+            .find_map(|&ship| strike::apply_to_ship(ship, aim_roll, direction));
+        if slot.is_none() {
+            no_target = true;
+            break;
+        }
+    }
+    if let Ok(mut state) = RAID.lock() {
+        if let State::Active(raid) = &mut *state {
+            for report in impacts.into_iter().flatten() {
+                raid.contacts.push(report.point);
+                raid.destroyed += report.destroyed;
+                raid.hull_hp_lost += (report.health_before - report.health_after).max(0.0);
+            }
+            if no_target || raid.contacts.len() == total as usize {
+                raid.simulation_done = true;
+                log::info!(
+                    "hf_ally: shelling simulation complete before replay: {}/{total} effective hits resolved, {} parts removed, {:.0} hull HP lost",
+                    raid.contacts.len(), raid.destroyed, raid.hull_hp_lost,
+                );
+            }
+        }
+    }
+}
+
+/// Play sampled hit coordinates and cosmetic ground effects without touching the defenders.
+unsafe fn replay_tick(now: f64) -> u8 {
+    let Ok(mut state) = RAID.lock() else {
+        return 1;
     };
     let State::Active(raid) = &mut *state else {
         return 0;
     };
     raid.time = now;
+    if let Some(finish) = raid.finish_at {
+        return u8::from(now < finish);
+    }
     let play_wind = !raid.opening_started;
     if play_wind {
         raid.opening_started = true;
         raid.next_at = now + WIND_ONLY_SECONDS;
     }
-    if raid.opening_count == 0 {
-        raid.opening_count = ships.len() as u8;
-        for (slot, &ship) in raid.opening_defenders.iter_mut().zip(&ships) {
-            *slot = read(ship + offset_of!(Node, id));
-        }
-    }
-    if raid.frame.is_none() && !ships.is_empty() {
-        raid.frame = Frame::capture(ships.iter().filter_map(|&ship| hull(ship)));
-    }
-    let defender_count = usize::from(raid.opening_count);
-    let total = raid
-        .hits
-        .min(defender_count as u32 * MAX_ROUNDS_PER_DEFENDER);
+    let visible_total = raid
+        .contacts
+        .len()
+        .min(raid.opening_hulls.len().max(1) * MAX_VISIBLE_HITS_PER_DEFENDER as usize);
     let mut landed = [None; MAX_IN_FLIGHT];
     let mut slots = landed.iter_mut();
     let mut whooshes = [None; MAX_IN_FLIGHT];
     let mut whoosh_slots = whooshes.iter_mut();
     raid.flights.retain_mut(|flight| {
-        if let Some([x, y]) = flight
-            .ship
-            .and_then(|target| ship_by_id(&ships, target.ship_id))
-            .and_then(|ship| center(ship))
-        {
-            if let Some(target) = flight.ship {
-                flight.point = [x + target.contact_offset[0], y + target.contact_offset[1]];
-            }
-        }
         if flight.whoosh_pending && flight.lands_at - now <= WHOOSH_LEAD_SECONDS {
             flight.whoosh_pending = false;
             if let Some(slot) = whoosh_slots.next() {
@@ -524,140 +580,73 @@ unsafe extern "C" fn tick() -> u8 {
         false
     });
     if now >= raid.next_at && raid.flights.len() < MAX_IN_FLIGHT {
-        schedule_round(raid, &ships, defender_count, total, now);
+        schedule_round(raid, visible_total, now);
     }
-    if raid.next_hit >= total && raid.ground_left == 0 && raid.flights.is_empty() {
-        raid.finish_at.get_or_insert(now + AFTERMATH_SECONDS);
+    if raid.next_visible_hit >= visible_total && raid.ground_left == 0 && raid.flights.is_empty() {
+        raid.finish_at = Some(now + AFTERMATH_SECONDS);
     }
-    let continuing = raid.finish_at.is_none_or(|finish| now < finish);
     let intensity = raid.intensity;
+    for flight in landed.iter().flatten() {
+        if flight.ground {
+            raid.ground_impacts += 1;
+        } else {
+            raid.shown_hits += 1;
+        }
+    }
     drop(state);
 
     if play_wind {
         // SAFETY: the native raid scene is live on its game thread. Sound uses the GUI root.
+        log::info!("hf_ally: shelling replay started: {visible_total} sampled hull impacts");
         sound::shelling_wind();
         fade_blackout_out(0.7);
     }
     for cue in whooshes.into_iter().flatten() {
-        // SAFETY: game-thread raid tick outside the RAID lock; GUI root is live.
         sound::shelling_whoosh(cue);
     }
-    let mut hits = 0;
-    let mut misses = 0;
-    let mut destroyed = 0;
     for flight in landed.into_iter().flatten() {
-        let mut point = flight.point;
-        let ground = flight.ship.is_none();
-        if let Some(target) = flight.ship {
-            let Some(ship) = ship_by_id(&ships, target.ship_id)
-                .filter(|&ship| is_ship(ship) && crate::native::live_ship(ship))
+        if flight.point.iter().all(|coordinate| coordinate.is_finite()) {
+            presentation::impact(flight.point, flight.ground, intensity, flight.cue);
+        }
+    }
+    1
+}
+
+/// Sample recorded contacts across the whole barrage and mix in cosmetic ground bursts.
+unsafe fn schedule_round(raid: &mut Raid, total: usize, now: f64) {
+    while raid.next_visible_hit < total || raid.ground_left != 0 {
+        let hits_left = total - raid.next_visible_hit;
+        let ground_ratio =
+            f64::from(raid.ground_left) / (f64::from(raid.ground_left) + hits_left as f64);
+        let ground = raid.sample() < ground_ratio;
+        let point = if ground {
+            raid.ground_left -= 1;
+            let scatter = raid.sample() as f32;
+            let Some(point) = raid
+                .frame
+                .and_then(|frame| frame.miss_point(scatter, raid.opening_hulls.iter().copied()))
             else {
                 continue;
             };
-            let Some([x, y]) = center(ship) else {
-                continue;
-            };
-            let aim = [x + target.aim_offset[0], y + target.aim_offset[1]];
-            let Some(report) = strike::apply_to_ship(ship, aim, flight.direction) else {
-                continue;
-            };
-            point = report.point;
-            hits += 1;
-            destroyed += report.destroyed;
-            log::info!(
-                "hf_ally: shelling raid impact: ship={ship:#x}, removed={}, hull {:.0} -> {:.0}",
-                report.destroyed,
-                report.health_before,
-                report.health_after
-            );
+            point
         } else {
-            if !presentation::clear_of_hulls(
-                point,
-                ships
-                    .iter()
-                    .copied()
-                    .filter(|&ship| is_ship(ship) && crate::native::live_ship(ship))
-                    .filter_map(|ship| hull(ship)),
-            ) {
-                continue;
-            }
-            misses += 1;
-        }
-        if point.iter().all(|coordinate| coordinate.is_finite()) {
-            presentation::impact(point, ground, intensity, flight.cue);
-        }
-    }
-    if hits != 0 || misses != 0 {
-        if let Ok(mut state) = RAID.lock() {
-            if let State::Active(raid) = &mut *state {
-                raid.hit_impacts += hits;
-                raid.ground_impacts += misses;
-                raid.destroyed += destroyed;
-            }
-        }
-    }
-    u8::from(continuing)
-}
-
-/// Mix a bounded sample of misses into the existing hit allocation. A lost defender's allotted
-/// hits are skipped; misses never borrow or consume another ship's allocation.
-unsafe fn schedule_round(
-    raid: &mut Raid,
-    ships: &[usize],
-    defender_count: usize,
-    total: u32,
-    now: f64,
-) {
-    while raid.next_hit < total || raid.ground_left != 0 {
-        let hits_left = total - raid.next_hit;
-        let ground_ratio = f64::from(raid.ground_left) / f64::from(raid.ground_left + hits_left);
-        let ground = raid.sample() < ground_ratio;
-        let direction = raid.incoming_direction;
-        let (ship, point) = if ground {
-            raid.ground_left -= 1;
-            let scatter = raid.sample() as f32;
-            let Some(point) = raid.frame.and_then(|frame| {
-                frame.miss_point(scatter, ships.iter().filter_map(|&ship| hull(ship)))
-            }) else {
+            let index = raid.next_visible_hit * raid.contacts.len() / total;
+            raid.next_visible_hit += 1;
+            let Some(&point) = raid.contacts.get(index) else {
                 continue;
             };
-            (None, point)
-        } else {
-            let order = raid.next_hit;
-            raid.next_hit += 1;
-            let Some(&id) = raid.opening_defenders.get(order as usize % defender_count) else {
-                continue;
-            };
-            let Some(ship) = ship_by_id(ships, id) else {
-                continue;
-            };
-            let Some([x, y]) = center(ship) else {
-                continue;
-            };
-            let Some((aim, point)) = strike::aim(ship, direction) else {
-                continue;
-            };
-            (
-                Some(ShipTarget {
-                    ship_id: id,
-                    aim_offset: [aim[0] - x, aim[1] - y],
-                    contact_offset: [point[0] - x, point[1] - y],
-                }),
-                point,
-            )
+            point
         };
         let lands_at = now + FLIGHT_SECONDS_BASE + (raid.sample() - 0.5) * FLIGHT_JITTER_SECONDS;
         let cue = raid.roll();
-        // Occasional subtle incoming whoosh (~1 in 4 rounds) right before terminal impact.
-        let whoosh_pending = (cue & 3) == 0;
         raid.flights.push(Flight {
-            ship,
+            ground,
             point,
-            direction,
             fired_at: now,
             lands_at,
             cue,
-            whoosh_pending,
+            // Occasionally play a brief incoming whoosh before terminal impact.
+            whoosh_pending: (cue & 3) == 0,
         });
         raid.space_next_launch(now);
         return;
@@ -670,9 +659,13 @@ extern "C" fn after_teardown() {
         .ok()
         .map(|mut state| std::mem::replace(&mut *state, State::Idle));
     if let Some(State::Active(raid)) = raid {
+        let applied = raid.contacts.len() as u32;
         log::info!(
-            "hf_ally: shelling raid native return completed: {} hull impacts, {} ground misses, {} parts removed",
-            raid.hit_impacts,
+            "hf_ally: shelling raid native return completed: {applied}/{} effective hits resolved ({} shown, {} unshown), {} unresolved, {} ground misses shown, {} parts removed",
+            raid.effective_hits,
+            raid.shown_hits,
+            applied.saturating_sub(raid.shown_hits),
+            raid.effective_hits.saturating_sub(applied),
             raid.ground_impacts,
             raid.destroyed
         );
@@ -702,6 +695,7 @@ unsafe extern "C" fn draw_tracer() {
         return;
     };
     let time = raid.time;
+    let direction = raid.incoming_direction;
     let mut slots = raid.flights.iter().copied();
     let flights: [Option<Flight>; MAX_IN_FLIGHT] = std::array::from_fn(|_| slots.next());
     drop(state);
@@ -711,7 +705,7 @@ unsafe extern "C" fn draw_tracer() {
     for flight in flights.into_iter().flatten() {
         let fraction = ((time - flight.fired_at) / (flight.lands_at - flight.fired_at)) as f32;
         if fraction.is_finite() && flight.point.iter().all(|n| n.is_finite()) {
-            sky.tracer(flight.point, flight.direction, fraction);
+            sky.tracer(flight.point, direction, fraction);
         }
     }
 }

@@ -11,6 +11,8 @@ const SECONDS_PER_MINUTE: f64 = 60.0;
 // Strategic map pacing, not tactical projectile speed. Equal distances mean equal ETAs.
 const MAP_SHELL_SPEED_KM_PER_SECOND: f64 = 1.0;
 const MIN_FLIGHT_SECONDS: f64 = 5.0;
+/// Bound the firing plan even with badly modified weapon stats.
+pub(super) const MAX_SIMULATED_ROUNDS: u32 = 250_000;
 
 pub(super) fn flight_seconds(distance_km: f32) -> f64 {
     (f64::from(distance_km) / MAP_SHELL_SPEED_KM_PER_SECOND).max(MIN_FLIGHT_SECONDS)
@@ -120,21 +122,19 @@ pub(super) fn round_hit_chance(distance_km: f32, altitude_m: f32) -> f64 {
         - (CLOSE_ROUND_HIT_CHANCE - EDGE_ROUND_HIT_CHANCE) * f64::from(range_fraction.powi(2))
 }
 
-/// Deterministic per-round result. The map tracer and the garrison impact queue use this same
-/// function, so a dot that lands as an effective hit is exactly the shell that damages a ship.
-pub(super) fn shell_hit(seed: u64, index: u32, chance: f64) -> bool {
-    if !chance.is_finite() || chance <= 0.0 {
-        return false;
-    }
-    if chance >= 1.0 {
-        return true;
-    }
+/// Resolve effective rounds once. Both the strike and the map display use these results.
+pub(super) fn effective_rounds(seed: u64, rounds: u32, chance: f64) -> Vec<u32> {
+    (0..rounds)
+        .filter(|&index| (round_roll(seed, index) >> 40) as f64 / f64::from(1u32 << 24) < chance)
+        .collect()
+}
+
+/// Deterministic per-round sample, independent of presentation and its random draws.
+pub(super) fn round_roll(seed: u64, index: u32) -> u64 {
     let mut value = seed ^ f64::from(index).to_bits() ^ u64::from(index).wrapping_mul(0x9e37_79b9);
     value ^= value >> 30;
     value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
     value ^= value >> 27;
     value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^= value >> 31;
-    let uniform = (value >> 40) as f64 / f64::from(1u32 << 24);
-    uniform < chance
+    value ^ (value >> 31)
 }

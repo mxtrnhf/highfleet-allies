@@ -92,7 +92,7 @@ const CLICK_DEBOUNCE_MS: u64 = 120;
 const NOTICE_MS: u64 = 2_500;
 const SOUND_GAP_MS: usize = 6_800;
 const SOUND_JITTER_MS: usize = 1_000;
-const WINDUP_DELAY_MS: u64 = 1_800;
+const OPENING_SHOT_GAP_MS: u64 = 85;
 // Center-origin 1920×1080 cockpit coordinates. The label stays right-aligned
 // above the map's coordinate readout; FIRE and CANCEL sit to its left.
 const BUTTON_RIGHT: f32 = 407.0;
@@ -116,7 +116,6 @@ static MENU: Mutex<Menu> = Mutex::new(Menu {
     phase: Phase::Closed,
     barrage: None,
     notice: None,
-    next_sound: None,
     last_clock: None,
     last_refresh: None,
     last_control_click: None,
@@ -126,23 +125,36 @@ struct Fleet {
     identity: (usize, i64),
     position: [f32; 2],
     altitude: f32,
+    battery: Battery,
+}
+
+#[derive(Default)]
+struct Battery {
     rounds: u32,
     mounts: u32,
+    barrels: u32,
     sound_weight: u32,
 }
 
 struct Barrage {
     fleet: (usize, i64),
     origin: [f32; 2],
-    start_clock: f64,
+    start_clock: Option<f64>,
     firing_seconds: f64,
     flight_seconds: f64,
-    rounds: u32,
-    sound_weight: u32,
+    battery: Battery,
+    hit_chance: f64,
+    effective_hits: u32,
+    next_report: Instant,
+    opening_reports_left: u32,
     volley_count: u32,
     seed: u64,
     city: [f32; 2],
-    completed_at: Option<Instant>,
+}
+
+enum BarrageReport {
+    Opening(u32),
+    Volley(u32, u32),
 }
 
 enum Phase {
@@ -161,7 +173,6 @@ struct Menu {
     phase: Phase,
     barrage: Option<Barrage>,
     notice: Option<(Instant, String)>,
-    next_sound: Option<Instant>,
     last_clock: Option<f64>,
     last_refresh: Option<Instant>,
     last_control_click: Option<Instant>,
@@ -310,9 +321,9 @@ unsafe fn map_ready() -> bool {
 }
 
 fn remaining(barrage: &Barrage, clock: f64) -> Option<f64> {
-    (clock.is_finite() && clock >= barrage.start_clock).then_some(
-        barrage.firing_seconds + barrage.flight_seconds
-            - (clock - barrage.start_clock) * SECONDS_PER_HOUR,
+    let start_clock = barrage.start_clock?;
+    (clock.is_finite() && clock >= start_clock).then_some(
+        barrage.firing_seconds + barrage.flight_seconds - (clock - start_clock) * SECONDS_PER_HOUR,
     )
 }
 
@@ -427,30 +438,29 @@ unsafe fn selected_fleet(duration: Duration) -> Option<Fleet> {
     if !position.iter().all(|coordinate| coordinate.is_finite()) || !altitude.is_finite() {
         return None;
     }
-    let (mut rounds, mut mounts, mut sound_weight) = (0u32, 0u32, 0u32);
+    let mut battery = Battery::default();
     for ship in fleet_ships(fleet)? {
         if !is_ship(ship) {
             continue;
         }
-        let (ship_rounds, ship_mounts, ship_weight) = battery_stats(ship, duration)?;
-        rounds = rounds.saturating_add(ship_rounds);
-        mounts = mounts.saturating_add(ship_mounts);
-        sound_weight = sound_weight.saturating_add(ship_weight);
+        let ships_guns = battery_stats(ship, duration)?;
+        battery.rounds = battery.rounds.saturating_add(ships_guns.rounds);
+        battery.mounts = battery.mounts.saturating_add(ships_guns.mounts);
+        battery.barrels = battery.barrels.saturating_add(ships_guns.barrels);
+        battery.sound_weight = battery.sound_weight.saturating_add(ships_guns.sound_weight);
     }
-    (rounds != 0).then(|| Fleet {
+    (battery.rounds != 0).then(|| Fleet {
         identity: (fleet, read(fleet + offset_of!(Node, id))),
         position,
         altitude,
-        rounds,
-        mounts,
-        sound_weight,
+        battery,
     })
 }
 
 /// # Safety
 /// `ship` is the current game-thread creature behind a fleet property. Parts and stat
 /// records remain game-owned; this function only copies scalar fields and raw pointers.
-unsafe fn battery_stats(ship: usize, duration: Duration) -> Option<(u32, u32, u32)> {
+unsafe fn battery_stats(ship: usize, duration: Duration) -> Option<Battery> {
     if !plausible(ship)
         || !readable_span(ship, size_of::<Creature>())
         || read::<u8>(ship + NODE_CODE) & CREATURE_CLASS != CREATURE_CLASS
@@ -458,7 +468,7 @@ unsafe fn battery_stats(ship: usize, duration: Duration) -> Option<(u32, u32, u3
         return None;
     }
     let get_stats: unsafe extern "C" fn(i32) -> usize = std::mem::transmute(GET_STATS);
-    let (mut rounds, mut mounts, mut sound_weight) = (0u32, 0u32, 0u32);
+    let mut battery = Battery::default();
     for offset in [
         offset_of!(Creature, gun_group_0),
         offset_of!(Creature, gun_group_1),
@@ -503,13 +513,24 @@ unsafe fn battery_stats(ship: usize, duration: Duration) -> Option<(u32, u32, u3
                 read(stats + offset_of!(PartStats, reload_time)),
                 read(stats + STAT_WEAPON_RATE),
             ) {
-                rounds = rounds.saturating_add(mount);
-                mounts = mounts.saturating_add(1);
-                sound_weight = sound_weight.saturating_add(capacity.max(0) as u32);
+                // Steam Libraries/OL.seria: these are the stock Sarmat and Squall OIDs.
+                // Magazine capacity remains independent of barrel count for modified guns.
+                let barrels = match crate::shipworks::native_string(gun + offset_of!(Body, oid))
+                    .as_deref()
+                    .map(CStr::to_bytes)
+                {
+                    Some(b"MDL_CANNON_180_2") => 2,
+                    Some(b"MDL_CANNON_305_2") => 6,
+                    _ => 1,
+                };
+                battery.rounds = battery.rounds.saturating_add(mount);
+                battery.mounts += 1;
+                battery.barrels += barrels;
+                battery.sound_weight = battery.sound_weight.saturating_add(capacity.max(0) as u32);
             }
         }
     }
-    Some((rounds, mounts, sound_weight))
+    Some(battery)
 }
 
 /// Called by the existing game-thread GUI input callback, before rendering.
@@ -523,7 +544,6 @@ pub(crate) unsafe fn tick() {
         if let Ok(mut menu) = MENU.try_lock() {
             menu.phase = Phase::Closed;
             menu.barrage = None;
-            menu.next_sound = None;
         }
         return;
     }
@@ -541,62 +561,121 @@ pub(crate) unsafe fn tick() {
         // A loaded campaign clock must not inherit the previous firing plan.
         menu.barrage = None;
         menu.phase = Phase::Closed;
-        menu.next_sound = None;
         menu.last_refresh = None;
         visual::clear();
     }
     if let Some(barrage) = menu.barrage.as_mut() {
+        if barrage.start_clock.is_none()
+            && active
+            && clock.is_finite()
+            && wall_now >= barrage.next_report
+        {
+            let battery = &barrage.battery;
+            let effective =
+                estimate::effective_rounds(barrage.seed, battery.rounds, barrage.hit_chance);
+            barrage.effective_hits = effective.len() as u32;
+            barrage.start_clock = Some(clock);
+            log::info!(
+                "hf_ally: shelling barrage started: {:.0} min, {} rounds, {} mounts, {} barrels, {:.2} expected hits at {:?}",
+                barrage.firing_seconds / 60.0,
+                battery.rounds, battery.mounts, battery.barrels,
+                f64::from(battery.rounds) * barrage.hit_chance, barrage.city,
+            );
+            visual::begin(
+                barrage.origin,
+                barrage.city,
+                clock,
+                barrage.firing_seconds,
+                visual::Composition::new(
+                    battery.mounts,
+                    battery.rounds,
+                    battery.sound_weight,
+                    barrage.firing_seconds,
+                ),
+                effective,
+            );
+        }
         match remaining(barrage, clock) {
-            Some(left) if left <= 0.0 => {
-                let finished = *barrage.completed_at.get_or_insert(wall_now);
-                if active && wall_now.duration_since(finished) >= visual::BURST_TAIL {
-                    let city = barrage.city;
-                    let Some(hits) = visual::landed_hit_count(clock) else {
-                        return;
-                    };
-                    let volume = encounter::Bombardment {
-                        hits,
-                        rounds: barrage.rounds,
-                        seed: barrage.seed,
-                        incoming_direction: if barrage.origin[0] <= city[0] {
-                            -1.0
-                        } else {
-                            1.0
-                        },
-                    };
-                    menu.barrage = None;
-                    menu.phase = Phase::Closed;
-                    menu.next_sound = None;
-                    visual::clear();
-                    drop(menu);
-                    let message = if hits == 0 {
-                        "BARRAGE: NO EFFECTIVE HITS"
+            Some(left) if active && left <= 0.0 => {
+                let city = barrage.city;
+                let hits = barrage.effective_hits;
+                let volume = encounter::Bombardment {
+                    hits,
+                    rounds: barrage.battery.rounds,
+                    seed: barrage.seed,
+                    incoming_direction: if barrage.origin[0] <= city[0] {
+                        -1.0
                     } else {
-                        let fleets = strike::garrison_fleets(city);
-                        if fleets.is_empty() {
-                            "BARRAGE: NO GARRISON"
-                        } else if encounter::start(&fleets, volume) {
-                            return; // The level loader may have invalidated the campaign GUI.
-                        } else {
-                            "BOMBARDMENT COULD NOT START"
-                        }
-                    };
-                    log::info!("hf_ally: {message} at {city:?} ({hits} effective hits)");
-                    if let Ok(mut menu) = MENU.try_lock() {
-                        menu.notice(wall_now, message);
-                    }
-                    return;
-                }
-            }
-            None => {
+                        1.0
+                    },
+                };
                 menu.barrage = None;
                 menu.phase = Phase::Closed;
-                menu.next_sound = None;
+                drop(menu);
+                let message = if hits == 0 {
+                    "BARRAGE: NO EFFECTIVE HITS"
+                } else {
+                    let fleets = strike::garrison_fleets(city);
+                    if fleets.is_empty() {
+                        "BARRAGE: NO GARRISON"
+                    } else if encounter::start(&fleets, volume) {
+                        return; // The level loader may have invalidated the campaign GUI.
+                    } else {
+                        "BOMBARDMENT COULD NOT START"
+                    }
+                };
+                log::info!("hf_ally: {message} at {city:?} ({hits} effective hits)");
+                if let Ok(mut menu) = MENU.try_lock() {
+                    menu.notice(wall_now, message);
+                }
+                return;
+            }
+            None if barrage.start_clock.is_some() => {
+                menu.barrage = None;
+                menu.phase = Phase::Closed;
                 visual::clear();
                 menu.notice(wall_now, "BARRAGE LOST");
             }
             _ => {}
         }
+    }
+    let report = menu.barrage.as_mut().and_then(|barrage| {
+        if !active || barrage.start_clock.is_none() || wall_now < barrage.next_report {
+            return None;
+        }
+        let weight = barrage.battery.sound_weight;
+        if barrage.opening_reports_left > 0 {
+            barrage.opening_reports_left -= 1;
+            let gap = if barrage.opening_reports_left > 0 {
+                OPENING_SHOT_GAP_MS
+            } else {
+                (SOUND_GAP_MS + pick(SOUND_JITTER_MS)) as u64
+            };
+            barrage.next_report = wall_now + WallDuration::from_millis(gap);
+            return Some(BarrageReport::Opening(weight));
+        }
+        if read::<usize>(PLAYER_ESCADRA) != barrage.fleet.0
+            || !remaining(barrage, clock).is_some_and(|left| left > barrage.flight_seconds)
+        {
+            return None;
+        }
+        barrage.next_report =
+            wall_now + WallDuration::from_millis((SOUND_GAP_MS + pick(SOUND_JITTER_MS)) as u64);
+        let count = barrage.volley_count;
+        barrage.volley_count = count.saturating_add(1);
+        Some(BarrageReport::Volley(weight, count))
+    });
+    if let Some(report) = report {
+        drop(menu);
+        // SAFETY: live map GUI; no MENU lock is held across the native sound call.
+        match report {
+            BarrageReport::Opening(weight) => sound::shelling_opening_shot(weight),
+            BarrageReport::Volley(weight, count) => sound::shelling_volley(weight, count),
+        }
+        let Ok(locked) = MENU.try_lock() else {
+            return;
+        };
+        menu = locked;
     }
     if active {
         if menu.last_refresh.is_some_and(|last| {
@@ -614,40 +693,17 @@ pub(crate) unsafe fn tick() {
         None
     };
     menu.check_fleet(fleet.as_ref());
-    let firing_left = menu
-        .barrage
-        .as_ref()
-        .filter(|barrage| {
-            fleet
-                .as_ref()
-                .is_some_and(|fleet| fleet.identity == barrage.fleet)
-        })
-        .and_then(|barrage| remaining(barrage, clock));
-    let launch_left = menu
-        .barrage
-        .as_ref()
-        .filter(|barrage| {
-            fleet
-                .as_ref()
-                .is_some_and(|fleet| fleet.identity == barrage.fleet)
-        })
+    let selected_barrage = menu.barrage.as_ref().filter(|barrage| {
+        fleet
+            .as_ref()
+            .is_some_and(|fleet| fleet.identity == barrage.fleet)
+    });
+    let has_barrage = selected_barrage.is_some();
+    let preparing = selected_barrage.is_some_and(|barrage| barrage.start_clock.is_none());
+    let firing_left = selected_barrage.and_then(|barrage| remaining(barrage, clock));
+    let launch_left = selected_barrage
         .zip(firing_left)
         .map(|(barrage, left)| left - barrage.flight_seconds);
-    let sound_gap = launch_left.filter(|left| *left > 0.0).map(|_| SOUND_GAP_MS);
-    let mut play_sound = None;
-    if let Some(gap_ms) = sound_gap {
-        if active && menu.next_sound.is_none_or(|next| wall_now >= next) {
-            menu.next_sound =
-                Some(wall_now + WallDuration::from_millis((gap_ms + pick(SOUND_JITTER_MS)) as u64));
-            if let Some(barrage) = menu.barrage.as_mut() {
-                let count = barrage.volley_count;
-                barrage.volley_count = count.saturating_add(1);
-                play_sound = Some((barrage.sound_weight, count));
-            }
-        }
-    } else {
-        menu.next_sound = None;
-    }
     let notice = menu.notice_text(wall_now);
     let phase = match menu.phase {
         Phase::Closed => Display::Closed,
@@ -656,17 +712,12 @@ pub(crate) unsafe fn tick() {
     };
     drop(menu);
 
-    if let Some((sound_weight, volley_count)) = play_sound {
-        // SAFETY: game-thread input callback after sound::verify() in bootstrap; the GUI
-        // root is live on the map and each status slot outlives the native call.
-        sound::shelling_volley(sound_weight, volley_count);
-    }
-
-    let previewing =
-        fleet.is_some() && matches!(phase, Display::Preview { .. }) && firing_left.is_none();
+    let previewing = fleet.is_some() && matches!(phase, Display::Preview { .. }) && !has_barrage;
     let has_notice = notice.is_some();
     let text = fleet.as_ref().map(|fleet| {
-        if let Some(left) = firing_left {
+        if preparing {
+            "PREPARING TO FIRE".into()
+        } else if let Some(left) = firing_left {
             if let Some(launch) = launch_left.filter(|&launch| launch > 0.0) {
                 format!("FIRING  {} LEFT", countdown_text(launch))
             } else if left > 0.0 {
@@ -682,7 +733,7 @@ pub(crate) unsafe fn tick() {
                 Display::PickCity => "SELECT A CITY ON THE MAP".into(),
                 Display::Preview { city, duration } => {
                     let distance = (fleet.position[0] - city[0]).hypot(fleet.position[1] - city[1]);
-                    match estimate(distance, fleet.altitude, fleet.rounds) {
+                    match estimate(distance, fleet.altitude, fleet.battery.rounds) {
                         Some(Estimate::OutOfRange {
                             distance_km,
                             range_km,
@@ -727,7 +778,7 @@ pub(crate) unsafe fn tick() {
     // callback. Each button addition is followed by a fresh scan before the next one.
     let scan = precombat::scan_gui_list();
     if let Some(text) = text {
-        let width = if firing_left.is_some() {
+        let width = if has_barrage {
             STATUS_WIDTH
         } else if has_notice {
             PREVIEW_WIDTH
@@ -755,7 +806,7 @@ pub(crate) unsafe fn tick() {
     } else {
         hide_button(FIRE, &FIRE_GUI, &scan);
     }
-    let planning = fleet.is_some() && (!matches!(phase, Display::Closed) || firing_left.is_some());
+    let planning = fleet.is_some() && (!matches!(phase, Display::Closed) || has_barrage);
     if planning || CANCEL_GUI.load(Relaxed) != 0 {
         let scan = precombat::scan_gui_list();
         if planning {
@@ -763,11 +814,7 @@ pub(crate) unsafe fn tick() {
                 CANCEL,
                 &CANCEL_GUI,
                 &scan,
-                if firing_left.is_some() {
-                    "ABORT"
-                } else {
-                    "CANCEL"
-                },
+                if has_barrage { "ABORT" } else { "CANCEL" },
                 BUTTON_RIGHT - PREVIEW_WIDTH - 2.0 * BUTTON_GAP - FIRE_WIDTH,
                 CANCEL_WIDTH,
             );
@@ -879,7 +926,6 @@ pub(crate) unsafe fn on_click(name: &str, gui: usize, button: usize) -> bool {
     if read::<u8>(CAMPAIGN_MAP) == 0 {
         menu.phase = Phase::Closed;
         menu.barrage = None;
-        menu.next_sound = None;
     }
     if !map_ready() || (!owned && (name.starts_with("KEY_ESC") || name.starts_with("QUIT_"))) {
         menu.phase = Phase::Closed;
@@ -914,7 +960,6 @@ pub(crate) unsafe fn on_click(name: &str, gui: usize, button: usize) -> bool {
     if cancel {
         if firing_here {
             menu.barrage = None;
-            menu.next_sound = None;
             visual::clear();
             menu.notice(now, "BARRAGE ABORTED");
         }
@@ -947,8 +992,8 @@ pub(crate) unsafe fn on_click(name: &str, gui: usize, button: usize) -> bool {
             return true;
         }
         let distance = (fleet.position[0] - city[0]).hypot(fleet.position[1] - city[1]);
-        let Some(Estimate::InRange { expected_hits, .. }) =
-            estimate(distance, fleet.altitude, fleet.rounds)
+        let Some(Estimate::InRange { .. }) =
+            estimate(distance, fleet.altitude, fleet.battery.rounds)
         else {
             menu.notice(now, "OUT OF RANGE");
             return true;
@@ -958,52 +1003,32 @@ pub(crate) unsafe fn on_click(name: &str, gui: usize, button: usize) -> bool {
             menu.notice(now, "NO CAMPAIGN CLOCK");
             return true;
         }
-        log::info!(
-            "hf_ally: shelling barrage started: {} min, {} rounds, {} mounts, weight {}, {expected_hits:.2} expected hits at {city:?}, altitude {:.0}",
-            duration.minutes(),
-            fleet.rounds,
-            fleet.mounts,
-            fleet.sound_weight,
-            fleet.altitude
-        );
-        let visual_seconds = f64::from(duration.minutes()) * 60.0;
+        if fleet.battery.rounds > estimate::MAX_SIMULATED_ROUNDS {
+            menu.notice(now, "FIRING PLAN UNAVAILABLE");
+            return true;
+        }
+        let firing_seconds = f64::from(duration.minutes()) * 60.0;
         let hit_chance = estimate::round_hit_chance(distance, fleet.altitude);
         let seed = clock.to_bits()
             ^ (fleet.identity.1 as u64).rotate_left(17)
             ^ u64::from(city[0].to_bits()).rotate_left(32)
             ^ u64::from(city[1].to_bits()).rotate_left(47);
-        if !visual::begin(
-            fleet.position,
-            city,
-            clock,
-            visual_seconds,
-            visual::Composition::new(
-                fleet.mounts,
-                fleet.rounds,
-                fleet.sound_weight,
-                visual_seconds,
-            ),
-            hit_chance,
-            seed,
-        ) {
-            menu.notice(now, "FIRING PLAN UNAVAILABLE");
-            return true;
-        }
+        let opening_reports_left = fleet.battery.barrels;
         menu.barrage = Some(Barrage {
             fleet: fleet.identity,
             origin: fleet.position,
-            start_clock: clock,
-            firing_seconds: visual_seconds,
+            start_clock: None,
+            firing_seconds,
             flight_seconds: estimate::flight_seconds(distance),
-            rounds: fleet.rounds,
-            sound_weight: fleet.sound_weight,
+            battery: fleet.battery,
+            hit_chance,
+            effective_hits: 0,
+            next_report: Instant::now() + WallDuration::from_millis(sound::shelling_prelude_ms()),
+            opening_reports_left,
             volley_count: 0,
             seed,
             city,
-            completed_at: None,
         });
-        menu.next_sound = Some(now + WallDuration::from_millis(WINDUP_DELAY_MS));
-        menu.notice(now, "FIRING");
         drop(menu);
         // SAFETY: game-thread click callback outside MENU lock; GUI root is live.
         sound::shelling_windup();

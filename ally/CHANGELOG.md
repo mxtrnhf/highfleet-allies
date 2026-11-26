@@ -1,5 +1,9 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+* **v1.3.81 (simulate shelling before replay; opening salvo audio):** resolve effective hits against the garrison before the spectator replay starts. Tracers, impacts, and dirt bursts use recorded positions and apply no damage. FIRE plays the turret servo and crew call before the opening salvo, then plays one randomly selected distant report per working barrel in quick succession before returning to the normal firing audio.
+
+* **v1.3.80 (shelling damage scales with effective hits):** the short tactical replay still shows a sample of the barrage, but the remaining effective hits now apply the same HE damage to surviving defenders in small batches before returning to the campaign. The raid log reports shown, unshown, and unresolved hits.
+
 * **v1.3.79 (shelling targeting arrow):** clicking SHELLING draws a cruise-missile-style arrow from the firing fleet to the map cursor until a city is selected or targeting is cancelled. The preview and FIRE controls work as before.
 
 * **v1.3.78 (slower tactical shelling tracers):** slow descending raid tracers by ~25% (`FLIGHT_SECONDS_BASE` 0.44 s -> 0.58 s, jitter 0.08 s) so incoming shells are easier to follow visually. In-game validation pending.

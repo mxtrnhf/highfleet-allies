@@ -28,30 +28,29 @@ chance of at least one hit while that chance is below 99.5%. That chance is
 `1 - (1 - p)^rounds`, so longer barrages always land at least as many expected
 hits.
 
-**FIRE starts one simulation for every round.** Each round receives its own
-launch time, flight time and deterministic effective-hit result from the same
-range-dependent probability shown by the preview. Bright native-geometry tracers
-travel from the firing fleet's position at launch to the city; they do not
-follow the fleet after launch. When an effective round lands, it is
-counted toward the raid. Long time-compression jumps count all intervening
-landed hits, not just the currently drawn frame.
+**FIRE prepares a single firing plan.** After the servo and crew cues, the
+campaign clock starts the firing window. Each round has an effective-hit result
+from the range-dependent probability shown by the preview. The map display
+samples that plan. Its tracers travel from the fleet's position at launch and
+do not follow it after launch. All effective rounds count when the last shell
+arrives, even if time compression jumped past their visible impacts.
 The firing window lasts the selected 10, 30 or 60 minutes; the last shells
 are still in flight when it ends. The map shows **LANDING** until they arrive.
 
 At the end of an uninterrupted barrage with effective hits and a hostile
-garrison, a short tactical spectator scene shows incoming rounds and localized
-hits. The fixed shot gives most of the frame to the sky and places the lowest
-sampled ground near 93% of the viewport height. The native BLACK overlay stays
-opaque while the level assembles, then fades out during a 2.6-second wind-only
-opening before shells descend from above the top edge.
+garrison, the tactical scene resolves effective rounds against surviving
+defenders under the BLACK overlay. After the simulation completes, the overlay
+fades out during a 2.6-second wind-only opening. The fixed shot gives most of
+the frame to the sky and places sampled ground near 93% of the viewport height.
 The native impact effect supplies flash, smoke and flying debris. Representative
 dirt strikes are spread over clear terrain in the shot and are at least twice
 as frequent as hull hits, up to 30 displayed ground strikes. Misses
 are cosmetic and do not consume an effective strategic hit. Quick salvos
-and occasional single rounds alternate with longer, uneven lulls. The raid
-represents the barrage rather than replaying all rounds: native
-defender setup deploys up to four ships, with at most three representative
-impacts per ship. Later rounds assigned to a lost ship are skipped.
+and occasional single rounds alternate with longer, uneven lulls. The replay
+uses a sample of the simulation's recorded impact coordinates and applies no
+damage. Native defender setup deploys up to four ships, and the replay's
+total number of visible impacts is capped at three times the number of
+defenders. The raid log distinguishes visible, unshown and unresolved hits.
 The incoming sightline resolves the first exposed module, then HE damage
 falls off from that point and armour reduces exposure behind it. Any real
 module can be hit, including bridges, engines and other critical parts.
@@ -65,8 +64,8 @@ After the last impact, the encounter returns through native missile-scene
 teardown so damaged ships go back to the campaign. Garrison fleets that take
 actual damage keep full ship records; the campaign no longer discards their
 damage by replacing them with pristine compact designs. No damage is queued
-for normal enemy combat spawns. `shelling raid impact` records local hull
-changes, `shelling campaign damage retained` records the unload opt-out, and
+for normal enemy combat spawns. `shelling simulation complete before replay` records
+the damage totals, `shelling campaign damage retained` records the unload opt-out, and
 `shelling raid native return completed` records the teardown.
 
 ## Barrage behaviour
@@ -79,19 +78,21 @@ changes, `shelling campaign damage retained` records the unload opt-out, and
 - Barrage time uses the campaign clock (`hourCount_`, `0x143a119c8`), so time
   compression advances the countdown. Leaving the map early or aborting discards
   the barrage; no delayed normal-combat hit remains.
-- One quiet `shell_out_big_far_01..04` report plays every 6.8–7.8 seconds, only
-  while the firing fleet is selected and the map is open. The 6.5-second samples
-  therefore do not overlap. There are no extra bass,
-  heavy-crack or rumble layers on the map. `"shelling_sounds": false`
-  silences the mod's reports, raid wind and impacts without stopping the barrage.
+- FIRE starts the turret servo and localized crew acknowledgement together.
+  Once both enabled cues finish, one random `shell_out_big_far_01..04` report
+  plays per working barrel (one for the 1-180, two for the Sarmat, and six for
+  the Squall) in quick succession. Normal layered reports then resume every
+  6.8–7.8 seconds while the firing fleet is selected. `"shelling_sounds": false`
+  turns off the servo, reports, raid wind, and impacts; crew radio follows
+  `ally_sounds`.
 - Map visualization uses the native `Gfx_DrawWorldLine` primitive on the M11
   seam, not text glyphs. Each visible shell is a bright short tracer with a
   cross-shaped centre. Dots keep travelling when another fleet is selected and
   follow the battery's launch cadence. At high cadence up to 24 airborne rounds
   are sampled by a fixed per-barrage stride, so a dot keeps its identity through
   impact instead of jumping as the sampling window moves. Small pale bursts are
-  misses and larger orange bursts are effective hits. The final bursts fade for
-  about 650 ms before a raid can start.
+  misses and larger orange bursts are effective hits. The visual fade does not
+  hold up tactical resolution.
 
 ## Native integration (Steam 1.163)
 
