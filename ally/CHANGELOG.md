@@ -2,6 +2,10 @@
 
 * **v1.3.79 (shelling targeting arrow):** clicking SHELLING draws a cruise-missile-style arrow from the firing fleet to the map cursor until a city is selected or targeting is cancelled. The preview and FIRE controls work as before.
 
+* **v1.3.78 (slower tactical shelling tracers):** slow descending raid tracers by ~25% (`FLIGHT_SECONDS_BASE` 0.44 s -> 0.58 s, jitter 0.08 s) so incoming shells are easier to follow visually. In-game validation pending.
+
+* **v1.3.77 (shelling immersion: single-side approach, mixed cadence and layered audio):** tactical bombardment shells now approach from one consistent side and straight-line angle derived from the firing fleet's strategic bearing relative to the target city, with coherent ballistic terminal speed. Firing cadence mixes rhythmic multi-gun battery rolls with irregular bursts and lulls inside each raid. Strategic FIRE now triggers cannon servo wind-up (`gunfire_servo`) and localized radio confirmation (`radio_go1..4`), ABORT plays an intercom click-off, map volleys layer restrained low-end thunder (`explosion_big_far` and periodic `artillery_01`) scaled by battery weight, and tactical raids add subtle occasional incoming whooshes (`whoosh_fast_01..03`) and rolling impact rumble tails. In-game validation pending.
+
 * **v1.3.76 (dirt-heavy loud raid and clean entry):** at least twice as many representative dirt impacts as hull impacts; much louder tactical sound with frequent clipped transients. Raid tracers use the stock 180 mm HE glow palette instead of a plain line. Hide the tactical level's visible assembly with the native BLACK overlay, then fade it out during the wind-only opening. In-game validation pending.
 
 * **v1.3.75 (mobile barrages and wind before the salvos):** remove the fleet speed hold. Map tracers launch from the moving fleet and keep their original paths after launch. Put terrain lower in the tactical shot, open with 2.5 seconds of wind before the first rounds, and use irregular clusters and longer gaps instead of a steady rhythm. Strategic timing and damage rules are unchanged. In-game validation pending.

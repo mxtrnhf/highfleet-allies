@@ -48,7 +48,7 @@ static SHELLING_SOUNDS: AtomicBool = AtomicBool::new(false);
 const UNIT_VOLUME_BITS: u32 = 1.0f32.to_bits();
 /// The game retains the status pointer (sound object +0x88) and uses its float as a
 /// volume multiplier each frame. The slots must outlive the native call.
-static SFX_STATUS: [AtomicU32; 8] = [const { AtomicU32::new(UNIT_VOLUME_BITS) }; 8];
+static SFX_STATUS: [AtomicU32; 16] = [const { AtomicU32::new(UNIT_VOLUME_BITS) }; 16];
 static SFX_NEXT: AtomicU32 = AtomicU32::new(0);
 
 const SND_DANGER: &[u8] = b"mission_danger_01\0";
@@ -67,18 +67,38 @@ const SND_JOIN: [&[u8]; 3] = [
 /// `Map_BuildMissileMarkers` (`0x1401c4ee0`), with kind 0xb and base volume 30.0.
 const SND_BUTTON: &[u8] = b"button_01\0";
 const BUTTON_VOLUME: f32 = 30.0;
-/// The four stock `Media/Snd/shell_out_big_far_*` samples (6.5 s each). One quiet
-/// report per volley is enough; overlapping bass and rumble layers made the barrage
-/// much louder than the rest of the game.
+/// The four stock `Media/Snd/shell_out_big_far_*` samples (6.5 s each), paired with a
+/// restrained low-end rumble bed (`explosion_big_far_*` / `artillery_01`) for distant thunder.
 const SND_SHELL: [&[u8]; 4] = [
     b"shell_out_big_far_01\0",
     b"shell_out_big_far_02\0",
     b"shell_out_big_far_03\0",
     b"shell_out_big_far_04\0",
 ];
-const SHELL_VOLUME: f32 = 45.0;
+const SND_SHELL_RUMBLE: [&[u8]; 4] = [
+    b"explosion_big_far_01\0",
+    b"explosion_big_far_02\0",
+    b"explosion_big_far_03\0",
+    b"explosion_big_far_04\0",
+];
+const SND_SHELL_BED: &[u8] = b"artillery_01\0";
+const SND_SHELL_WINDUP: &[u8] = b"gunfire_servo\0";
+const SND_SHELL_RADIO_FIRE: [&[u8]; 4] = [
+    b"radio_go1_01\0",
+    b"radio_go2_01\0",
+    b"radio_go3_01\0",
+    b"radio_go4_01\0",
+];
+const SND_INTERCOM_OUT: &[u8] = b"intercom_out\0";
+const SHELL_VOLUME: f32 = 56.0;
+const SHELL_WINDUP_VOLUME: f32 = 52.0;
 const SND_RAID_WIND: &[u8] = b"wind_02\0";
 const RAID_WIND_VOLUME: f32 = 38.0;
+const SND_RAID_WHOOSH: [&[u8]; 3] = [
+    b"whoosh_fast_01\0",
+    b"whoosh_fast_02\0",
+    b"whoosh_fast_03\0",
+];
 const SND_RAID_DISTANT: [&[u8]; 4] = [
     b"explosion_small_far_01\0",
     b"explosion_small_far_02\0",
@@ -197,13 +217,51 @@ pub(crate) unsafe fn button(what: &str) {
     }
 }
 
-/// One restrained distant gun report. The parent limits this to one every few seconds
-/// while the firing fleet is selected, with no bass or rumble layers.
-pub(crate) unsafe fn shelling_volley() {
+/// Play heavy turret servo wind-up as cannons slew into firing elevation.
+pub(crate) unsafe fn shelling_windup() {
+    if SHELLING_SOUNDS.load(Ordering::Relaxed) {
+        let _ = play_sfx_silent(SND_SHELL_WINDUP, SHELL_WINDUP_VOLUME, 0.96);
+    }
+}
+
+/// Localized crew radio confirmation when starting a bombardment.
+pub(crate) unsafe fn shelling_radio_fire() {
+    play_radio(
+        SND_SHELL_RADIO_FIRE[pick(SND_SHELL_RADIO_FIRE.len())],
+        "shelling fire",
+    );
+}
+
+/// Short intercom click-off when aborting a bombardment.
+pub(crate) unsafe fn shelling_radio_abort() {
+    if RADIO_SOUNDS.load(Ordering::Relaxed) {
+        let _ = play_sfx_silent(SND_INTERCOM_OUT, 42.0, 1.0);
+    }
+}
+
+/// Distant thunderous artillery volley: primary gun report plus a restrained low-end rumble
+/// layer scaled gently by battery magazine weight, with periodic distant artillery bed.
+pub(crate) unsafe fn shelling_volley(weight: u32, volley_count: u32) {
     if !SHELLING_SOUNDS.load(Ordering::Relaxed) {
         return;
     }
-    let _ = play_sfx_silent(SND_SHELL[pick(SND_SHELL.len())], SHELL_VOLUME, 1.0);
+    let scale = (weight.min(48) as f32) / 48.0;
+    let report_pitch = 0.90 + (pick(15) as f32) * 0.01;
+    let _ = play_sfx_silent(
+        SND_SHELL[pick(SND_SHELL.len())],
+        SHELL_VOLUME + 12.0 * scale,
+        report_pitch,
+    );
+    let rumble_pitch = 0.78 + (pick(11) as f32) * 0.01;
+    let _ = play_sfx_silent(
+        SND_SHELL_RUMBLE[pick(SND_SHELL_RUMBLE.len())],
+        34.0 + 12.0 * scale,
+        rumble_pitch,
+    );
+    if volley_count.is_multiple_of(3) {
+        let bed_pitch = 0.94 + (pick(9) as f32) * 0.01;
+        let _ = play_sfx_silent(SND_SHELL_BED, 32.0 + 8.0 * scale, bed_pitch);
+    }
 }
 
 /// Start a single stock wind cue before any tactical rounds appear.
@@ -211,6 +269,17 @@ pub(crate) unsafe fn shelling_wind() {
     if SHELLING_SOUNDS.load(Ordering::Relaxed) {
         let _ = play_sfx_silent(SND_RAID_WIND, RAID_WIND_VOLUME, 1.0);
     }
+}
+
+/// Subtle brief incoming shell whoosh played on select close rounds right before impact.
+pub(crate) unsafe fn shelling_whoosh(cue: u32) {
+    if !SHELLING_SOUNDS.load(Ordering::Relaxed) {
+        return;
+    }
+    let variant = ((cue >> 4) as usize) % SND_RAID_WHOOSH.len();
+    let strength = ((cue >> 12) & 0xff) as f32 / 255.0;
+    let pitch = 0.84 + ((cue >> 20) & 0xff) as f32 * (0.20 / 255.0);
+    let _ = play_sfx_silent(SND_RAID_WHOOSH[variant], 36.0 + 12.0 * strength, pitch);
 }
 
 /// Vary loudness, pitch and the odds of a hard-clipped onset without changing the master mix.
@@ -231,6 +300,15 @@ pub(crate) unsafe fn shelling_impact(ground: bool, intensity: f32, cue: u32) {
         _ => (SND_RAID_DISTANT[variant % SND_RAID_DISTANT.len()], 54.0),
     };
     let _ = play_sfx_silent(sample, gain + 14.0 * strength + 11.0 * intensity, pitch);
+    // Layer a restrained low-end rolling echo on heavier hits so salvos rumble across the basin.
+    if ((cue >> 5) & 3) == 0 && gain >= 80.0 {
+        let rumble_pitch = 0.78 + ((cue >> 19) & 0x3f) as f32 * (0.12 / 63.0);
+        let _ = play_sfx_silent(
+            SND_SHELL_RUMBLE[variant % SND_SHELL_RUMBLE.len()],
+            44.0 + 10.0 * intensity,
+            rumble_pitch,
+        );
+    }
 }
 
 /// Plays the danger line (the fuel retreat and the retreat key).

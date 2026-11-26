@@ -212,8 +212,6 @@ pub(super) unsafe fn install(session: &mut PatchSession) -> Result<(), String> {
 
 pub(super) struct SkyEntry {
     above_top: f32,
-    inner_left: f32,
-    inner_right: f32,
 }
 
 impl SkyEntry {
@@ -223,30 +221,18 @@ impl SkyEntry {
     /// # Safety
     /// Called on the battle render seam with its native projection installed.
     pub(super) unsafe fn capture() -> Option<Self> {
-        let [x, y, fast_x, fast_y, slow_x, slow_y]: [f32; 6] = read(CAMERA);
-        let [origin_x, origin_y]: Point = read(PROJECTION_ORIGIN);
+        let [_, y, _, fast_y, _, slow_y]: [f32; 6] = read(CAMERA);
+        let [_, origin_y]: Point = read(PROJECTION_ORIGIN);
         let zoom: f32 = read(ZOOM);
-        let width = read::<i32>(FRAME_WIDTH) as f32;
-        if !zoom.is_finite() || zoom <= 0.0 || width <= 0.0 {
+        if !zoom.is_finite() || zoom <= 0.0 {
             return None;
         }
-        let left = x + fast_x + slow_x - origin_x / zoom;
         let top = y + fast_y + slow_y - origin_y / zoom;
-        let inner_left = left + width * 0.08 / zoom;
-        let inner_right = left + width * 0.92 / zoom;
         let above_top = top - TRACER_ENTRY_MARGIN_PX / zoom;
-        (above_top.is_finite()
-            && inner_left.is_finite()
-            && inner_right.is_finite()
-            && inner_left <= inner_right)
-            .then_some(Self {
-                above_top,
-                inner_left,
-                inner_right,
-            })
+        above_top.is_finite().then_some(Self { above_top })
     }
 
-    /// Draw a descending shell with the same terminal angle as the damage sightline.
+    /// Draw a descending shell along the exact straight-line angle of the damage sightline.
     ///
     /// # Safety
     /// The battle renderer still owns the projection captured by [`Self::capture`].
@@ -255,16 +241,9 @@ impl SkyEntry {
         let [dx, dy] = approach_offset(direction);
         let rise = (target[1] - self.above_top).max(-dy);
         let drift = dx * (rise / -dy);
-        // Bend the high end inward so flank shots enter through the top, not a side edge.
-        let start_x = (target[0] + drift).clamp(self.inner_left, self.inner_right);
-        let bend = start_x - target[0] - drift;
-        let head = [
-            target[0] + left * (drift + bend * left),
-            target[1] - rise * left,
-        ];
-        let tangent = drift + 2.0 * bend * left;
-        let tail_scale = TRACER_LENGTH_WORLD / tangent.hypot(rise);
-        let tail = [head[0] + tangent * tail_scale, head[1] - rise * tail_scale];
+        let head = [target[0] + drift * left, target[1] - rise * left];
+        let tail_scale = TRACER_LENGTH_WORLD / drift.hypot(rise);
+        let tail = [head[0] + drift * tail_scale, head[1] - rise * tail_scale];
         // Vanilla 180 mm HE shells (FireShell case 0x19) use lightPower 10000 with the stock
         // warm colour (1.0, 0.9843, 0.8235) and a fast light fade. Layer the same palette as
         // wide translucent quads over a bright core; no native projectile is spawned.

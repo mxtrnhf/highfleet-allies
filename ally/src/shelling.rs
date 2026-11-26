@@ -92,6 +92,7 @@ const CLICK_DEBOUNCE_MS: u64 = 120;
 const NOTICE_MS: u64 = 2_500;
 const SOUND_GAP_MS: usize = 6_800;
 const SOUND_JITTER_MS: usize = 1_000;
+const WINDUP_DELAY_MS: u64 = 1_800;
 // Center-origin 1920×1080 cockpit coordinates. The label stays right-aligned
 // above the map's coordinate readout; FIRE and CANCEL sit to its left.
 const BUTTON_RIGHT: f32 = 407.0;
@@ -132,10 +133,13 @@ struct Fleet {
 
 struct Barrage {
     fleet: (usize, i64),
+    origin: [f32; 2],
     start_clock: f64,
     firing_seconds: f64,
     flight_seconds: f64,
     rounds: u32,
+    sound_weight: u32,
+    volley_count: u32,
     seed: u64,
     city: [f32; 2],
     completed_at: Option<Instant>,
@@ -554,6 +558,11 @@ pub(crate) unsafe fn tick() {
                         hits,
                         rounds: barrage.rounds,
                         seed: barrage.seed,
+                        incoming_direction: if barrage.origin[0] <= city[0] {
+                            -1.0
+                        } else {
+                            1.0
+                        },
                     };
                     menu.barrage = None;
                     menu.phase = Phase::Closed;
@@ -605,22 +614,36 @@ pub(crate) unsafe fn tick() {
         None
     };
     menu.check_fleet(fleet.as_ref());
-    let firing = menu.barrage.as_ref().filter(|barrage| {
-        fleet
-            .as_ref()
-            .is_some_and(|fleet| fleet.identity == barrage.fleet)
-    });
-    let firing_left = firing.and_then(|barrage| remaining(barrage, clock));
-    let launch_left = firing
+    let firing_left = menu
+        .barrage
+        .as_ref()
+        .filter(|barrage| {
+            fleet
+                .as_ref()
+                .is_some_and(|fleet| fleet.identity == barrage.fleet)
+        })
+        .and_then(|barrage| remaining(barrage, clock));
+    let launch_left = menu
+        .barrage
+        .as_ref()
+        .filter(|barrage| {
+            fleet
+                .as_ref()
+                .is_some_and(|fleet| fleet.identity == barrage.fleet)
+        })
         .zip(firing_left)
         .map(|(barrage, left)| left - barrage.flight_seconds);
     let sound_gap = launch_left.filter(|left| *left > 0.0).map(|_| SOUND_GAP_MS);
-    let mut play_sound = false;
+    let mut play_sound = None;
     if let Some(gap_ms) = sound_gap {
         if active && menu.next_sound.is_none_or(|next| wall_now >= next) {
             menu.next_sound =
                 Some(wall_now + WallDuration::from_millis((gap_ms + pick(SOUND_JITTER_MS)) as u64));
-            play_sound = true;
+            if let Some(barrage) = menu.barrage.as_mut() {
+                let count = barrage.volley_count;
+                barrage.volley_count = count.saturating_add(1);
+                play_sound = Some((barrage.sound_weight, count));
+            }
         }
     } else {
         menu.next_sound = None;
@@ -633,10 +656,10 @@ pub(crate) unsafe fn tick() {
     };
     drop(menu);
 
-    if play_sound {
+    if let Some((sound_weight, volley_count)) = play_sound {
         // SAFETY: game-thread input callback after sound::verify() in bootstrap; the GUI
         // root is live on the map and each status slot outlives the native call.
-        sound::shelling_volley();
+        sound::shelling_volley(sound_weight, volley_count);
     }
 
     let previewing =
@@ -896,6 +919,11 @@ pub(crate) unsafe fn on_click(name: &str, gui: usize, button: usize) -> bool {
             menu.notice(now, "BARRAGE ABORTED");
         }
         menu.phase = Phase::Closed;
+        drop(menu);
+        if firing_here {
+            // SAFETY: game-thread click callback outside MENU lock; GUI root is live.
+            sound::shelling_radio_abort();
+        }
         return true;
     }
     if fire {
@@ -963,16 +991,23 @@ pub(crate) unsafe fn on_click(name: &str, gui: usize, button: usize) -> bool {
         }
         menu.barrage = Some(Barrage {
             fleet: fleet.identity,
+            origin: fleet.position,
             start_clock: clock,
             firing_seconds: visual_seconds,
             flight_seconds: estimate::flight_seconds(distance),
             rounds: fleet.rounds,
+            sound_weight: fleet.sound_weight,
+            volley_count: 0,
             seed,
             city,
             completed_at: None,
         });
-        menu.next_sound = Some(now);
+        menu.next_sound = Some(now + WallDuration::from_millis(WINDUP_DELAY_MS));
         menu.notice(now, "FIRING");
+        drop(menu);
+        // SAFETY: game-thread click callback outside MENU lock; GUI root is live.
+        sound::shelling_windup();
+        sound::shelling_radio_fire();
         return true;
     }
     if firing_here {

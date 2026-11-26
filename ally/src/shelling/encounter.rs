@@ -46,12 +46,19 @@ const MAX_GROUND_ROUNDS: u32 = 30;
 const MAX_IN_FLIGHT: usize = 6;
 const WIND_ONLY_SECONDS: f64 = 2.6;
 const AFTERMATH_SECONDS: f64 = 1.2;
+// Tactical raid tracer descent duration (seconds from top of sky to impact).
+// Increase FLIGHT_SECONDS_BASE for slower, more readable descending shells; decrease for faster shells.
+const FLIGHT_SECONDS_BASE: f64 = 0.58;
+const FLIGHT_JITTER_SECONDS: f64 = 0.08;
+const WHOOSH_LEAD_SECONDS: f64 = 0.38;
 
 #[derive(Clone, Copy)]
 pub(super) struct Bombardment {
     pub hits: u32,
     pub rounds: u32,
     pub seed: u64,
+    /// Horizontal incoming side from the firing fleet's strategic bearing (-1.0 = left, +1.0 = right).
+    pub incoming_direction: f32,
 }
 
 impl Bombardment {
@@ -82,17 +89,27 @@ struct Flight {
     fired_at: f64,
     lands_at: f64,
     cue: u32,
+    whoosh_pending: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Cadence {
+    /// Steady multi-gun battery roll with an even beat.
+    Rhythmic { left: u8, beat: f64 },
+    /// Irregular scattered cluster with uneven spacing.
+    Irregular { left: u8 },
 }
 
 struct Raid {
     hits: u32,
+    incoming_direction: f32,
     opening_defenders: [i64; MAX_DEFENDERS],
     next_hit: u32,
     hit_impacts: u32,
     ground_impacts: u32,
     opening_count: u8,
     opening_started: bool,
-    salvo_left: u8,
+    cadence: Cadence,
     ground_left: u32,
     intensity: f32,
     random: u64,
@@ -117,24 +134,38 @@ impl Raid {
     }
 
     fn space_next_launch(&mut self, now: f64) {
-        if self.salvo_left == 0 {
-            // Start a new salvo with a random count, including occasional lone rounds.
-            let longest_salvo = 3.0 + 4.0 * f64::from(self.intensity);
-            self.salvo_left = if self.sample() < 0.18 {
-                0
-            } else {
-                1 + (self.sample() * (longest_salvo - 1.0)) as u8
-            };
-        } else {
-            self.salvo_left -= 1;
-        }
-        self.next_at = now
-            + if self.salvo_left != 0 {
-                0.045 + 0.14 * self.sample()
-            } else {
-                // Separate clusters with actual lulls, not jitter around a constant beat.
-                0.55 + 1.35 * self.sample().powi(2)
-            };
+        let gap = match self.cadence {
+            Cadence::Rhythmic { left, beat } if left > 0 => {
+                self.cadence = Cadence::Rhythmic {
+                    left: left - 1,
+                    beat,
+                };
+                // Tiny micro-variation keeps a rhythmic battery roll feeling mechanical, not robotic.
+                (beat + (self.sample() - 0.5) * 0.016).max(0.08)
+            }
+            Cadence::Irregular { left } if left > 0 => {
+                self.cadence = Cadence::Irregular { left: left - 1 };
+                0.05 + 0.22 * self.sample()
+            }
+            _ => {
+                // Cluster finished: pick the next pattern (rhythmic roll, irregular burst, or stray)
+                // after a real lull.
+                let pattern = self.sample();
+                let scale = f64::from(self.intensity);
+                self.cadence = if pattern < 0.45 {
+                    let count = 2 + (self.sample() * (2.5 + 2.5 * scale)) as u8;
+                    let beat = 0.13 + 0.09 * self.sample();
+                    Cadence::Rhythmic { left: count, beat }
+                } else if pattern < 0.85 {
+                    let count = 1 + (self.sample() * (2.0 + 2.0 * scale)) as u8;
+                    Cadence::Irregular { left: count }
+                } else {
+                    Cadence::Irregular { left: 0 }
+                };
+                0.55 + 1.25 * self.sample().powi(2)
+            }
+        };
+        self.next_at = now + gap;
     }
 }
 
@@ -335,13 +366,18 @@ unsafe extern "C" fn after_setup() -> u8 {
             // Allocate raid-local storage once, at native setup, not in the render callback.
             *state = State::Active(Box::new(Raid {
                 hits: volume.hits,
+                incoming_direction: if volume.incoming_direction < 0.0 {
+                    -1.0
+                } else {
+                    1.0
+                },
                 opening_defenders: [0; MAX_DEFENDERS],
                 next_hit: 0,
                 hit_impacts: 0,
                 ground_impacts: 0,
                 opening_count: 0,
                 opening_started: false,
-                salvo_left: 0,
+                cadence: Cadence::Irregular { left: 0 },
                 ground_left,
                 intensity: ground_left as f32 / MAX_GROUND_ROUNDS as f32,
                 random: volume.seed.rotate_right(23).max(1),
@@ -461,6 +497,8 @@ unsafe extern "C" fn tick() -> u8 {
         .min(defender_count as u32 * MAX_ROUNDS_PER_DEFENDER);
     let mut landed = [None; MAX_IN_FLIGHT];
     let mut slots = landed.iter_mut();
+    let mut whooshes = [None; MAX_IN_FLIGHT];
+    let mut whoosh_slots = whooshes.iter_mut();
     raid.flights.retain_mut(|flight| {
         if let Some([x, y]) = flight
             .ship
@@ -469,6 +507,12 @@ unsafe extern "C" fn tick() -> u8 {
         {
             if let Some(target) = flight.ship {
                 flight.point = [x + target.contact_offset[0], y + target.contact_offset[1]];
+            }
+        }
+        if flight.whoosh_pending && flight.lands_at - now <= WHOOSH_LEAD_SECONDS {
+            flight.whoosh_pending = false;
+            if let Some(slot) = whoosh_slots.next() {
+                *slot = Some(flight.cue);
             }
         }
         if now < flight.lands_at {
@@ -493,6 +537,10 @@ unsafe extern "C" fn tick() -> u8 {
         // SAFETY: the native raid scene is live on its game thread. Sound uses the GUI root.
         sound::shelling_wind();
         fade_blackout_out(0.7);
+    }
+    for cue in whooshes.into_iter().flatten() {
+        // SAFETY: game-thread raid tick outside the RAID lock; GUI root is live.
+        sound::shelling_whoosh(cue);
     }
     let mut hits = 0;
     let mut misses = 0;
@@ -564,7 +612,7 @@ unsafe fn schedule_round(
         let hits_left = total - raid.next_hit;
         let ground_ratio = f64::from(raid.ground_left) / f64::from(raid.ground_left + hits_left);
         let ground = raid.sample() < ground_ratio;
-        let direction = if raid.sample() < 0.5 { -1.0 } else { 1.0 };
+        let direction = raid.incoming_direction;
         let (ship, point) = if ground {
             raid.ground_left -= 1;
             let scatter = raid.sample() as f32;
@@ -598,8 +646,10 @@ unsafe fn schedule_round(
                 point,
             )
         };
-        let lands_at = now + 0.34 + raid.sample() * 0.29;
+        let lands_at = now + FLIGHT_SECONDS_BASE + (raid.sample() - 0.5) * FLIGHT_JITTER_SECONDS;
         let cue = raid.roll();
+        // Occasional subtle incoming whoosh (~1 in 4 rounds) right before terminal impact.
+        let whoosh_pending = (cue & 3) == 0;
         raid.flights.push(Flight {
             ship,
             point,
@@ -607,6 +657,7 @@ unsafe fn schedule_round(
             fired_at: now,
             lands_at,
             cue,
+            whoosh_pending,
         });
         raid.space_next_launch(now);
         return;
