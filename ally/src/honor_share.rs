@@ -12,7 +12,7 @@ use std::sync::{
     Mutex,
 };
 
-use patchy::{PatchSession, ReturnType, Trampoline};
+use crate::patchy::{PatchSession, ReturnType, Trampoline};
 
 use crate::battle;
 use crate::native::{live_ship, plausible, read};

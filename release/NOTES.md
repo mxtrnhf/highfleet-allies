@@ -1,10 +1,14 @@
 # HighFleet Allies v@PACK_VERSION@
 
-**Experimental prerelease — not stable.** The maintainer has validated the
-changes in game, but features and balance may still change. Back up your saves
-and configuration before trying it.
+**Experimental prerelease.** See `manifest.json` for the build's validation.
+Back up your saves and configuration before trying it.
 
-Includes **hf_ally v@ALLY_VERSION@**, **hf_ai v@AI_VERSION@**, **hf_qol v@QOL_VERSION@**, and the updated **Allies Manual V2** (`Allies_Manual_V2.pdf`).
+Includes **Allies v@ALLY_VERSION@**, **Combat AI v@AI_VERSION@**, **ACES v@ACES_VERSION@**,
+**CCU v@CCU_VERSION@**, optional **QoL v@QOL_VERSION@**, and the **Allies Manual V2**.
+
+Shipworks rosters and A.C.E. now live in ACES. Campaign shelling now lives in
+CCU. The four mods can be selected individually and use Modloader's shared
+Patchy service.
 
 ## What changed since v1.3.6
 
@@ -20,4 +24,8 @@ Please report reproducible problems with logs.
 
 ## Install
 
-For **HighFleet Steam 1.163** with Modloader v4. Back up `Saves` and `Modloader/config`, then extract the release ZIP into the folder containing `Highfleet.exe`. Remove older ally, AI, and QoL DLLs (including any older `highfleet_qol.dll`) so only one of each remains. Merge your custom settings into `ally.json`, `hf_ai.json`, and `qol.json`. Keep the QoL flare crash fix enabled when using `hf_ai`.
+For **HighFleet Steam 1.163** with **Modloader v4.2.0-preview.1**. Back up `Saves`
+and `Modloader/config`, then extract the ZIP beside `Highfleet.exe`. Keep one
+version of each mod you want. Remove the pre-split Allies DLL before enabling
+ACES or CCU. Move `crash_button` into `aces.json` if you use it. The QoL flare
+crash fix is required for Combat AI's automatic flares.

@@ -10,7 +10,9 @@ use std::sync::{
     Mutex,
 };
 
-use patchy::{PatchSession, ProcessModule, ReturnType, Trampoline};
+use patchy_host::ProcessModule;
+
+use crate::patchy::{PatchSession, ReturnType, Trampoline};
 
 use crate::diag;
 use crate::native::{
@@ -240,7 +242,7 @@ pub(crate) unsafe fn log_spawn(template: usize, caller: usize) {
         }
         return;
     }
-    let health = crate::shelling::template_health_summary(template).map_or_else(
+    let health = crate::template_health::template_health_summary(template).map_or_else(
         || "?".to_owned(),
         |(parts, damaged, hp, max)| {
             let percent = (100.0 * hp / max).clamp(0.0, 100.0);

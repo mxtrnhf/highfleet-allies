@@ -17,7 +17,9 @@ use std::{
     },
 };
 
-use patchy::{PatchSession, ProcessModule, ReturnType, Trampoline};
+use patchy_host::ProcessModule;
+
+use crate::patchy::{PatchSession, ReturnType, Trampoline};
 
 use crate::ally_ammo;
 use crate::ally_panels;

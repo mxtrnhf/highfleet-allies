@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Mutex, OnceLock};
 
-use patchy::{PatchSession, ProcessModule, ReturnType, Trampoline};
+use patchy_host::ProcessModule;
+
+use crate::patchy::{PatchSession, ReturnType, Trampoline};
 
 use crate::native_layout;
 use crate::plane_group_math::{Config, Group, LAUNCH_WINDOW_SLACK_S, STOCK_COOLDOWN};
@@ -133,7 +135,9 @@ fn cooldown(carrier: usize) -> f32 {
     entry.group.cooldown_after_attempt(delta)
 }
 
-fn trampoline(callback: *const (), args: &[u8], result: &[u8]) -> Trampoline {
+/// # Safety
+/// The snippets must satisfy the preserved call contract for a body seam.
+unsafe fn trampoline(callback: *const (), args: &[u8], result: &[u8]) -> Trampoline {
     let mut code = Trampoline::new();
     // Save flags and keep the AI tick's 16-byte call-site stack alignment.
     code.bytes(&[0x9c, 0x48, 0x83, 0xec, 0x08]);

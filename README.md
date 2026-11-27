@@ -1,10 +1,9 @@
 # HighFleet Allies
 
-Bring AI wingmen into campaign battles, switch between friendly ships mid-fight,
-and build custom ally and enemy rosters in Shipworks. The pack also adds tactical
-combat AI for both sides.
+Four independently loadable mods: campaign wingmen and ship switching, tactical
+combat AI for both sides, Shipworks custom encounters, and campaign shelling.
 
-**HighFleet Steam 1.163 only · Requires Modloader v4**
+**HighFleet Steam 1.163 only · Split builds require [Modloader v4.2.0-preview.1](https://github.com/logdot/Highfleet-Modloader/releases/tag/v4.2.0-preview.1)**
 
 **[Download latest release](https://github.com/mxtrnhf/highfleet-allies/releases/latest)** ·
 [All releases](https://github.com/mxtrnhf/highfleet-allies/releases) ·
@@ -16,14 +15,15 @@ combat AI for both sides.
 
 1. Close the game and back up your `Saves` folder. If upgrading, also back up
    `Modloader/config/` before extracting the ZIP.
-2. Install [Highfleet-Modloader v4](https://github.com/logdot/Highfleet-Modloader#instalation)
-   if it isn't already installed.
+2. For a split build, install [Highfleet-Modloader v4.2.0-preview.1](https://github.com/logdot/Highfleet-Modloader/releases/tag/v4.2.0-preview.1).
 3. Download the **`hf_release_pack_*.zip`** asset (not the GitHub source archives)
    and extract it into the folder containing `Highfleet.exe`.
-4. Check `Modloader/mods/`: remove older `hf_ally` and `hf_ai` DLLs so only one
-   of each remains. Keep only one QoL DLL as well.
+4. Check `Modloader/mods/`: keep only one version of each mod you want to play.
+   Remove the pre-split `hf_ally` DLL before enabling ACES or CCU.
 5. If upgrading, merge your custom settings into the new `ally.json`,
-   `hf_ai.json`, and `qol.json` presets rather than restoring old files wholesale. See the
+   `hf_ai.json`, and `qol.json` presets. Move `crash_button` from `ally.json` to
+   `aces.json` if you use it. CCU is enabled by its own config; set `"enable": false`
+   in `ccu.json` to retain the old shelling-off default. See the
    [player defaults and legacy settings](docs/player-defaults.md) if coming from
    a pre-1.0 build.
 
@@ -31,16 +31,19 @@ combat AI for both sides.
 includes aircraft and fleet crash guards not in the stock upstream release. If
 you prefer to keep [upstream QoL](https://github.com/logdot/highfleet-qol/releases),
 extract the ZIP to a temporary folder and keep your existing QoL DLL and config
-instead of copying the bundled ones. With either build, keep
-`enable_flare_crash_fix` enabled in `Modloader/config/qol.json` when using `hf_ai`.
+instead of copying the bundled ones. Combat AI works without QoL. Enable
+`enable_flare_crash_fix` in `Modloader/config/qol.json` to use automatic flares.
 
 ## Settings and controls
 
 Edit settings in `Modloader/config/` while the game is closed. Set
-`"enabled": false` in `ally.json` or `hf_ai.json` to turn off that mod.
+`"enabled": false` in `ally.json` or `hf_ai.json`, or `"enable": false` in
+`aces.json` or `ccu.json`, to turn off that mod.
 
-- **Allies:** [Player manual V2 (PDF)](docs/Allies_Manual_V2.pdf) · [Settings reference](docs/ally-config.md) · [Ship switching](docs/ship-switching.md) · [Shipworks test battles](docs/shipworks-test-allies.md)
+- **Allies (`ally.dll`):** [Player manual V2 (PDF)](docs/Allies_Manual_V2.pdf) · [Settings reference](docs/ally-config.md) · [Ship switching](docs/ship-switching.md)
 - **Combat AI:** [Tuning guide](docs/hf-ai-tuning-guide.md) · [Settings reference](docs/hf-ai-config-reference.md)
+- **ACES (`aces.dll`):** [Shipworks rosters and A.C.E.](docs/shipworks-test-allies.md)
+- **CCU (`ccu.dll`):** [Campaign shelling](docs/strategic-shelling.md)
 - **QoL:** [Crash fixes, refueling, map speed, and editor settings](docs/qol-guide.md)
 
 These guides track `main` and may cover changes that aren't in the latest ZIP.
@@ -59,8 +62,9 @@ campaign data.
 
 ## Development
 
-[Build and release guide](docs/development.md) · [Ally changelog](ally/CHANGELOG.md) ·
-[AI changelog](ai/CHANGELOG.md) · [QoL changelog](qol/CHANGELOG.md)
+[Build and release guide](docs/development.md) · [Split-mod test matrix](docs/split-mod-test-matrix.md) ·
+[Allies](ally/CHANGELOG.md) · [AI](ai/CHANGELOG.md) · [ACES](aces/CHANGELOG.md) ·
+[CCU](ccu/CHANGELOG.md) · [QoL](qol/CHANGELOG.md)
 
 ## Credits and license
 

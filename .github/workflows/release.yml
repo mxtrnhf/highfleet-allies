@@ -22,9 +22,13 @@ jobs:
       matrix:
         include:
           - crate: ally
-            library: hf_ally.dll
+            library: ally.dll
           - crate: ai
             library: hf_ai.dll
+          - crate: aces
+            library: aces.dll
+          - crate: ccu
+            library: ccu.dll
           - crate: qol
             library: highfleet_qol.dll
     steps:
@@ -57,6 +61,14 @@ jobs:
         with:
           name: windows-ai
           path: ai/target/x86_64-pc-windows-msvc/release
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-aces
+          path: aces/target/x86_64-pc-windows-msvc/release
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-ccu
+          path: ccu/target/x86_64-pc-windows-msvc/release
       - uses: actions/download-artifact@v4
         with:
           name: windows-qol

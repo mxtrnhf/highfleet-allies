@@ -26,6 +26,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+pub(crate) use crate::memory::{rd, readable_span};
+use crate::memory::{readable, PAGE_SIZE};
 use crate::native_layout::Creature;
 
 use windows_sys::Win32::System::{
@@ -37,7 +39,6 @@ use windows_sys::Win32::System::{
         GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
         GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
     },
-    Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS},
     Threading::{GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId},
 };
 
@@ -248,21 +249,6 @@ unsafe fn where_is(addr: usize) -> String {
     } else {
         format!("{name}+{offset:#x}")
     }
-}
-
-unsafe fn readable(addr: usize) -> bool {
-    let mut info: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
-    if VirtualQuery(
-        addr as *const c_void,
-        &mut info,
-        std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
-    ) == 0
-    {
-        return false;
-    }
-    info.State == MEM_COMMIT
-        && info.Protect & (PAGE_NOACCESS | PAGE_GUARD) == 0
-        && info.Protect != 0
 }
 
 fn emit(report: &str, never_wait: bool) {
@@ -633,31 +619,10 @@ fn start_megalog() {
 const CURRENT_LOCATION: usize = 0x1_43a1_1940; // pointer to the location the player is at
 const PLAYER_ESCADRA: usize = 0x1_43a1_3eb0; // pointer to the player's fleet
 const PLAYER_SIDE_VEC: (usize, usize) = (0x1_43a1_58e0, 0x1_43a1_58e8); // Links (0x18 bytes, fleet pointer at +8)
-const PAGE_SIZE: usize = 4096;
 const PROFILE_FLEETS_BEGIN: usize = 0x1f8;
 const PROFILE_FLEETS_END: usize = 0x200;
 const PROFILE_FLEET_LIMIT: usize = 256;
 static LAST_SNAPSHOT: Mutex<String> = Mutex::new(String::new());
-
-/// Reads a scalar `T` after checking the first and last pages of the read.
-///
-/// # Safety
-/// Use only for non-owning, nonzero-size plain data no larger than a page. The caller must
-/// establish that the bytes belong to the expected live object, are valid for `T`, and are not
-/// written concurrently. A page query does not prove those conditions or hold the mapping open.
-pub unsafe fn rd<T: Copy>(addr: usize) -> Option<T> {
-    let end = addr.checked_add(std::mem::size_of::<T>())?;
-    let last = end - 1;
-    if addr < 0x1_0000 || !readable(addr) {
-        return None;
-    }
-    // The first byte is mapped above; the last byte needs its own check only when the read spans two pages.
-    let spans_two_pages = last / PAGE_SIZE != addr / PAGE_SIZE;
-    if spans_two_pages && !readable(last) {
-        return None;
-    }
-    Some((addr as *const T).read_unaligned())
-}
 
 /// Reads and bounds the profile's fleet pointer vector header without dereferencing its entries.
 ///
@@ -678,32 +643,6 @@ unsafe fn profile_fleet_slots(profile: usize) -> Option<(usize, usize)> {
     }
 
     Some((begin, count))
-}
-
-/// Check every page of a bounded native span without manufacturing an owning container.
-///
-/// # Safety
-/// Readability alone is not lifetime or identity. The caller must establish native ownership,
-/// keep the span alive on its owning thread, and bound `bytes` before calling. Do not cache the
-/// result across native mutations, callbacks or threads.
-pub unsafe fn readable_span(address: usize, bytes: usize) -> bool {
-    if address < 0x1_0000 {
-        return false;
-    }
-    let Some(end) = address.checked_add(bytes) else {
-        return false;
-    };
-    let mut cursor = address;
-    while cursor < end {
-        if !readable(cursor) {
-            return false;
-        }
-        let Some(next_page) = (cursor / PAGE_SIZE + 1).checked_mul(PAGE_SIZE) else {
-            return false;
-        };
-        cursor = next_page;
-    }
-    true
 }
 
 /// One line per ship of a fleet: the creature behind each list entry with the flags a landing or a battle uses

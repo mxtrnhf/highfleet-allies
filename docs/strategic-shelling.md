@@ -1,7 +1,7 @@
 # Strategic shelling
 
-For the Steam 1.163 tester build, set `"shelling_preview": true` in
-`Modloader/config/ally.json` before starting the game. On the campaign map,
+Install CCU and leave `"enable": true` in `Modloader/config/ccu.json` before
+starting the game. CCU can run by itself. On the campaign map,
 select a player fleet with at least one working 180 mm gun. Click **SHELLING**
 above the map coordinates, then left-click a visible city marker. Click the
 estimate to cycle 10, 30, and 60 strategic minutes, then **FIRE** to start the
@@ -59,7 +59,6 @@ Zero-HP parts use silent native removal; a critical loss can kill a ship.
 No player ship is deployed, and no campaign missile is spawned or consumed.
 The tactical mix is deliberately much louder, with frequent stock samples
 whose transients are already clipped, mixed with metal impacts and cracks.
-It follows the same `shelling_sounds` setting as the map.
 
 After the replay, the stock BLACK overlay fades the scene to black over one
 second, then the video task presents a fully black frame before the game thread
@@ -94,9 +93,8 @@ absolute part counts and HP; a template can lose parts and still show 100% HP.
   plays per working barrel (one for the 1-180, two for the Sarmat, and six for
   the Squall) in quick succession. Bursts of two to five big-far cannon reports
   with stock clipped transients follow every 6.8–7.8 seconds while the firing
-  fleet is selected. `"shelling_sounds": false`
-  turns off the servo, reports, raid wind, and impacts; crew radio follows
-  `ally_sounds`.
+  fleet is selected. CCU uses its own stock sound cues independently of
+  the Allies `ally_sounds` setting.
 - Map visualization uses the native `Gfx_DrawWorldLine` primitive on the M11
   seam, not text glyphs. Each visible shell is a bright short tracer with a
   cross-shaped centre. Dots keep travelling when another fleet is selected and

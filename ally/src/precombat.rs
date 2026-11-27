@@ -5,20 +5,21 @@
 //! private implementation details.
 
 use std::{
-    mem::{offset_of, size_of},
+    mem::offset_of,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Mutex,
     },
 };
 
-use patchy::{PatchSession, ReturnType, Trampoline};
+use crate::patchy::{PatchSession, ReturnType, Trampoline};
 
 use crate::battle::{emit_last_summary, restore_orders};
 use crate::diag;
+use crate::gui::*;
 use crate::lifecycle_log::scene;
 use crate::native::{plausible, read, GUI_ROOT, IMAGE_BASE, OFF_ACTIVE};
-use crate::native_layout::{Body, Gui, Link, Node};
+use crate::native_layout::{Body, Gui, Link};
 use crate::plane_loadouts;
 use crate::sound;
 use crate::time::now_ms;
@@ -40,7 +41,8 @@ pub(super) fn configure_marker(text: &str) {
 }
 
 /// Installs the pre-combat GUI hooks: the three builder seams, the native GUI recipe checks, the
-/// click/entry hooks, the render and input seams, and the optional ammo-press inspector hook.
+/// render seam, and optional ammo-press inspector hook. Clicks and frame ticks
+/// are registered with the shared dispatcher by bootstrap.
 /// Mandatory byte mismatches and patch-construction failures return an error; optional hook
 /// conflicts log warnings. The caller owns committing the complete patch session.
 ///
@@ -105,30 +107,6 @@ pub(crate) unsafe fn install(session: &mut PatchSession, gui_inspect: bool) -> R
             ));
         }
     }
-    let found = std::slice::from_raw_parts(CLICK_ENTRY as *const u8, CLICK_STOLEN.len());
-    if found != CLICK_STOLEN {
-        log::warn!("hf_ally: ClickFunc entry is already hooked by another mod (hf_probe hook_clicks?): no toggle, no GUI inspector");
-    } else {
-        // entry hook that can swallow the click: call the hook with the four arguments, `ret` when it says yes
-        let mut code: Vec<u8> = vec![
-            0x51, 0x52, 0x41, 0x50, 0x41, 0x51, 0x48, 0x83, 0xec, 0x28, 0x48, 0xb8,
-        ];
-        code.extend((on_click_pre as *const () as usize as u64).to_le_bytes());
-        code.extend([
-            0xff, 0xd0, 0x48, 0x83, 0xc4, 0x28, 0x84, 0xc0, 0x41, 0x59, 0x41, 0x58, 0x5a, 0x59,
-        ]);
-        code.extend([0x75, (CLICK_STOLEN.len() + 14) as u8]);
-        code.extend(CLICK_STOLEN);
-        code.extend([0xff, 0x25, 0, 0, 0, 0]);
-        code.extend(((CLICK_ENTRY + CLICK_STOLEN.len()) as u64).to_le_bytes());
-        code.push(0xc3);
-        let mut trampoline = Trampoline::new();
-        trampoline.bytes(&code);
-        session
-            .detour_trampoline(CLICK_ENTRY, CLICK_STOLEN.len(), trampoline)
-            .map_err(|e| e.to_string())?;
-        PRECOMBAT_UI_READY.store(true, Ordering::Relaxed);
-    }
     let bytes = std::slice::from_raw_parts(MARKER_SEAM as *const u8, 5);
     let target =
         (MARKER_SEAM + 5).wrapping_add(
@@ -147,24 +125,6 @@ pub(crate) unsafe fn install(session: &mut PatchSession, gui_inspect: bool) -> R
             "hf_ally: render seam {:#x} is not a call to the flush: not hooked",
             MARKER_SEAM
         );
-    }
-    // per-frame input task (game thread): re-places the buttons after the cards are shuffled. Another mod on the
-    // same entry (hf_voice) makes the bytes differ: then nothing ticks on this screen (the battle manager hook
-    // does not run on it, seen in the v0.11.4-0.11.8 logs) and the buttons stay where the build put them.
-    let found = std::slice::from_raw_parts(INPUT_TASK as *const u8, INPUT_TASK_PROLOGUE.len());
-    if found == INPUT_TASK_PROLOGUE {
-        // padded like hf_voice's: at a function entry RSP is 8 mod 16, patchy's register saver wants 0
-        let mut trampoline = Trampoline::new();
-        trampoline.bytes(&[0x48, 0x83, 0xec, 0x08]);
-        trampoline.preserved_call(on_input_frame as *const (), &[], &[], ReturnType::None);
-        trampoline.bytes(&[0x48, 0x83, 0xc4, 0x08]);
-        trampoline.bytes(&INPUT_TASK_PROLOGUE);
-        trampoline.relative_jump(INPUT_TASK + INPUT_TASK_PROLOGUE.len());
-        session
-            .detour_trampoline(INPUT_TASK, INPUT_TASK_PROLOGUE.len(), trampoline)
-            .map_err(|e| e.to_string())?;
-    } else {
-        log::warn!("hf_ally: SomethingInputTask entry differs (another mod hooked it?): no per-frame card check from it");
     }
     GUI_INSPECT.store(gui_inspect, Ordering::Relaxed);
     if gui_inspect {
@@ -202,8 +162,8 @@ pub(super) fn selected_mask() -> u32 {
     SLOT_MASK.load(Ordering::Relaxed)
 }
 
-/// Replace the card choices for a test fight; Shipworks restores the campaign choices on return.
-pub(crate) fn replace_selected_mask(mask: u32) -> u32 {
+/// Exchange the campaign choice mask for an ACES test battle.
+pub(crate) extern "C" fn replace_selected_mask(mask: u32) -> u32 {
     SLOT_MASK.swap(mask, Ordering::Relaxed)
 }
 
@@ -239,18 +199,8 @@ const PRECOMBAT_B2_BYTES: [u8; 5] = [0xe8, 0x59, 0xe2, 0xf9, 0xff];
 const PRECOMBAT_SEAM_TARGET: usize = 0x1_4027_5850;
 
 /// `GUI_ELEMENTS`: a std::list sentinel pointer; node +0 next, +0x10 the GUI object; name at object +0xa40.
-const GUI_LIST: usize = 0x1_43a1_3ac8;
-const GUI_COUNT: usize = 0x1_43a1_3ad0;
-const GUI_NAME: usize = offset_of!(Gui, identifier);
 const GUI_LINK_TARGET: usize = offset_of!(Gui, gui_l1) + offset_of!(Link, target);
 
-// --- GUI element recipe (read from the PRECOMBAT_OK block of 0x1402d7620, see precombat-screen.md) ---
-const GUI_NEW: usize = 0x1_4033_4094; // operator new(size)
-const GUI_NEW_PROLOGUE: [u8; 9] = [0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9];
-const GUI_CTOR: usize = 0x1_4012_a910; // GUI_2(mem, 0)
-const GUI_CTOR_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x4c, 0x24, 0x08];
-const GUI_SETPOS: usize = 0x1_4005_20b0; // setXposYpos(obj, Vec2*)
-const GUI_SETPOS_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x81, 0xec, 0xb0];
 const GUI_SETBG: usize = 0x1_4001_be50; // SetBackground_(gui, idx, sprite, f32, u8, i32)
 const GUI_SETBG_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10];
 /// `setBodyOwnerString(sprite, name, asFileName)` 0x1402e2030: the native name setter `SetBackground_` runs on
@@ -273,26 +223,11 @@ const GUI_RESET_PROLOGUE: [u8; 9] = [0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0
 const GUI_FIND: usize = 0x1_401a_9170; // FindGuiElement(char*)
 const GUI_FIND_PROLOGUE: [u8; 10] = [0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10];
 
-/// The element list is walked to its own count plus this slack, capped so a corrupt count cannot hang the
-/// game thread. A walk that reaches the cap is reported as incomplete and is never used to hide our elements.
-const GUI_SCAN_SLACK: usize = 16;
-const GUI_SCAN_MIN: usize = 256;
-const GUI_SCAN_MAX: usize = 4096;
 /// Byte size of one `Sprite*` entry in the native `Body.sprites` vector.
 const GUI_SPRITE_SLOT_SIZE: usize = 8;
 /// Guards the native sprite destruction/load walks; our custom buttons normally own exactly one sprite.
 const GUI_SPRITE_LIMIT: usize = 4096;
 
-/// SomethingInputTask: per-frame input polling on the game thread (hf_voice hooks it too).
-const INPUT_TASK: usize = 0x1_4018_dbf0;
-const INPUT_TASK_PROLOGUE: [u8; 11] = [
-    0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x70, 0x10,
-];
-const CLICK_ENTRY: usize = 0x1_4012_f120;
-const CLICK_STOLEN: [u8; 26] = [
-    0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0xac,
-    0x24, 0xf8, 0xd3, 0xff, 0xff, 0xb8, 0x08, 0x2d, 0x00, 0x00,
-];
 /// Constants the initializer of PRECOMBAT_OK is called with (vtable +0x2c0).
 const INIT_F2: usize = 0x1_4807_5ce8; // f32 globals (set at run time)
 const INIT_F3: usize = 0x1_4807_5cec;
@@ -314,7 +249,6 @@ const BG_MINUS_ONE: usize = 0x1_4035_24ec; // f32 -1.0
 static PRECOMBAT_SEEN: AtomicBool = AtomicBool::new(false);
 
 /// Set once the pre-combat click hook is installed. Without it the buttons cannot respond, so they are not created.
-static PRECOMBAT_UI_READY: AtomicBool = AtomicBool::new(false);
 /// Per-ship ally choice: bit n = ship number n (2..=9, as numbered on the pre-combat screen) may be the ally.
 static SLOT_MASK: AtomicU32 = AtomicU32::new(1 << 2);
 
@@ -494,32 +428,6 @@ static INSPECT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 
 static PRECOMBAT_BUILDS: AtomicU32 = AtomicU32::new(0);
 
-/// A NUL-terminated ASCII name at `address`, at most 48 bytes, printable only.
-const GUI_NAME_READ_LIMIT: usize = 48;
-
-unsafe fn cstr(address: usize) -> String {
-    (0..GUI_NAME_READ_LIMIT)
-        .map(|i| read::<u8>(address + i))
-        .take_while(|&b| (0x20..0x7f).contains(&b))
-        .map(|b| b as char)
-        .collect()
-}
-
-/// Compare a fixed GUI identifier with the same 48-byte printable-ASCII boundary as `cstr`,
-/// without allocating a name for every element in a per-frame scan.
-pub(crate) unsafe fn cstr_is(address: usize, expected: &[u8]) -> bool {
-    if expected.len() > GUI_NAME_READ_LIMIT {
-        return false;
-    }
-    for (index, &byte) in expected.iter().enumerate() {
-        if read::<u8>(address + index) != byte {
-            return false;
-        }
-    }
-    expected.len() == GUI_NAME_READ_LIMIT
-        || !(0x20..0x7f).contains(&read::<u8>(address + expected.len()))
-}
-
 /// Runs right before the pre-combat screen is handed to the GUI dispatcher: every control exists now.
 unsafe extern "C" fn on_precombat() {
     let _hook = diag::scope("on_precombat A");
@@ -537,28 +445,9 @@ unsafe extern "C" fn on_precombat_b2() {
     precombat_dump("B2 0x1402d73a0 end");
 }
 
-type NewFn = unsafe extern "C" fn(usize) -> *mut u8;
-type CtorFn = unsafe extern "C" fn(*mut u8, i32) -> *mut u8;
-pub(crate) type GuiInitFn = unsafe extern "C" fn(
-    *mut u8,
-    *const u8,
-    f32,
-    f32,
-    f32,
-    f32,
-    *const u8,
-    *const u8,
-    *const u8,
-    *const u8,
-    *const u8,
-    f32,
-);
-type NodeAddFn = unsafe extern "C" fn(*mut u8, *mut u8, usize, usize);
 type SetBgFn = unsafe extern "C" fn(*mut u8, i32, *const u8, f32, u8, i32) -> *mut u8;
 type SetSpriteNameFn = unsafe extern "C" fn(*mut u8, *const u8, u8);
 type ClearSpritesFn = unsafe extern "C" fn(*mut u8);
-type ResetFn = unsafe extern "C" fn(*mut u8);
-type SetPosFn = unsafe extern "C" fn(*mut u8, *const f32);
 type FindFn = unsafe extern "C" fn(*const u8) -> usize;
 
 fn toggle_line(message: String) {
@@ -575,130 +464,6 @@ unsafe fn paint_toggle(gui: *mut u8, slot: usize) -> bool {
 
 /// Walks the game's GUI element list to its sentinel, including inactive entries.
 /// The count-derived bound accommodates large screens without treating a truncated list as complete.
-pub(crate) struct GuiScan {
-    pub(crate) elements: Vec<usize>,
-    /// False when the walk hit the cap before the sentinel: the list is only partially known.
-    pub(crate) complete: bool,
-    visited: usize,
-    limit: usize,
-}
-
-pub(crate) unsafe fn scan_gui_list() -> GuiScan {
-    let head: usize = read(GUI_LIST);
-    let count: usize = read(GUI_COUNT);
-    let limit = count
-        .saturating_add(GUI_SCAN_SLACK)
-        .clamp(GUI_SCAN_MIN, GUI_SCAN_MAX);
-    let mut elements = Vec::new();
-    let mut visited = 0;
-    let mut complete = false;
-    if plausible(head) {
-        let mut node: usize = read(head);
-        for _ in 0..limit {
-            if node == head {
-                break;
-            }
-            if !plausible(node) {
-                break;
-            }
-            visited += 1;
-            let element: usize = read(node + 0x10);
-            if !plausible(element) {
-                break;
-            }
-            elements.push(element);
-            node = read(node);
-        }
-        complete = node == head;
-    }
-    GuiScan {
-        elements,
-        complete,
-        visited,
-        limit,
-    }
-}
-
-/// Writes the game's shown (2) / unused (0) state to one of our elements.
-pub(crate) unsafe fn set_gui_active(gui: usize, active: bool) {
-    if gui == 0 {
-        return;
-    }
-    (gui as *mut i32)
-        .byte_add(OFF_ACTIVE)
-        .write_unaligned(if active { 2 } else { 0 });
-}
-
-/// Parent node of an element (`Node.master` at 0x80, its `Link.target` at +8 => 0x88 in 1.163). A live element
-/// placed by `make_gui` is a child of the global root.
-unsafe fn master_node(gui: usize) -> usize {
-    read(gui + offset_of!(Node, master) + offset_of!(Link, target))
-}
-
-/// Cell of the `GUI_ELEMENTS` registry entry (+0xba8, see docs/ally-gui-v0.14.5-tester.md). Non-zero means the element is
-/// registered and can still be found by name; it says nothing about the dead-node queue.
-unsafe fn registry_cell(gui: usize) -> usize {
-    read(gui + 0xba8)
-}
-
-/// Checks registry/root fields of an element already obtained from the current native list.
-/// Callers must prove current membership BEFORE calling this function: it dereferences the pointer and is
-/// not itself a lifetime check for a cached address.
-unsafe fn gui_live_in_root(gui: usize) -> bool {
-    if !plausible(gui) || registry_cell(gui) == 0 {
-        return false;
-    }
-    let root: usize = read(GUI_ROOT);
-    plausible(root) && master_node(gui) == root
-}
-
-/// Checks a GUI already obtained from the current complete `GUI_ELEMENTS` walk for the expected name,
-/// registration and root ownership. Callers must establish membership before calling, especially for cached
-/// addresses. Detached or foreign-parented objects are
-/// never resurrected: `Node::add` does not clear a dead-node queue entry, so re-adding one could crash the
-/// native `CollectDeadNodes` pass.
-unsafe fn gui_reusable(gui: usize, name: &[u8]) -> bool {
-    if !plausible(gui) {
-        return false;
-    }
-    if cstr(gui + GUI_NAME).as_bytes() != &name[..name.len() - 1] {
-        return false;
-    }
-    // only a clean hidden (0) or active (2) object may be restored; 1 = removed/dying
-    match read::<i32>(gui + OFF_ACTIVE) {
-        0 | 2 => {}
-        _ => return false,
-    }
-    gui_live_in_root(gui)
-}
-
-/// True when `gui` is in the scan's GUI list, still carries `name` and is currently shown
-/// (active 2). Used to switch our own stale elements off; it never authorises reuse, which needs
-/// the registry/root checks of [`gui_reusable`].
-///
-/// # Safety
-/// Use the current game-thread scan with no intervening GUI mutations; `name` must include its NUL.
-pub(super) unsafe fn listed_shown(listed: &[usize], gui: usize, name: &[u8]) -> bool {
-    listed.contains(&gui)
-        && read::<i32>(gui + OFF_ACTIVE) == 2
-        && cstr_is(gui + GUI_NAME, &name[..name.len() - 1])
-}
-
-/// Calls the element's vtable slot +0x88 (`GUI::Load`): resolves the element's own media names and loads the
-/// resources of every sprite in its list, then recurses into children. Only call on a newly constructed GUI
-/// or a current registry member validated by `get_or_make`, on the game thread outside rendering.
-pub(crate) unsafe fn load_gui(gui: usize) {
-    if gui == 0 {
-        return;
-    }
-    let vtable: usize = read(gui);
-    if !plausible(vtable) {
-        return;
-    }
-    let load: ResetFn = std::mem::transmute(read::<usize>(vtable + 0x88));
-    load(gui as *mut u8);
-}
-
 /// begin/end of the element's sprite vector (`Body.sprites`, 0x8c0), when the vector is sane.
 unsafe fn sprite_bounds(gui: usize) -> Option<(usize, usize)> {
     let begin: usize = read(gui + offset_of!(Body, sprites));
@@ -943,35 +708,6 @@ unsafe fn make_gui(name: &[u8]) -> *mut u8 {
     gui
 }
 
-/// Allocate/construct native GUI storage, without initializing a control recipe.
-///
-/// # Safety
-/// Game-thread callback with a live global root; caller must initialize and attach the new GUI.
-pub(crate) unsafe fn allocate_gui() -> *mut u8 {
-    let root: usize = read(GUI_ROOT);
-    if root == 0 {
-        return std::ptr::null_mut();
-    }
-    let new: NewFn = std::mem::transmute(GUI_NEW);
-    let ctor: CtorFn = std::mem::transmute(GUI_CTOR);
-    let mem = new(size_of::<Gui>());
-    if mem.is_null() {
-        return mem;
-    }
-    ctor(mem, 0)
-}
-
-/// Transfer a freshly constructed/initialized control into the native GUI root.
-///
-/// # Safety
-/// The pointer must come from allocate_gui in this callback, never a detached or cached object.
-pub(crate) unsafe fn attach_gui(gui: *mut u8) {
-    let root: usize = read(GUI_ROOT);
-    let node_vtable: usize = read(root);
-    let add: NodeAddFn = std::mem::transmute(read::<usize>(node_vtable + 0x50));
-    add(root as *mut u8, gui, 0, 0);
-}
-
 /// Gets the element called `name`: a live one the game still lists, else our kept (hidden) one, else a new one.
 /// Returns (gui, created).
 ///
@@ -989,52 +725,6 @@ pub(crate) unsafe fn get_or_make(
     complete: bool,
 ) -> Option<(usize, bool)> {
     get_or_make_with(name, kept_slot, listed, complete, || make_gui(name))
-}
-
-/// Same guarded reuse as get_or_make, with a feature-specific native constructor recipe.
-///
-/// # Safety
-/// The list must belong to this game-thread callback. `create` must return a freshly native-
-/// constructed, initialized, root-attached GUI with the requested name, or null on failure.
-pub(crate) unsafe fn get_or_make_with(
-    name: &[u8],
-    kept_slot: &std::sync::atomic::AtomicUsize,
-    listed: &[usize],
-    complete: bool,
-    create: impl FnOnce() -> *mut u8,
-) -> Option<(usize, bool)> {
-    if !complete {
-        // an incomplete list cannot prove the kept object is gone; do not create duplicates
-        return None;
-    }
-    let kept = kept_slot.load(Ordering::Relaxed);
-    if listed.contains(&kept) && gui_reusable(kept, name) {
-        set_gui_active(kept, true);
-        return Some((kept, false));
-    }
-    // The snapshot also includes hidden objects. Never fall back to an unbounded native search after a
-    // truncated scan, and never read an unlisted cached pointer merely to compare its old name.
-    for &gui in listed {
-        if gui != kept && gui_reusable(gui, name) {
-            set_gui_active(gui, true);
-            kept_slot.store(gui, Ordering::Relaxed);
-            return Some((gui, false));
-        }
-    }
-    if kept != 0 {
-        toggle_line(format!(
-            "ALLY GUI: retained {} is no longer reusable; discarding its cached address without reviving it",
-            String::from_utf8_lossy(&name[..name.len() - 1])
-        ));
-        // drop the cached number before allocating: a stale pointer must never be read again
-        kept_slot.store(0, Ordering::Relaxed);
-    }
-    let ptr = create();
-    if ptr.is_null() {
-        return None;
-    }
-    kept_slot.store(ptr as usize, Ordering::Relaxed);
-    Some((ptr as usize, true))
 }
 
 /// The ship creature of each player card (`PRECOMBAT_A`), left to right: the card's `+0xbc0` is a Property pointer, `GetPropertyLinkedObject` gives the ship.
@@ -1238,17 +928,6 @@ fn slot_geometry(cards: &[(f32, f32, f32, f32)], slot: usize) -> Option<(f32, f3
 /// frame, so no resource reload is needed while following moving cards.
 unsafe fn move_gui(gui: usize, pos: [f32; 2], size: f32) {
     move_gui_rect(gui, pos, [size, size]);
-}
-
-/// Move a freshly created or currently validated native GUI and set its rectangular hit box.
-///
-/// # Safety
-/// Same game-thread and live-membership requirements as `load_gui`.
-pub(crate) unsafe fn move_gui_rect(gui: usize, pos: [f32; 2], size: [f32; 2]) {
-    let set_pos: SetPosFn = std::mem::transmute(GUI_SETPOS);
-    set_pos(gui as *mut u8, pos.as_ptr());
-    (gui as *mut f32).byte_add(0x218).write_unaligned(size[0]);
-    (gui as *mut f32).byte_add(0x21c).write_unaligned(size[1]);
 }
 
 /// Places (creating on first use) the ALLY buttons and the slot-1 marker beside the ship numbers. Slot n is the
@@ -1909,12 +1588,8 @@ const MARKER_COLOR: u32 = 0xffe0_e0db;
 /// The ammo picker's own label colour (notes section 15: markup `{font=flash_large_shadow}{color=4293514025}`); the shadow is part of that font.
 const LABEL_COLOR: u32 = 0xffe9_d329;
 
-unsafe extern "C" fn on_input_frame() {
+pub(crate) unsafe extern "C" fn on_input_frame() {
     let _hook = diag::scope("on_input_frame");
-    crate::shipworks::tick();
-    if PRECOMBAT_UI_READY.load(Ordering::Relaxed) {
-        crate::shelling::tick();
-    }
     tick(0);
 }
 
@@ -2032,18 +1707,17 @@ fn accept_click(last_click_ms: &AtomicU64, now: u64) -> bool {
 }
 
 /// Called at the entry of ClickFunc (RCX ctx, RDX gui, R8 button, R9 id); true = the click was ours, skip the game.
-unsafe extern "C" fn on_click_pre(_ctx: usize, gui: usize, button: usize, _id: usize) -> bool {
+pub(crate) unsafe extern "C" fn on_click_pre(
+    _ctx: usize,
+    gui: usize,
+    button: usize,
+    _id: usize,
+) -> bool {
     let _hook = diag::scope("on_click_pre");
     if gui == 0 {
         return false;
     }
     let name = cstr(gui + GUI_NAME);
-    if crate::shipworks::on_click(&name, button) {
-        return true;
-    }
-    if crate::shelling::on_click(&name, gui, button) {
-        return true;
-    }
     crumb!(
         "CLICK {name} gui={gui:#x} button={button} id={_id:#x} {}",
         scene()
@@ -2139,7 +1813,7 @@ unsafe fn precombat_dump(which: &str) {
     diag::snapshot(format_args!("precombat {which}"));
     // the screen before a fight: the previous battle is over, log its summary now if the battle hook never saw it end
     emit_last_summary();
-    if which.starts_with("B2") && PRECOMBAT_UI_READY.load(Ordering::Relaxed) {
+    if which.starts_with("B2") {
         crumb!("ensure_toggles: enter");
         ensure_toggles();
         crumb!("ensure_toggles: done");

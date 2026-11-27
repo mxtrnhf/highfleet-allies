@@ -3,7 +3,9 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use patchy::{PatchSession, ProcessModule, ReturnType, Trampoline};
+use patchy_host::ProcessModule;
+
+use crate::patchy::{PatchSession, ReturnType, Trampoline};
 
 const SITE_RVA: usize = 0x554bb;
 // mulss xmm0,xmm7; movss xmm1,[rbx+0x864]; subss xmm1,xmm0;

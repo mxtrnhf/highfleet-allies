@@ -11,7 +11,7 @@ use std::sync::{
     Mutex,
 };
 
-use patchy::{PatchSession, ReturnType, Trampoline};
+use crate::patchy::{PatchSession, ReturnType, Trampoline};
 
 use crate::native::{live_ship, plausible, read, LINK_STRIDE, SHIP_LIST_LIMIT};
 use crate::native_layout::{Body, Creature, Link, PartStats};

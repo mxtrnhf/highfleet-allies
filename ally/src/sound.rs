@@ -1,55 +1,14 @@
-//! Sound playback and localization for the mod's radio lines and pre-combat button clicks.
-//!
-//! `playSFXSound_` (0x1402e30e0) is what the stock battle radio (`PlayRadioSounds_`, 0x1402d5910) ends in; the call
-//! below repeats its last call exactly: kind 0xb, the sound resource name from `Media/Snd/sound.res`, the global GUI
-//! node, a base volume, then the stack arguments 1.0, a status float it writes into, and zeros. The stock radio also
-//! appends `_eng` to its names when the game is in English, so `play_radio` does the same (v0.14.26).
+//! Ally radio and pre-combat button sounds.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-
-use crate::native::{read, GUI_ROOT};
+pub(crate) use crate::native_sound::verify;
+use crate::native_sound::{localized_radio_name, play_sfx, BUTTON_VOLUME, SND_BUTTON};
 use crate::time::pick;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-const PLAY_SFX: usize = 0x1_402e_30e0;
-const PLAY_SFX_PROLOGUE: [u8; 15] = [
-    0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18,
-];
-/// Kind 0xb: the stock radio and the ClickFunc UI sounds all play through it.
-const SFX_KIND_STOCK: i32 = 0xb;
-type PlaySfxFn = unsafe extern "C" fn(
-    i32,
-    *const u8,
-    usize,
-    f32,
-    f32,
-    *mut f32,
-    u64,
-    u8,
-    i32,
-    u8,
-    u8,
-    f32,
-    u8,
-) -> f32;
-/// `coreLanguage`: 1 = Russian, 2 = English. The options language button writes it live (`ClickFunc`
-/// 0x140131af8), and the stock radio appends `_eng` exactly when it is 2 (`String_AppendEngSuffix`
-/// 0x1401b20f0). Read it per line so a live language change applies without a restart.
-const CORE_LANGUAGE: usize = 0x1_403c_0e1c;
-const LANGUAGE_ENGLISH: i32 = 2;
-/// `sound.res` maps the plain names to `Media/Snd/RADIO` (Russian) and the `_eng` names to
-/// `Media/Snd/RADIO_ENG` (English); every line the mod plays has an `_eng` variant.
-const ENG_SUFFIX: &[u8] = b"_eng";
 /// Ally radio lines: the retreat key, an ally joining the fight, an ally destroyed.
 static RADIO_SOUNDS: AtomicBool = AtomicBool::new(false);
 /// Pre-combat ALLY and plane-loadout button clicks (independent of `ally_sounds`).
 static BUTTON_SOUNDS: AtomicBool = AtomicBool::new(false);
-/// Strategic shelling barrage, separate from radio chatter so it can be silenced alone.
-static SHELLING_SOUNDS: AtomicBool = AtomicBool::new(false);
-const UNIT_VOLUME_BITS: u32 = 1.0f32.to_bits();
-/// The game retains the status pointer (sound object +0x88) and uses its float as a
-/// volume multiplier each frame. The slots must outlive the native call.
-static SFX_STATUS: [AtomicU32; 16] = [const { AtomicU32::new(UNIT_VOLUME_BITS) }; 16];
-static SFX_NEXT: AtomicU32 = AtomicU32::new(0);
 
 const SND_DANGER: &[u8] = b"mission_danger_01\0";
 const SND_LOST: [&[u8]; 2] = [b"radio_stall_01\0", b"radio_lost_energy_01\0"];
@@ -63,153 +22,12 @@ const SND_JOIN: [&[u8]; 3] = [
     b"mission_start_02\0",
     b"mission_start_03\0",
 ];
-/// Stock `Media/Snd/button_01.wav`, named `button_01` in `sound.res`. The game itself plays it as a UI click in
-/// `Map_BuildMissileMarkers` (`0x1401c4ee0`), with kind 0xb and base volume 30.0.
-const SND_BUTTON: &[u8] = b"button_01\0";
-const BUTTON_VOLUME: f32 = 30.0;
-/// The four stock `Media/Snd/shell_out_big_far_*` samples.
-const SND_SHELL: [&[u8]; 4] = [
-    b"shell_out_big_far_01\0",
-    b"shell_out_big_far_02\0",
-    b"shell_out_big_far_03\0",
-    b"shell_out_big_far_04\0",
-];
-const SND_SHELL_RUMBLE: [&[u8]; 4] = [
-    b"explosion_big_far_01\0",
-    b"explosion_big_far_02\0",
-    b"explosion_big_far_03\0",
-    b"explosion_big_far_04\0",
-];
-const SND_SHELL_WINDUP: &[u8] = b"gunfire_servo\0";
-const SND_SHELL_RADIO_FIRE: [&[u8]; 4] = [
-    b"radio_go1_01\0",
-    b"radio_go2_01\0",
-    b"radio_go3_01\0",
-    b"radio_go4_01\0",
-];
-const SND_INTERCOM_OUT: &[u8] = b"intercom_out\0";
-const SHELL_VOLUME: f32 = 56.0;
-const SHELL_WINDUP_VOLUME: f32 = 52.0;
-const SND_RAID_WIND: &[u8] = b"wind_02\0";
-const RAID_WIND_VOLUME: f32 = 38.0;
-const SND_RAID_WHOOSH: [&[u8]; 3] = [
-    b"whoosh_fast_01\0",
-    b"whoosh_fast_02\0",
-    b"whoosh_fast_03\0",
-];
-const SND_RAID_DISTANT: [&[u8]; 4] = [
-    b"explosion_small_far_01\0",
-    b"explosion_small_far_02\0",
-    b"explosion_small_far_03\0",
-    b"explosion_small_far_04\0",
-];
-const SND_RAID_CRACK: [&[u8]; 4] = [
-    b"explosion_med_01\0",
-    b"explosion_med_02\0",
-    b"explosion_med_03\0",
-    b"explosion_med_04\0",
-];
-const SND_RAID_METAL: [&[u8]; 2] = [b"metall_hit_01\0", b"metall_hit_02\0"];
-// These stock WAVs contain flat-topped transients at the start. Use the clipped
-// source rather than clipping the master mix or stacking another sound on every hit.
-const SND_RAID_CLIPPED: [&[u8]; 2] = [b"explosion_big_01\0", b"explosion_big_04\0"];
-
-/// Checks that the game function this module calls is the expected build, then logs why it is off otherwise.
-///
-/// # Safety
-/// Reads the fixed `PLAY_SFX` code address; callers must be on the game process after the module is loaded.
-pub(crate) unsafe fn verify() -> bool {
-    let found = std::slice::from_raw_parts(PLAY_SFX as *const u8, PLAY_SFX_PROLOGUE.len());
-    if found != PLAY_SFX_PROLOGUE {
-        log::warn!(
-            "hf_ally: playSFXSound_ bytes differ ({found:02x?}), ally and button sounds off"
-        );
-        return false;
-    }
-
-    true
-}
 
 /// Applies the verified runtime switches: ally radio lines follow `ally_sounds`; button clicks are
 /// part of the mod's pre-combat UI and follow `buttons`.
 pub(crate) fn configure(radio: bool, buttons: bool) {
     RADIO_SOUNDS.store(radio, Ordering::Relaxed);
     BUTTON_SOUNDS.store(buttons, Ordering::Relaxed);
-}
-
-/// Enables or disables the shelling barrage report.
-pub(crate) fn configure_shelling(enabled: bool) {
-    SHELLING_SOUNDS.store(enabled, Ordering::Relaxed);
-}
-
-/// Let both concurrently played cues finish before the first barrel fires.
-pub(crate) fn shelling_prelude_ms() -> u64 {
-    if SHELLING_SOUNDS.load(Ordering::Relaxed) {
-        // Stock servo is 4.484 s at unity pitch (4.671 s at our 0.96 pitch).
-        4_750
-    } else if RADIO_SOUNDS.load(Ordering::Relaxed) {
-        // Longest stock firing acknowledgement across Russian and English is 3.800 s.
-        3_850
-    } else {
-        0
-    }
-}
-
-/// Plays one sound by its `sound.res` name (NUL-terminated); `what` is for the log.
-///
-/// # Safety
-/// Call on the game thread after [`verify`] accepts the supported image, while its GUI root
-/// remains live. `name` must contain one NUL-terminated resource name.
-unsafe fn play_sfx(name: &[u8], volume: f32, what: &str) {
-    let result = play_sfx_silent(name, volume, 1.0);
-    log::info!(
-        "ALLY sound ({what}) {} -> {result}",
-        String::from_utf8_lossy(&name[..name.len() - 1])
-    );
-}
-
-/// Plays one sound without a log line. Used for the restrained shelling report.
-///
-/// # Safety
-/// Call on the game thread after [`verify`] accepts the supported image, with a live GUI
-/// root and a NUL-terminated resource name.
-unsafe fn play_sfx_silent(name: &[u8], volume: f32, pitch: f32) -> f32 {
-    let node: usize = read(GUI_ROOT);
-    if node == 0 {
-        return -1.0;
-    }
-    let slot_index = SFX_NEXT.fetch_add(1, Ordering::Relaxed) as usize % SFX_STATUS.len();
-    let slot = &SFX_STATUS[slot_index];
-    slot.store(UNIT_VOLUME_BITS, Ordering::Relaxed);
-    let play: PlaySfxFn = std::mem::transmute(PLAY_SFX);
-    play(
-        SFX_KIND_STOCK,
-        name.as_ptr(),
-        node,
-        volume,
-        pitch,
-        slot.as_ptr() as *mut f32,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0.0,
-        1,
-    )
-}
-
-/// Appends `_eng` to a stock radio name in English, matching `String_AppendEngSuffix` and the
-/// `sound.res` entries that point at `Media/Snd/RADIO_ENG`. Returns a NUL-terminated name.
-unsafe fn localized_radio_name(name: &[u8]) -> Vec<u8> {
-    let base = name.strip_suffix(&[0]).unwrap_or(name);
-    let mut localized = Vec::with_capacity(base.len() + ENG_SUFFIX.len() + 1);
-    localized.extend_from_slice(base);
-    if read::<i32>(CORE_LANGUAGE) == LANGUAGE_ENGLISH {
-        localized.extend_from_slice(ENG_SUFFIX);
-    }
-    localized.push(0);
-    localized
 }
 
 /// Plays a radio sound by its `sound.res` name, in the player's language.
@@ -225,94 +43,6 @@ unsafe fn play_radio(name: &[u8], what: &str) {
 pub(crate) unsafe fn button(what: &str) {
     if BUTTON_SOUNDS.load(Ordering::Relaxed) {
         play_sfx(SND_BUTTON, BUTTON_VOLUME, what);
-    }
-}
-
-/// Play heavy turret servo wind-up as cannons slew into firing elevation.
-pub(crate) unsafe fn shelling_windup() {
-    if SHELLING_SOUNDS.load(Ordering::Relaxed) {
-        let result = play_sfx_silent(SND_SHELL_WINDUP, SHELL_WINDUP_VOLUME, 0.96);
-        log::info!("ALLY sound (shelling wind-up) gunfire_servo -> {result}");
-    }
-}
-
-/// Play one randomly selected distant shot for one barrel in the opening salvo.
-pub(crate) unsafe fn shelling_opening_shot(weight: u32) {
-    if SHELLING_SOUNDS.load(Ordering::Relaxed) {
-        let volume = SHELL_VOLUME + 12.0 * (weight.min(48) as f32 / 48.0);
-        play_sfx(SND_SHELL[pick(SND_SHELL.len())], volume, "shelling opening");
-    }
-}
-
-/// Localized crew radio confirmation when starting a bombardment.
-pub(crate) unsafe fn shelling_radio_fire() {
-    play_radio(
-        SND_SHELL_RADIO_FIRE[pick(SND_SHELL_RADIO_FIRE.len())],
-        "shelling fire",
-    );
-}
-
-/// Short intercom click-off when aborting a bombardment.
-pub(crate) unsafe fn shelling_radio_abort() {
-    if RADIO_SOUNDS.load(Ordering::Relaxed) {
-        let _ = play_sfx_silent(SND_INTERCOM_OUT, 42.0, 1.0);
-    }
-}
-
-/// One shot of a follow-up burst. The stock 01 WAV has ~5,100 clipped samples;
-/// preserve that crack at the source instead of distorting the entire game mix.
-pub(crate) unsafe fn shelling_burst_shot(weight: u32) {
-    if SHELLING_SOUNDS.load(Ordering::Relaxed) {
-        let pitch = 0.90 + pick(15) as f32 * 0.01;
-        let volume = 80.0 + 12.0 * (weight.min(48) as f32 / 48.0);
-        let _ = play_sfx_silent(SND_SHELL[0], volume, pitch);
-    }
-}
-
-/// Start a single stock wind cue before any tactical rounds appear.
-pub(crate) unsafe fn shelling_wind() {
-    if SHELLING_SOUNDS.load(Ordering::Relaxed) {
-        let _ = play_sfx_silent(SND_RAID_WIND, RAID_WIND_VOLUME, 1.0);
-    }
-}
-
-/// Subtle brief incoming shell whoosh played on select close rounds right before impact.
-pub(crate) unsafe fn shelling_whoosh(cue: u32) {
-    if !SHELLING_SOUNDS.load(Ordering::Relaxed) {
-        return;
-    }
-    let variant = ((cue >> 4) as usize) % SND_RAID_WHOOSH.len();
-    let strength = ((cue >> 12) & 0xff) as f32 / 255.0;
-    let pitch = 0.84 + ((cue >> 20) & 0xff) as f32 * (0.20 / 255.0);
-    let _ = play_sfx_silent(SND_RAID_WHOOSH[variant], 36.0 + 12.0 * strength, pitch);
-}
-
-/// Vary loudness, pitch and the odds of a hard-clipped onset without changing the master mix.
-pub(crate) unsafe fn shelling_impact(ground: bool, intensity: f32, cue: u32) {
-    if !SHELLING_SOUNDS.load(Ordering::Relaxed) {
-        return;
-    }
-    let variant = (cue >> 8) as usize;
-    let strength = ((cue >> 16) & 0xff) as f32 / 255.0;
-    let pitch = 0.86 + ((cue >> 24) & 0xff) as f32 * (0.32 / 255.0);
-    let (sample, gain) = match (ground, cue & 15) {
-        (true, 0) => return,
-        (true, 1..=8) | (false, 0..=7) => {
-            (SND_RAID_CLIPPED[variant % SND_RAID_CLIPPED.len()], 92.0)
-        }
-        (false, 8..=9) => (SND_RAID_METAL[variant % SND_RAID_METAL.len()], 74.0),
-        (false, 10..=13) | (true, 9..=12) => (SND_RAID_CRACK[variant % SND_RAID_CRACK.len()], 80.0),
-        _ => (SND_RAID_DISTANT[variant % SND_RAID_DISTANT.len()], 54.0),
-    };
-    let _ = play_sfx_silent(sample, gain + 14.0 * strength + 11.0 * intensity, pitch);
-    // Layer a restrained low-end rolling echo on heavier hits so salvos rumble across the basin.
-    if ((cue >> 5) & 3) == 0 && gain >= 80.0 {
-        let rumble_pitch = 0.78 + ((cue >> 19) & 0x3f) as f32 * (0.12 / 63.0);
-        let _ = play_sfx_silent(
-            SND_SHELL_RUMBLE[variant % SND_SHELL_RUMBLE.len()],
-            44.0 + 10.0 * intensity,
-            rumble_pitch,
-        );
     }
 }
 

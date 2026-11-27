@@ -92,6 +92,10 @@ after ship switching. Restart after editing.
 
 ## `ai_flares` (flares, evasion, panic)
 
+The `ai_flares` subsystem requires QoL's `enable_flare_crash_fix` on Steam
+1.163. Combat AI skips that subsystem when the fix is not configured;
+steering, tactics, reload, and other Combat AI features still apply.
+
 The preventive curtain subsystem was retired in **v0.10.18**. Old `curtain_*`
 and `launch_flares_*` keys are ignored by the parser and do nothing.
 

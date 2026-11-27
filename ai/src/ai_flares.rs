@@ -84,7 +84,9 @@ use std::{
     },
 };
 
-use patchy::{PatchSession, ProcessModule, Result, ReturnType, Trampoline};
+use patchy_host::{ProcessModule, Result};
+
+use crate::patchy::{PatchSession, ReturnType, Trampoline};
 use windows_sys::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION};
 
 use crate::native_layout::{self, Link};
@@ -107,12 +109,10 @@ const ARGUMENT_SETUP: [u8; 3] = [0x48, 0x8b, 0xce];
 
 const BOOST_RVA: usize = 0x65744;
 const BOOST_RESUME_RVA: usize = 0x65750;
-/// `mov rdi, rbx`, a 9-byte `nop`, and the first instruction of the engine command loop.
-const BOOST_BYTES: [u8; 17] = [
-    0x48, 0x8b, 0xfb, 0x66, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x49, 0x8b, 0x4c, 0x38,
-    0x08,
+/// `mov rdi, rbx` and a 9-byte `nop`. Allies can hook the loop head at `BOOST_RESUME_RVA`.
+const BOOST_BYTES: [u8; 12] = [
+    0x48, 0x8b, 0xfb, 0x66, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
-const BOOST_STOLEN_LEN: usize = 12;
 /// `mov c7 45 28 66 00 00 00`: the `0x66` engine command being set up, a few lines above.
 const BOOST_COMMAND_RVA: usize = 0x656d9;
 const BOOST_COMMAND_BYTES: [u8; 7] = [0xc7, 0x45, 0x28, 0x66, 0x00, 0x00, 0x00];
@@ -440,13 +440,13 @@ pub unsafe fn prepare_boost_hook(
     }
     session.detour_trampoline(
         module.resolve_rva(BOOST_RVA)?,
-        BOOST_STOLEN_LEN,
+        BOOST_BYTES.len(),
         build_boost_trampoline(module)?,
     )?;
     Ok(true)
 }
 
-fn build_trampoline(module: ProcessModule) -> Result<Trampoline> {
+unsafe fn build_trampoline(module: ProcessModule) -> Result<Trampoline> {
     let mut trampoline = Trampoline::new();
 
     trampoline.preserved_call(
@@ -468,7 +468,7 @@ const BOOST_ARGUMENT_SETUP: [u8; 7] = [
     0x48, 0x8d, 0x55, 0x28, // lea rdx, [rbp+0x28]
 ];
 
-fn build_boost_trampoline(module: ProcessModule) -> Result<Trampoline> {
+unsafe fn build_boost_trampoline(module: ProcessModule) -> Result<Trampoline> {
     let mut trampoline = Trampoline::new();
 
     trampoline.preserved_call(
@@ -477,7 +477,7 @@ fn build_boost_trampoline(module: ProcessModule) -> Result<Trampoline> {
         &[],
         ReturnType::None,
     );
-    trampoline.bytes(&BOOST_BYTES[..BOOST_STOLEN_LEN]);
+    trampoline.bytes(&BOOST_BYTES);
     trampoline.absolute_jump(module.resolve_rva(BOOST_RESUME_RVA)?);
 
     Ok(trampoline)

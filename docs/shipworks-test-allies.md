@@ -1,5 +1,9 @@
 # Shipworks test encounters
 
+Shipworks custom rosters and A.C.E. are provided by ACES. In
+`Modloader/config/aces.json`, `enable` defaults to `true` and `crash_button`
+defaults to `false`. The crash button is for deliberate crash diagnostics.
+
 **v1.3.48 — Airstrike:** In standalone Shipworks, expand **>** and choose
 **A.C.E. → AIRSTRIKE**. **ADD PLANE** adds a group. Click its plane name to
 cycle craft types; click a loadout row to equip it. The list shows up to three
@@ -190,12 +194,13 @@ of the same design share a row, such as `Nomad x2`. Allies and enemies are group
 separately. Same-name refits stay on separate rows; each copy still uses a slot.
 
 Choose the usual TEST enemy settings and press the existing **FIGHT** button.
-The edited ship remains your player ship; the added ships join its friendly
-pre-combat roster with ALLY enabled. The normal ally controls, aircraft loadout
-buttons and combat ship switching still apply.
+The edited ship remains your player ship; the added ships join the friendly
+pre-combat roster. With ACES alone they use the stock reserve behavior.
+With Allies also loaded, ACES preselects them as wingmen and the Allies
+controls, aircraft loadout buttons and combat ship switching still apply.
 
 - Up to **eight allies**, matching the native nine-player-card screen.
-- Added ships follow `ally.json`'s `max_allies` and `ally_delay_seconds`, plus
+- With Allies, added ships follow `ally.json`'s `max_allies` and `ally_delay_seconds`, plus
   the normal three-game-second spacing between deployments. Selected ships above
   the limit wait in reserve. Campaign card choices are unchanged.
 - Loading, switching designs, RESET, returning from test combat, and RETRY do not

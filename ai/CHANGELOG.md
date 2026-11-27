@@ -1,5 +1,16 @@
 # hf_ai changelog
 
+## v1.2.13 — coexist with Allies bomber hooks
+
+- Validate only the steering and engine instructions Combat AI replaces, so
+  Allies' adjacent bomber detours can load first without disabling Combat AI.
+
+## v1.2.12 — shared patching and standalone startup
+
+- Use the experimental Modloader's shared Patchy service.
+- Run combat AI independently. Automatic flares stay off when QoL's flare crash fix
+  is not configured.
+
 ## v1.2.11 — saturate throttle during common missile evasion
 
 - Raise `panic_math::EVASION_WAYPOINT_LENGTH` from 200 to 400 units (matching

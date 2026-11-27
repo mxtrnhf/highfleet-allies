@@ -1,6 +1,6 @@
 [package]
 name = "hf-ai"
-version = "1.2.11"
+version = "1.2.13"
 edition = "2021"
 description = "Tactical AI layer for Highfleet 1.163: overrides the outputs of the stock per-ship AI tick (steering waypoint, engine strength, fire, launches). Standalone; not part of QoL."
 
@@ -9,10 +9,11 @@ name = "hf_ai"
 crate-type = ["cdylib"]
 
 [dependencies]
+hf-mod-support = { path = "../shared" }
 highfleet = { git = "https://github.com/logdot/highfleet-rs.git", rev = "05c62078c6f896c141713a68b3991663e121b7bf" }
-highfleet-mod-api = { git = "https://github.com/logdot/Highfleet-Modloader.git", tag = "v4.0.0" }
+highfleet-mod-api = { git = "https://github.com/logdot/Highfleet-Modloader.git", tag = "v4.2.0-preview.1" }
 log = "0.4.28"
-patchy = { package = "patchy-rs", git = "https://github.com/logdot/patchy-rs.git", tag = "v0.1.0" }
+patchy_host = { package = "highfleet-patchy-client", git = "https://github.com/logdot/Highfleet-Modloader.git", tag = "v4.2.0-preview.1" }
 serde = { version = "1.0.221", features = ["derive"] }
 serde_json = "1.0.144"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_Security"] }

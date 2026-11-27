@@ -19,6 +19,7 @@ GUIDES = (
     "ally-config.md", "debug-overlay.md", "shell-launch-speed.md", "hf-ai-config-reference.md", "hf-ai-tuning-guide.md",
     "qol-guide.md", "player-defaults.md", "retired-diagnostics.md", "retired-settings.md",
     "ship-bombers.md", "ship-switching.md", "shipworks-test-allies.md",
+    "strategic-shelling.md", "split-mod-test-matrix.md",
 )
 
 
@@ -29,7 +30,7 @@ def digest(path):
 def component_versions():
     return {
         crate: tomllib.loads((REPO / crate / "Cargo.toml").read_text())["package"]["version"]
-        for crate in ("ally", "ai", "qol")
+        for crate in ("ally", "ai", "aces", "ccu", "qol")
     }
 
 
@@ -48,6 +49,8 @@ def populate(stage, version, versions, commit, validation):
         "PACK_VERSION": version,
         "ALLY_VERSION": versions["ally"],
         "AI_VERSION": versions["ai"],
+        "ACES_VERSION": versions["aces"],
+        "CCU_VERSION": versions["ccu"],
         "QOL_VERSION": versions["qol"],
     }
     for name in ("README.txt", "NOTES.md"):
@@ -66,15 +69,17 @@ def populate(stage, version, versions, commit, validation):
     mods = stage / "Modloader/mods"
     mods.mkdir()
     for crate, library, destination in (
-        ("ally", "hf_ally.dll", f'hf_ally_v{versions["ally"]}.dll'),
+        ("ally", "ally.dll", f'hf_ally_v{versions["ally"]}.dll'),
         ("ai", "hf_ai.dll", f'hf_ai_v{versions["ai"]}.dll'),
+        ("aces", "aces.dll", f'hf_aces_v{versions["aces"]}.dll'),
+        ("ccu", "ccu.dll", f'hf_ccu_v{versions["ccu"]}.dll'),
         ("qol", "highfleet_qol.dll", f'hf_qol_v{versions["qol"]}.dll'),
     ):
         source = REPO / crate / "target" / TARGET / "release" / library
         if source.read_bytes()[:2] != b"MZ":
             raise RuntimeError(f"Not a Windows DLL: {source}")
         shutil.copy2(source, mods / destination)
-    for crate, name in (("ally", "ally.json"), ("ai", "hf_ai.json")):
+    for crate, name in (("ally", "ally.json"), ("ai", "hf_ai.json"), ("aces", "aces.json"), ("ccu", "ccu.json")):
         preset = REPO / crate / "config" / name
         json.loads(preset.read_bytes())
         destination = configs / name
@@ -90,7 +95,7 @@ def populate(stage, version, versions, commit, validation):
                 + os.environ["GITHUB_RUN_ID"]
             ) if os.environ.get("GITHUB_RUN_ID") else None,
         },
-        "target": TARGET, "cargo_features": {"ally": [], "ai": [], "qol": []},
+        "target": TARGET, "cargo_features": {crate: [] for crate in versions},
         "gameplay_validation": validation,
         "files": {
             str(path.relative_to(stage)): digest(path)

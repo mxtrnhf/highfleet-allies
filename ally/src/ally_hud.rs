@@ -13,7 +13,7 @@
 use std::mem::offset_of;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use patchy::{PatchSession, ReturnType, Trampoline};
+use crate::patchy::{PatchSession, ReturnType, Trampoline};
 
 use crate::native_layout::{Creature, NODE_CODE};
 

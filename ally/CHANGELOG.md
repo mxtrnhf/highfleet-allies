@@ -1,5 +1,12 @@
 # hf_ally changelog (development history, newest first is NOT guaranteed; see git tags)
 
+## v1.4.0 — standalone Shipworks and shelling
+
+- Split Shipworks rosters, A.C.E. encounters and the crash button into ACES.
+- Split experimental campaign shelling into CCU.
+- Use Modloader's shared Patchy service and share the native GUI hooks with ACES and CCU.
+  The Windows build now produces `ally.dll`.
+
 * **v1.3.86 (revert map hit-marker experiment):** restore the previous world-space impact mark and burst lifetime. The screen-space scatter and short flashes did not read well on the campaign map. The v1.3.85 fresh-overlay fade fix is unchanged.
 
 * **v1.3.85 (guaranteed fade; map marker experiment):** create a fresh stock BLACK overlay for the shelling fade so it always runs for a full second even after the level-load instance is unlinked. The screen-space impact crosses and 1.2–2.5 s flashes from this build were rolled back in v1.3.86.

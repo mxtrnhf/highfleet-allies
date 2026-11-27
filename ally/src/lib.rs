@@ -3,6 +3,13 @@
 //! Config: `Modloader/config/ally.json`. Native evidence: `hf_notes/docs/findings/battle-ally.md`.
 
 highfleet_mod_api::export_logger!();
+patchy_host::export_patchy!();
+hf_mod_support::export_gui_host!();
+
+use hf_mod_support::{
+    aircraft_catalog, gui, gui_hooks, memory, native, native_layout, native_sound, panel_image,
+    patchy, time,
+};
 
 /// A line for the debug mode's megalog (a no-op, and the arguments are not even formatted, otherwise).
 macro_rules! crumb {
@@ -32,18 +39,14 @@ mod honor_share;
 mod intercept;
 mod lifecycle_log;
 mod missile_guard;
-mod native;
-mod native_layout;
 mod plane_loadouts;
 mod precombat;
 // Shows the ship a second human player flies (profile slot 1) in the first small panel.
 // Self-contained: it only reads the game's player table; it knows nothing about the mod that fills it.
 mod second_player;
-mod shelling;
 mod ship_switch;
-mod shipworks;
 mod sound;
-mod time;
+mod template_health;
 
 #[no_mangle]
 unsafe extern "C" fn version(version: *const std::ffi::c_char) -> bool {

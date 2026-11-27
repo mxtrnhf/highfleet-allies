@@ -20,12 +20,14 @@ use std::mem::offset_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use patchy::{PatchSession, ReturnType, Trampoline};
+use crate::patchy::{PatchSession, ReturnType, Trampoline};
 
 use crate::native_layout::{Body, Creature, Link, Node};
+use crate::panel_image::{
+    create_panel_depth, PanelImage, GET_PLAYER_CREATURE, PANEL, PANEL_HEIGHT, PANEL_SUPPRESSED,
+    PANEL_WIDTH,
+};
 
-/// `DrawBattleShipPanel(surface_a, surface_b, mode)`.
-const PANEL: usize = 0x1_402f_de80;
 const PANEL_MODE_TARGET: u32 = 3;
 /// Own-panel call in the battle renderer: `E8 C7 43 FF FF`.
 const RENDER_SITE: usize = 0x1_4030_9ab4;
@@ -35,32 +37,13 @@ const RENDER_RESUME: usize = 0x1_4030_9ab9;
 const COMPOSITE_SITE: usize = 0x1_4030_915f;
 const COMPOSITE_SITE_BYTES: [u8; 5] = [0xe8, 0xec, 0xa9, 0xd7, 0xff];
 const COMPOSITE_RESUME: usize = 0x1_4030_9164;
-/// HGE helpers: draw a sprite scaled, set its colour and its z.
-const RENDER_EX: usize = 0x1_4017_2aa0;
-const SET_SPRITE_COLOR: usize = 0x1_4017_2ae0;
-const SET_SPRITE_Z: usize = 0x1_4017_2ee0;
 const LAYER_Z: usize = 0x1_4021_6480;
-/// HGE system object: slot `+0x300` creates the colour target, `+0x308` its depth/stencil surface.
-const ENGINE: usize = 0x1_43a1_19e0;
-const CREATE_TEXTURE_SLOT: usize = 0x300;
-const CREATE_DEPTH_SLOT: usize = 0x308;
-const TEXTURE_FORMAT: u32 = 0x1c;
-const RENDER_TARGET: u32 = 1;
-const OPERATOR_NEW: usize = 0x1_4033_4094;
-const SPRITE_CTOR: usize = 0x1_4017_1d50;
-const SPRITE_SIZE: u32 = 0x1a8;
-/// `hgeSprite` blend mode (`+0x168`); the game uses `0x10` for the panels.
-const SPRITE_BLEND: usize = 0x168;
-const BLEND_PANEL: u32 = 0x10;
 /// Battle HUD enable byte and the panel pass' own suppression flag.
 const HUD_ENABLED: usize = 0x1_43a1_1961;
-pub(crate) const PANEL_SUPPRESSED: usize = 0x1_43a1_5908;
 /// The stock target panel is skipped while a message/panel is on screen (the end-game gate byte).
 const TARGET_PANEL_HIDDEN: usize = 0x1_47fc_6fca;
 /// Virtual frame height (1920 x 1080 target).
 const FRAME_HEIGHT: usize = 0x1_43a1_3e5c;
-/// Player profile creature lookup used by mode 3.
-pub(crate) const GET_PLAYER_CREATURE: usize = 0x1_4029_24b0;
 
 /// `DrawBattleShipPanel` scans HUD marker layers 1..39 by way of the counts at `0x143a51160`
 /// and the layer-1 owner field at `0x144094c88` (exactly `HUD_MARKERS + 40000 * 0x18 + 8`).
@@ -128,11 +111,6 @@ const RENDER_BODY_LAYERS: usize = 0x3c;
 const RENDER_BODY_LIMIT: usize = 40_000;
 const RENDER_BODY_STRIDE: usize = 0x18;
 
-// Texture allocation takes whole pixels; the sprite constructor takes the same size as floats.
-const PANEL_PIXEL_WIDTH: u32 = 350;
-const PANEL_PIXEL_HEIGHT: u32 = 300;
-pub(crate) const PANEL_WIDTH: f32 = PANEL_PIXEL_WIDTH as f32;
-pub(crate) const PANEL_HEIGHT: f32 = PANEL_PIXEL_HEIGHT as f32;
 /// Half width and half height = a quarter of the panel area.
 const ALLY_SCALE: f32 = 0.5;
 /// Panels sit immediately right of the player's own panel, in a column from `H - 300`.
@@ -141,97 +119,8 @@ const ALLY_SLOT_STEP: f32 = PANEL_HEIGHT * ALLY_SCALE; // 150
 /// The player's own panel is 350 x 300, so two half-size panels fill the same height.
 const MAX_PANELS: usize = 2;
 
-type PanelFn = unsafe extern "win64" fn(usize, usize, u32);
-type RenderExFn = unsafe extern "win64" fn(usize, f32, f32, f32, f32, f32);
-type SetColorFn = unsafe extern "win64" fn(usize, u32, i32);
-type SetZFn = unsafe extern "win64" fn(usize, f32, i32);
 type LayerZFn = unsafe extern "win64" fn(u32) -> f32;
-type CreateTextureFn = unsafe extern "win64" fn(usize, u32, u32, u32, u32) -> usize;
-type CreateDepthFn = unsafe extern "win64" fn(usize, u32, u32) -> usize;
-type AllocFn = unsafe extern "win64" fn(u32) -> usize;
-type SpriteCtorFn = unsafe extern "win64" fn(usize, usize, f32, f32, f32, f32, f32, f32, f32, f32);
 type InheritedStageFn = unsafe extern "C" fn(usize, i32) -> i32;
-
-#[derive(Clone, Copy)]
-pub(crate) struct PanelImage {
-    surface_a: usize,
-    sprite: usize,
-}
-
-impl PanelImage {
-    /// Allocate a private colour target and its composite sprite on the render thread.
-    /// The caller keeps the handles in a bounded, process-lifetime target pool.
-    pub(crate) unsafe fn create() -> Option<Self> {
-        let engine = rd::<usize>(ENGINE);
-        if engine == 0 {
-            return None;
-        }
-        let vtable = rd::<usize>(engine);
-        let create: CreateTextureFn =
-            std::mem::transmute(rd::<usize>(vtable + CREATE_TEXTURE_SLOT));
-        let surface_a = create(
-            engine,
-            PANEL_PIXEL_WIDTH,
-            PANEL_PIXEL_HEIGHT,
-            TEXTURE_FORMAT,
-            RENDER_TARGET,
-        );
-        let alloc: AllocFn = std::mem::transmute(OPERATOR_NEW);
-        let sprite = alloc(SPRITE_SIZE);
-        if surface_a == 0 || sprite == 0 {
-            return None;
-        }
-        let ctor: SpriteCtorFn = std::mem::transmute(SPRITE_CTOR);
-        // SAFETY: the sprite is fresh storage from the native allocator. It borrows the
-        // matching native texture, both of which are kept by the target pool.
-        ctor(
-            sprite,
-            surface_a,
-            0.0,
-            0.0,
-            PANEL_WIDTH,
-            PANEL_HEIGHT,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-        );
-        Some(Self { surface_a, sprite })
-    }
-
-    /// Draw the chosen native panel into this image. A matching depth surface must be
-    /// available and the caller must be in the native battle panel render pass.
-    pub(crate) unsafe fn capture(self, depth: usize, mode: u32) {
-        let panel: PanelFn = std::mem::transmute(PANEL);
-        panel(self.surface_a, depth, mode);
-    }
-
-    /// Composite this image in the current native sprite pass at top-left `(x, y)`.
-    pub(crate) unsafe fn draw(self, x: f32, y: f32, z: f32, scale: f32) {
-        let set_z: SetZFn = std::mem::transmute(SET_SPRITE_Z);
-        let set_color: SetColorFn = std::mem::transmute(SET_SPRITE_COLOR);
-        let render: RenderExFn = std::mem::transmute(RENDER_EX);
-        set_color(self.sprite, 0xffff_ffff, -1);
-        set_z(self.sprite, z, -1);
-        (self.sprite as *mut u32)
-            .byte_add(SPRITE_BLEND)
-            .write_unaligned(BLEND_PANEL);
-        render(self.sprite, x, y, 0.0, scale, scale);
-    }
-}
-
-/// Create a native depth target matching `PanelImage`. Only the game render thread
-/// calls the HGE factory; the caller holds the returned handle for the process.
-pub(crate) unsafe fn create_panel_depth() -> Option<usize> {
-    let engine = rd::<usize>(ENGINE);
-    if engine == 0 {
-        return None;
-    }
-    let vtable = rd::<usize>(engine);
-    let create: CreateDepthFn = std::mem::transmute(rd::<usize>(vtable + CREATE_DEPTH_SLOT));
-    let depth = create(engine, PANEL_PIXEL_WIDTH, PANEL_PIXEL_HEIGHT);
-    (depth != 0).then_some(depth)
-}
 
 #[derive(Clone, Copy)]
 struct NativePanel {

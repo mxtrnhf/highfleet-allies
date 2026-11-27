@@ -5,7 +5,7 @@
 //! call (two `cmp rdx,3`) and stops when a weight budget of 6 runs out (a ship costs 1 to 3). The stock 30 s
 //! delay before the first refill is left untouched.
 
-use patchy::PatchSession;
+use crate::patchy::PatchSession;
 
 const GROUP_CMP: [(usize, [u8; 4]); 2] = [
     (0x1_402d_237a, [0x48, 0x83, 0xfa, 0x03]),

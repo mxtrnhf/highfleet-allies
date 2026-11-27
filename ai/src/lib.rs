@@ -19,7 +19,9 @@ use std::ffi::{c_char, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use patchy::{PatchSession, ProcessModule, ReturnType, Trampoline};
+use patchy_host::ProcessModule;
+
+use crate::patchy::{PatchSession, ReturnType, Trampoline};
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows_sys::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION};
@@ -43,6 +45,9 @@ use flares_config::AiFlaresConfig;
 use tactics_config::TacticsConfig;
 
 highfleet_mod_api::export_logger!();
+patchy_host::export_patchy!();
+
+use hf_mod_support::patchy;
 
 const IMAGE_BASE: usize = 0x1_4000_0000;
 const CONFIG_PATH: &str = "Modloader/config/hf_ai.json";
@@ -59,11 +64,8 @@ static GAME_IS_STEAM_1_163: AtomicBool = AtomicBool::new(false);
 
 const STEER_RVA: usize = 0x64a8d;
 const STEER_RESUME_RVA: usize = 0x64a96;
-/// `movss [r14+0xbf0], xmm9` (the replaced instruction) and the `subss xmm9, xmm12` after it.
-const STEER_BYTES: [u8; 14] = [
-    0xf3, 0x45, 0x0f, 0x11, 0x8e, 0xf0, 0x0b, 0x00, 0x00, 0xf3, 0x45, 0x0f, 0x5c, 0xcc,
-];
-const STEER_STOLEN_LEN: usize = 9;
+/// `movss [r14+0xbf0], xmm9`. Allies can hook the next instruction at `STEER_RESUME_RVA`.
+const STEER_BYTES: [u8; 9] = [0xf3, 0x45, 0x0f, 0x11, 0x8e, 0xf0, 0x0b, 0x00, 0x00];
 /// The AI tick's own first bytes (the hook site must be inside this function).
 const TICK_RVA: usize = 0x62f90;
 const TICK_PROLOGUE: [u8; 12] = [
@@ -333,7 +335,7 @@ unsafe fn prepare_steering_hook(
         ReturnType::None,
     );
     // replay the replaced store of the (possibly changed) waypoint
-    trampoline.bytes(&STEER_BYTES[..STEER_STOLEN_LEN]);
+    trampoline.bytes(&STEER_BYTES);
     trampoline.absolute_jump(
         module
             .resolve_rva(STEER_RESUME_RVA)
@@ -342,7 +344,7 @@ unsafe fn prepare_steering_hook(
     session
         .detour_trampoline(
             module.resolve_rva(STEER_RVA).map_err(|e| e.to_string())?,
-            STEER_STOLEN_LEN,
+            STEER_BYTES.len(),
             trampoline,
         )
         .map(|_| ())
@@ -431,10 +433,9 @@ impl Default for Config {
     }
 }
 
-/// Warns about the QoL mod setup that hf_ai relies on: logdot's `highfleet-qol` carries the 1.163 flare crash fix (a
-/// proximity-fused missile meeting a flare whose link is gone), and hf_ai drops far more flares than the stock game.
-/// Checked from the files (mod load order is alphabetical, so the QoL DLL may not be loaded yet when hf_ai starts).
-fn check_qol(config: &Config) {
+/// Auto-flares need QoL's 1.163 nullable missile-fuze guard. Check the
+/// configured DLLs because the loader may initialize QoL after Combat AI.
+fn qol_flare_guard_configured(config: &Config) -> bool {
     let has_dll = std::fs::read_dir("Modloader/mods")
         .map(|dir| {
             dir.flatten().any(|entry| {
@@ -444,18 +445,15 @@ fn check_qol(config: &Config) {
         })
         .unwrap_or(false);
     if !has_dll {
-        log::warn!("hf_ai: no QoL mod in Modloader/mods. Install logdot's highfleet-qol: it has the flare crash fix, and hf_ai's flares make that crash much more likely without it");
-        return;
+        return false;
     }
     let Ok(text) = std::fs::read_to_string("Modloader/config/qol.json") else {
-        return;
+        // A fresh QoL installation defaults to the guard enabled.
+        return true;
     };
     let Ok(qol) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return;
+        return false;
     };
-    if qol.get("enable_flare_crash_fix").and_then(|v| v.as_bool()) == Some(false) {
-        log::warn!("hf_ai: qol.json has enable_flare_crash_fix false: turn it on, hf_ai's flares can crash the game without it");
-    }
     if config.ai_missile_dump_chance > 0.0
         && qol
             .get("ai_missile_dump_chance")
@@ -474,6 +472,7 @@ fn check_qol(config: &Config) {
     {
         log::warn!("hf_ai: qol.json ai_flares.enabled is true as well: set it to false, both patch the same sites");
     }
+    qol.get("enable_flare_crash_fix").and_then(|v| v.as_bool()) != Some(false)
 }
 
 /// Reads `hf_ai.json`, parsing errors fall back to defaults, and a missing file is written out as defaults.
@@ -520,7 +519,11 @@ unsafe extern "C" fn init() -> bool {
         log::info!("hf_ai: disabled in {CONFIG_PATH}");
         return true;
     }
-    check_qol(&config);
+    let flare_guard = qol_flare_guard_configured(&config);
+    let auto_flares = config.ai_flares.enabled && flare_guard;
+    if config.ai_flares.enabled && !flare_guard {
+        log::info!("hf_ai: automatic flares disabled; QoL's flare crash fix is not configured");
+    }
     debug_state::init();
 
     let cutoff = twr_math::sanitize_cutoff(config.twr_cutoff);
@@ -553,7 +556,7 @@ unsafe extern "C" fn init() -> bool {
     // One session for every site, so nothing is half installed. Preparing the ai_flares sites may fail (a code
     // mismatch is not an error, it just leaves ai_flares off); then the steering hook is prepared alone.
     let prepare_session = |with_flares: bool| -> Result<PatchSession, String> {
-        let mut session = PatchSession::new();
+        let mut session = PatchSession::new().map_err(|e| e.to_string())?;
         if steering_ok {
             prepare_steering_hook(&mut session, module)?;
         }
@@ -563,7 +566,7 @@ unsafe extern "C" fn init() -> bool {
                 config.ai_missile_dump_chance,
                 config.ai_missile_dump_min_delay,
                 config.ai_missile_dump_max_delay,
-                config.ai_flares.allies || config.tactics.allies,
+                (with_flares && config.ai_flares.allies) || config.tactics.allies,
             )
             .map_err(|e| e.to_string())?;
         }
@@ -593,16 +596,16 @@ unsafe extern "C" fn init() -> bool {
         }
         Ok(session)
     };
-    let session = match prepare_session(config.ai_flares.enabled) {
-        Ok(session) => session,
+    let (session, flares_prepared) = match prepare_session(auto_flares) {
+        Ok(session) => (session, auto_flares),
         Err(error) => {
             log::error!("hf_ai: preparing the hooks failed: {error}");
-            if !config.ai_flares.enabled {
+            if !auto_flares {
                 return false;
             }
             log::error!("hf_ai: retrying with the steering hook only (ai_flares off)");
             match prepare_session(false) {
-                Ok(session) => session,
+                Ok(session) => (session, false),
                 Err(error) => {
                     log::error!("hf_ai: preparing the steering hook failed: {error}");
                     return false;
@@ -618,8 +621,8 @@ unsafe extern "C" fn init() -> bool {
         log::info!(
             "hf_ai: steering hook installed (tactics {}; ai_flares {})",
             if config.tactics.enabled { "on" } else { "off" },
-            if config.ai_flares.enabled {
-                "requested, see the ai_flares lines above"
+            if flares_prepared {
+                "see the ai_flares lines above"
             } else {
                 "off"
             }

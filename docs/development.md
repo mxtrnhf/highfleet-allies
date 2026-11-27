@@ -3,7 +3,8 @@
 ## Build the player pack DLLs
 
 Use stable Rust. Run this command separately from each crate directory:
-[`ally/`](../ally), [`ai/`](../ai), and [`qol/`](../qol).
+[`ally/`](../ally), [`ai/`](../ai), [`aces/`](../aces), [`ccu/`](../ccu), and the
+optional [`qol/`](../qol) companion.
 
 ```sh
 cargo xwin build --release --locked --no-default-features --target x86_64-pc-windows-msvc
@@ -13,19 +14,23 @@ The command uses `cargo-xwin` to build Windows DLLs from Linux. On Windows, use
 `cargo build` with the same options instead. A successful build doesn't validate
 hooks or gameplay; verify those in Steam 1.163 before claiming in-game support.
 
+The split builds output `ally.dll`, `hf_ai.dll`, `aces.dll`, and `ccu.dll`. Use
+the matching `hf_<mod>_v<version>.dll` filename when installing a tester build.
+All four use Modloader v4.2.0-preview.1's shared Patchy API.
+
 The experimental `hf_perf` and `hf_native` DLLs and their research notes live
 on the `perf/native` branch. They are not built or shipped with the player pack.
 
 ## Package and publish
 
 Run [Build and publish release](../.github/workflows/release.yml) in GitHub Actions
-with the three-part pack version, without the `v` prefix. The workflow builds all
-three DLLs on Windows, packages the tracked presets, fills version placeholders
+with the three-part pack version, without the `v` prefix. The workflow builds the
+four split DLLs and optional QoL on Windows, packages their presets, fills version placeholders
 in `release/README.txt` and `release/NOTES.md`, and publishes the ZIP to GitHub
 Releases. Review the release notes and the workflow's gameplay validation text
 for the chosen build before publishing.
 
-For local packaging, build all three DLLs and use a clean tracked working tree.
+For local packaging, build those five DLLs and use a clean tracked working tree.
 From the repository root, run the following with your chosen pack version:
 
 ```sh

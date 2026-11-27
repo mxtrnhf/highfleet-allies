@@ -34,7 +34,7 @@ use std::{
 };
 
 use crate::native_layout::{Ammo, Body, Creature, Link, Node, NODE_OWNER};
-use patchy::{PatchSession, Trampoline};
+use crate::patchy::{PatchSession, Trampoline};
 
 const HUD_ENABLED: usize = 0x1_43a1_1961;
 /// `(Vec2* point, bool absolute, float zoom)`.

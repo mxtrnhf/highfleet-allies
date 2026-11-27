@@ -13,7 +13,9 @@ use crate::bomber_math::{Flight, Phase, Run, PULL_OUT_S, RELEASE_HEIGHT};
 use crate::diag::rd;
 use crate::native::plausible;
 use crate::native_layout::{Body, Creature, Link, Node};
-use patchy::{Condition, PatchSession, ReturnType, Trampoline};
+use patchy_host::Condition;
+
+use crate::patchy::{PatchSession, ReturnType, Trampoline};
 
 // After hf_ai's waypoint hook: an armed bomber keeps its course instead of evading missiles.
 const WAYPOINT_SITE: usize = 0x1_4006_4a96;

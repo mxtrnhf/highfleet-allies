@@ -27,7 +27,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-use patchy::{PatchSession, Result, ReturnType};
+use patchy_host::Result;
+
+use crate::patchy::{PatchSession, ReturnType};
 
 use crate::native_layout;
 use crate::{plausible, rd, rng};

@@ -28,8 +28,6 @@ For individual features, use this table. Settings for an already-disabled parent
 | Feature | Setting that disables it or restores vanilla | What remains / important dependency |
 |---|---|---|
 | Entire mod | `"enabled": false` | Closest complete config revert; startup/crash-reporting infrastructure can still load with the DLL. |
-| [Strategic shelling](strategic-shelling.md) | `"shelling_preview": false` (default) | 180 mm barrage planner with map shell tracers and a short tactical bombardment before returning to the campaign. City infrastructure is unchanged. |
-| Shelling barrage sound | `"shelling_sounds": false` | Mutes distant gun reports, tactical wind and impacts; visualization and damage remain. |
 | Allies in a battle | **Per-ship toggle** | Ship 2 starts switched on. Turn its ALLY toggle off on the pre-combat card to skip the wingman; the choice persists until you toggle it back on. There is no global ally-only switch; `enabled: false` turns off the whole mod. |
 | Ally arrival delay only | `ally_delay_seconds: 0.0` | Allies still deploy immediately. |
 | Number of allies | **No zero/disable value** | `max_allies: 0` is clamped to one. Use the per-ship ALLY toggle to skip the wingman. |

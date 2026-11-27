@@ -13,7 +13,7 @@ use std::sync::{
     Mutex, OnceLock,
 };
 
-use patchy::{PatchSession, Trampoline};
+use crate::patchy::{PatchSession, Trampoline};
 
 use crate::native_layout::Body;
 
